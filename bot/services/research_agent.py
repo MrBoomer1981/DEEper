@@ -1,14 +1,14 @@
 """
 Core research agent — orchestrates the full research pipeline.
 All reports are generated in Russian.
+Uses GroqKeyRotator for automatic key rotation on rate limits.
 """
 import asyncio
 from typing import Callable, List, Optional
 
-from groq import Groq
-
 from bot.config import Config, ResearchMode, RESEARCH_MODES
 from bot.services.cache_manager import CacheManager
+from bot.services.groq_rotator import GroqKeyRotator
 from bot.services.knowledge_base import KnowledgeBase
 from bot.services.planner import ResearchPlanner
 from bot.services.web_scraper import WebScraper
@@ -53,7 +53,7 @@ class ResearchAgent:
     def __init__(self, config: Config, knowledge_base: KnowledgeBase) -> None:
         self.config = config
         self.kb = knowledge_base
-        self.client = Groq(api_key=config.groq_api_key)
+        self.rotator = GroqKeyRotator()
         self.cache = CacheManager(db_path=config.db_path)
         self.scraper = WebScraper(
             cache=self.cache,
@@ -76,7 +76,6 @@ class ResearchAgent:
                 except Exception:
                     pass
 
-        # Planner с нужным кол-вом запросов
         planner = ResearchPlanner(
             groq_api_key=self.config.groq_api_key,
             primary_model=self.config.primary_model,
@@ -138,7 +137,8 @@ class ResearchAgent:
 
     async def _analyze_pages(self, page_texts: List[str], topic: str, max_chunks: int) -> List[str]:
         all_findings: List[str] = []
-        semaphore = asyncio.Semaphore(4)
+        # Concurrency=3 — one per key, rotator handles 429s automatically
+        semaphore = asyncio.Semaphore(3)
 
         async def analyze_page(text: str) -> List[str]:
             chunks = chunk_text(text, self.config.chunk_size, self.config.chunk_overlap)
@@ -150,29 +150,28 @@ class ResearchAgent:
                         findings.append(f)
             return findings
 
-        results = await asyncio.gather(*[analyze_page(t) for t in page_texts], return_exceptions=True)
+        results = await asyncio.gather(
+            *[analyze_page(t) for t in page_texts],
+            return_exceptions=True,
+        )
         for r in results:
             if isinstance(r, list):
                 all_findings.extend(r)
+
         logger.info("Извлечено {} фактов", len(all_findings))
         return all_findings
 
     async def _analyze_chunk(self, chunk: str, topic: str) -> Optional[str]:
-        loop = asyncio.get_event_loop()
         try:
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat.completions.create(
-                    model=self.config.fast_model,
-                    messages=[
-                        {"role": "system", "content": CHUNK_ANALYSIS_SYSTEM},
-                        {"role": "user", "content": f"Тема: {topic}\n\nТекст:\n{chunk}"},
-                    ],
-                    max_tokens=400,
-                    temperature=0.2,
-                ),
+            return await self.rotator.chat(
+                model=self.config.fast_model,
+                messages=[
+                    {"role": "system", "content": CHUNK_ANALYSIS_SYSTEM},
+                    {"role": "user", "content": f"Тема: {topic}\n\nТекст:\n{chunk}"},
+                ],
+                max_tokens=400,
+                temperature=0.2,
             )
-            return result.choices[0].message.content.strip()
         except Exception as e:
             logger.warning("Ошибка анализа чанка: {}", e)
             return None
@@ -195,25 +194,17 @@ class ResearchAgent:
 
 Напиши полный отчёт на русском языке."""
 
-        loop = asyncio.get_event_loop()
         try:
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat.completions.create(
-                    model=self.config.primary_model,
-                    messages=[
-                        {"role": "system", "content": REPORT_SYSTEM.format(
-                            title=title, sources_placeholder=sources_fmt)},
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=4000,
-                    temperature=0.4,
-                ),
+            return await self.rotator.chat(
+                model=self.config.primary_model,
+                messages=[
+                    {"role": "system", "content": REPORT_SYSTEM.format(
+                        title=title, sources_placeholder=sources_fmt)},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=4000,
+                temperature=0.4,
             )
-            report = response.choices[0].message.content.strip()
-            if "## Источники" not in report and sources:
-                report += f"\n\n## Источники\n{sources_fmt}"
-            return report
         except Exception as e:
             logger.error("Ошибка генерации отчёта: {}", e)
             return (
@@ -223,20 +214,15 @@ class ResearchAgent:
             )
 
     async def _generate_summary(self, topic: str, report: str) -> str:
-        loop = asyncio.get_event_loop()
         try:
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat.completions.create(
-                    model=self.config.fast_model,
-                    messages=[
-                        {"role": "system", "content": "Создай краткое резюме из 2-3 предложений на русском языке."},
-                        {"role": "user", "content": truncate_text(report, 3000)},
-                    ],
-                    max_tokens=300,
-                    temperature=0.3,
-                ),
+            return await self.rotator.chat(
+                model=self.config.fast_model,
+                messages=[
+                    {"role": "system", "content": "Создай краткое резюме из 2-3 предложений на русском языке."},
+                    {"role": "user", "content": truncate_text(report, 3000)},
+                ],
+                max_tokens=300,
+                temperature=0.3,
             )
-            return response.choices[0].message.content.strip()
         except Exception:
             return f"Исследование по теме: {topic}"

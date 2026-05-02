@@ -5,8 +5,7 @@ All output is always in Russian.
 import json
 from typing import List
 
-from groq import Groq
-
+from bot.services.groq_rotator import GroqKeyRotator
 from bot.utils.logger import get_logger
 from bot.utils.text_utils import truncate_text
 
@@ -31,29 +30,28 @@ PLAN_USER = """Тема исследования: {topic}
 
 class ResearchPlanner:
     def __init__(self, groq_api_key: str, primary_model: str, n_queries: int = 15) -> None:
-        self.client = Groq(api_key=groq_api_key)
+        # groq_api_key kept for interface compatibility
+        self.rotator = GroqKeyRotator()
         self.primary_model = primary_model
         self.n_queries = n_queries
 
-    def _call_llm(self, system: str, user: str) -> str:
-        response = self.client.chat.completions.create(
-            model=self.primary_model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            max_tokens=2048,
-            temperature=0.7,
-        )
-        return response.choices[0].message.content.strip()
-
     async def generate_plan(self, topic: str) -> dict:
-        import asyncio
         system = PLAN_SYSTEM.format(n_queries=self.n_queries)
         user = PLAN_USER.format(topic=topic, n_queries=self.n_queries)
 
-        loop = asyncio.get_event_loop()
-        raw = await loop.run_in_executor(None, lambda: self._call_llm(system, user))
+        try:
+            raw = await self.rotator.chat(
+                model=self.primary_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                max_tokens=2048,
+                temperature=0.7,
+            )
+        except Exception as e:
+            logger.warning("Ошибка генерации плана: {}. Используем fallback.", e)
+            return self._fallback_plan(topic)
 
         try:
             clean = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
