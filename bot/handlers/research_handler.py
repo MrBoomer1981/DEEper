@@ -1,27 +1,28 @@
 """
-Handler for /research command — runs the full deep research pipeline
-and streams progress updates to the user.
+Handler for /research command with mode selection via inline keyboard.
 """
 import html
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot.config import RESEARCH_MODES
 from bot.services.research_agent import ResearchAgent
 from bot.utils.logger import get_logger
 
 logger = get_logger("research_handler")
 router = Router()
 
-MAX_TELEGRAM_MSG = 4000  # Telegram message character limit
+MAX_MSG = 4000
+
+# Хранилище topic пока пользователь выбирает режим
+_pending: dict = {}
 
 
-def _split_message(text: str, limit: int = MAX_TELEGRAM_MSG):
-    """Split long text into chunks that fit Telegram's message limit."""
+def _split_message(text: str, limit: int = MAX_MSG):
     parts = []
     while len(text) > limit:
-        # Try to split at a newline near the limit
         split_at = text.rfind("\n", 0, limit)
         if split_at == -1:
             split_at = limit
@@ -32,74 +33,103 @@ def _split_message(text: str, limit: int = MAX_TELEGRAM_MSG):
     return parts
 
 
+def _mode_keyboard(topic_key: str) -> InlineKeyboardMarkup:
+    buttons = []
+    for mode_name, mode in RESEARCH_MODES.items():
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{mode.label} — {mode.description}",
+                callback_data=f"research:{mode_name}:{topic_key}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.message(Command("research"))
-async def research_handler(message: Message, research_agent: ResearchAgent) -> None:
-    """Handle /research <query> command."""
+async def research_handler(message: Message) -> None:
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip():
         await message.reply(
-            "❌ Please provide a research topic.\n\n"
-            "Usage: /research &lt;your topic&gt;\n"
-            "Example: /research quantum computing applications"
+            "❌ Укажи тему исследования.\n\n"
+            "Использование: /research &lt;тема&gt;\n"
+            "Пример: /research квантовые вычисления"
         )
         return
 
     topic = args[1].strip()
     user_id = message.from_user.id
-    username = message.from_user.username or str(user_id)
 
-    logger.info("Research request from @{}: '{}'", username, topic[:80])
+    # Сохраняем topic, ключ = user_id
+    _pending[user_id] = topic
 
-    safe_topic = html.escape(topic)
-
-    # Send initial status message
-    status_msg = await message.reply(
-        f"🚀 Starting deep research on:\n<b>{safe_topic}</b>\n\n"
-        "<i>This will take 2-5 minutes. I'll keep you updated...</i>",
+    await message.reply(
+        f"🔬 <b>Тема:</b> {html.escape(topic)}\n\n"
+        "Выбери режим исследования:",
+        reply_markup=_mode_keyboard(str(user_id)),
     )
 
-    # Progress callback — edits the status message
+
+@router.callback_query(F.data.startswith("research:"))
+async def mode_selected(callback: CallbackQuery, research_agent: ResearchAgent) -> None:
+    await callback.answer()
+
+    _, mode_name, user_key = callback.data.split(":", 2)
+    user_id = callback.from_user.id
+    username = callback.from_user.username or str(user_id)
+
+    topic = _pending.pop(int(user_key), None)
+    if not topic:
+        await callback.message.edit_text("❌ Сессия истекла. Отправь /research снова.")
+        return
+
+    mode = RESEARCH_MODES.get(mode_name, RESEARCH_MODES["deep"])
+    logger.info("Исследование от @{}: '{}' | режим: {}", username, topic[:80], mode.name)
+
+    status_msg = await callback.message.edit_text(
+        f"🚀 <b>Запускаю исследование</b>\n"
+        f"📋 Тема: {html.escape(topic)}\n"
+        f"⚙️ Режим: {mode.label}\n\n"
+        "<i>Подожди, начинаю работу...</i>",
+    )
+
     async def update_progress(text: str) -> None:
         try:
             await status_msg.edit_text(
-                f"🔬 <b>Researching:</b> {safe_topic}\n\n{html.escape(text)}",
+                f"🔬 <b>{html.escape(topic)}</b>\n"
+                f"⚙️ {mode.label}\n\n"
+                f"{html.escape(text)}",
             )
         except Exception:
-            pass  # Ignore edit errors (e.g. message not modified)
+            pass
 
     try:
         result = await research_agent.research(
             topic=topic,
+            mode_name=mode_name,
             progress_callback=update_progress,
         )
 
-        report = result["report"]
-        title = result["title"]
         research_id = result["research_id"]
+        title = result["title"]
+        report = result["report"]
 
-        # Final status update
         await status_msg.edit_text(
-            f"✅ Research <b>#{research_id}</b> complete!\n"
-            f"📋 <b>{html.escape(title)}</b>\n\n"
-            f"Sending report...",
+            f"✅ <b>Исследование #{research_id} готово!</b>\n"
+            f"📋 {html.escape(title)}\n"
+            f"⚙️ {mode.label}\n\n"
+            "<i>Отправляю отчёт...</i>",
         )
 
-        # Send report as plain text to avoid markdown parsing issues
         parts = _split_message(report)
         for i, part in enumerate(parts):
-            if i == 0:
-                await message.reply(
-                    f"📊 <b>Research Report</b> (ID: {research_id})\n\n"
-                    + html.escape(part),
-                )
-            else:
-                await message.reply(html.escape(part))
+            prefix = f"📊 <b>Отчёт #{research_id}</b>\n\n" if i == 0 else ""
+            await callback.message.answer(prefix + html.escape(part))
 
-        logger.info("Research #{} delivered to @{}", research_id, username)
+        logger.info("Отчёт #{} доставлен @{}", research_id, username)
 
     except Exception as e:
-        logger.error("Research failed for @{}: {}", username, e, exc_info=True)
+        logger.error("Ошибка исследования @{}: {}", username, e, exc_info=True)
         await status_msg.edit_text(
-            f"❌ Research failed: {html.escape(str(e)[:200])}\n\n"
-            "Please try again or rephrase your topic.",
+            f"❌ Ошибка: {html.escape(str(e)[:200])}\n\n"
+            "Попробуй снова или измени тему."
         )

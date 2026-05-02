@@ -1,6 +1,6 @@
 """
-Research planner — uses LLM to generate a structured research plan
-and a list of diverse search queries for a given topic.
+Research planner — generates a structured plan and search queries.
+All output is always in Russian.
 """
 import json
 from typing import List
@@ -12,20 +12,21 @@ from bot.utils.text_utils import truncate_text
 
 logger = get_logger("planner")
 
-PLAN_SYSTEM = """You are an expert research planner. 
-Given a research topic, produce a structured JSON plan with:
-- "title": concise research title
-- "overview": 2-3 sentence description of what will be researched
-- "angles": list of 5-7 distinct research angles to explore
-- "queries": list of exactly {n_queries} specific, diverse web search queries
+PLAN_SYSTEM = """Ты — опытный исследователь и аналитик. Всегда отвечай ТОЛЬКО на русском языке.
 
-Respond ONLY with valid JSON. No markdown, no explanation."""
+Получив тему для исследования, создай структурированный JSON-план:
+- "title": краткое название исследования на русском
+- "overview": 2-3 предложения о том, что будет исследоваться
+- "angles": список из 5-7 различных углов исследования
+- "queries": список из ровно {n_queries} конкретных поисковых запросов на русском и английском языках
 
-PLAN_USER = """Research topic: {topic}
+Отвечай ТОЛЬКО валидным JSON. Без markdown, без пояснений."""
 
-Generate a comprehensive research plan with {n_queries} search queries 
-covering different aspects: technical details, recent developments, 
-expert opinions, statistics, and practical applications."""
+PLAN_USER = """Тема исследования: {topic}
+
+Создай план с {n_queries} поисковыми запросами, охватывающими разные аспекты:
+технические детали, последние разработки, мнения экспертов, статистику и практическое применение.
+Запросы должны быть на русском И английском языках для максимального охвата."""
 
 
 class ResearchPlanner:
@@ -34,74 +35,65 @@ class ResearchPlanner:
         self.primary_model = primary_model
         self.n_queries = n_queries
 
-    def _call_llm(self, system: str, user: str, model: str, max_tokens: int = 2048) -> str:
+    def _call_llm(self, system: str, user: str) -> str:
         response = self.client.chat.completions.create(
-            model=model,
+            model=self.primary_model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            max_tokens=max_tokens,
+            max_tokens=2048,
             temperature=0.7,
         )
         return response.choices[0].message.content.strip()
 
     async def generate_plan(self, topic: str) -> dict:
-        """
-        Generate a research plan for the given topic.
-
-        Returns a dict with keys: title, overview, angles, queries.
-        Falls back to a simple plan if JSON parsing fails.
-        """
         import asyncio
-
         system = PLAN_SYSTEM.format(n_queries=self.n_queries)
         user = PLAN_USER.format(topic=topic, n_queries=self.n_queries)
 
         loop = asyncio.get_event_loop()
-        raw = await loop.run_in_executor(
-            None,
-            lambda: self._call_llm(system, user, self.primary_model),
-        )
+        raw = await loop.run_in_executor(None, lambda: self._call_llm(system, user))
 
         try:
-            # Strip potential markdown fences
             clean = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             plan = json.loads(clean)
-            # Ensure we have exactly n_queries
             queries = plan.get("queries", [])
             if len(queries) < self.n_queries:
-                queries += [f"{topic} {angle}" for angle in plan.get("angles", [])]
-                queries = queries[: self.n_queries]
-            plan["queries"] = queries[: self.n_queries]
-            logger.info("Plan generated: '{}' with {} queries", plan.get("title", topic), len(queries))
+                queries += [f"{topic} {a}" for a in plan.get("angles", [])]
+            plan["queries"] = queries[:self.n_queries]
+            logger.info("План создан: '{}' ({} запросов)", plan.get("title", topic), len(plan["queries"]))
             return plan
-
         except (json.JSONDecodeError, ValueError) as e:
-            logger.warning("Failed to parse plan JSON: {}. Using fallback.", e)
+            logger.warning("Ошибка парсинга плана: {}. Используем fallback.", e)
             return self._fallback_plan(topic)
 
     def _fallback_plan(self, topic: str) -> dict:
         queries = [
-            f"{topic} overview",
-            f"{topic} latest research",
-            f"{topic} technical details",
-            f"{topic} case studies",
-            f"{topic} statistics 2024",
-            f"{topic} expert opinion",
-            f"{topic} challenges",
+            f"{topic} обзор",
+            f"{topic} последние исследования",
+            f"{topic} технические детали",
+            f"{topic} применение на практике",
+            f"{topic} статистика 2024",
+            f"{topic} мнение экспертов",
+            f"{topic} риски и проблемы",
             f"{topic} future trends",
-            f"{topic} applications",
-            f"{topic} comparison",
-            f"{topic} benefits risks",
-            f"how does {topic} work",
-            f"{topic} industry impact",
-            f"{topic} scientific studies",
+            f"{topic} overview",
+            f"{topic} research",
+            f"{topic} технологии",
+            f"как работает {topic}",
+            f"{topic} примеры",
+            f"{topic} научные исследования",
             f"{topic} best practices",
+            f"{topic} история развития",
+            f"{topic} сравнение методов",
+            f"{topic} инновации",
+            f"{topic} applications",
+            f"{topic} анализ",
         ]
         return {
             "title": topic,
-            "overview": f"Comprehensive research on the topic: {topic}",
-            "angles": ["overview", "technical", "applications", "risks", "trends"],
-            "queries": queries[: self.n_queries],
+            "overview": f"Комплексное исследование по теме: {topic}",
+            "angles": ["обзор", "технологии", "применение", "риски", "тенденции"],
+            "queries": queries[:self.n_queries],
         }
