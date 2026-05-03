@@ -24,7 +24,8 @@ from bot.services.embeddings import EmbeddingService
 from bot.services.knowledge_base import KnowledgeBase
 from bot.services.pdf_processor import PDFProcessor
 from bot.services.research_agent import ResearchAgent
-from bot.handlers import research_handler, pdf_handler, search_handler, history_handler
+from bot.services.memory import MemoryService
+from bot.handlers import research_handler, pdf_handler, search_handler, history_handler, ask_handler, chat_handler
 
 
 async def set_bot_commands(bot: Bot) -> None:
@@ -70,6 +71,8 @@ async def main() -> None:
         max_pdf_mb=config.max_pdf_size_mb,
     )
 
+    memory_service = MemoryService(db_path=config.db_path)
+
     # ── Aiogram Bot & Dispatcher ──────────────────────────────────────────────
     bot = Bot(
         token=config.telegram_token,
@@ -81,12 +84,15 @@ async def main() -> None:
     dp["research_agent"] = research_agent
     dp["knowledge_base"] = knowledge_base
     dp["pdf_processor"] = pdf_processor
+    dp["memory_service"] = memory_service
 
     # ── Register routers ──────────────────────────────────────────────────────
     dp.include_router(research_handler.router)
     dp.include_router(pdf_handler.router)
     dp.include_router(search_handler.router)
     dp.include_router(history_handler.router)
+    dp.include_router(ask_handler.router)
+    dp.include_router(chat_handler.router)  # Must be last — catches all text
 
     # ── Help handler (inline) ─────────────────────────────────────────────────
     from aiogram.filters import Command
@@ -95,14 +101,17 @@ async def main() -> None:
     @dp.message(Command("start", "help"))
     async def help_handler(message: Message) -> None:
         await message.reply(
-            "🤖 <b>Telegram Research Agent</b>\n\n"
-            "I perform deep AI-powered internet research and analyze PDFs.\n\n"
-            "<b>Commands:</b>\n"
-            "🔬 /research &lt;topic&gt; — Deep research (15 queries, 30 pages)\n"
-            "📄 /pdf — Analyze a PDF (send file after command)\n"
-            "🔎 /search &lt;query&gt; — Semantic search in knowledge base\n"
-            "📚 /history — Show all saved research\n"
-            "👁 /view &lt;id&gt; — View full research report\n"
+            "🤖 <b>DEEPer — Агент глубоких исследований</b>\n\n"
+            "Провожу глубокий анализ любой темы по интернету и анализирую PDF.\n\n"
+            "<b>Команды:</b>\n"
+            "🔬 /research &lt;тема&gt; — Запустить исследование (выбор режима)\n"
+            "💬 /ask &lt;id&gt; &lt;вопрос&gt; — Задать вопрос по исследованию\n"
+            "🧠 /memory — Статус памяти разговора\n"
+            "🗑 /forget — Очистить память\n"
+            "📄 /pdf — Анализ PDF документа\n"
+            "🔎 /search &lt;запрос&gt; — Поиск по базе знаний\n"
+            "📚 /history — Список всех исследований\n"
+            "👁 /view &lt;id&gt; — Полный отчёт\n"
             "🗑 /delete &lt;id&gt; — Delete a research entry\n"
             "❓ /help — Show this message\n\n"
             "<b>How it works:</b>\n"

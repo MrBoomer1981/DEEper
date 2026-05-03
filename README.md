@@ -1,6 +1,6 @@
-# 🤖 Telegram Research Agent
+# 🤖 Telegram Research Agent (DEEPer)
 
-A production-ready Telegram bot that performs deep AI-powered internet research, analyzes PDFs, and maintains a searchable knowledge base — deployable to Railway with Docker.
+Production-ready Telegram bot that performs deep AI-powered internet research, analyzes PDFs, and maintains a searchable knowledge base. Deployable to Railway via Docker.
 
 ---
 
@@ -8,13 +8,17 @@ A production-ready Telegram bot that performs deep AI-powered internet research,
 
 | Feature | Details |
 |---|---|
-| **Deep Research** | 15 search queries, up to 30 pages scraped per session |
-| **Structured Reports** | Title, Summary, Key Findings, Risks, Insights, Conclusion, Sources |
+| **Two-Stage Search** | Stage 1: broad queries → Stage 2: refined queries based on findings |
+| **3 Research Modes** | Simple (~3 min), Deep (~5 min), Study (~7 min) |
+| **Jina Reader** | Bypasses paywalls and bot-blockers (Britannica, Medium, Forbes, etc.) |
+| **Content Deduplication** | Skips duplicate pages to save tokens and improve quality |
+| **Report Verification** | Second LLM pass checks for contradictions and gaps (Deep/Study modes) |
+| **Groq Key Rotation** | Auto-switches between API keys on rate limit (supports unlimited keys) |
+| **Tavily AI Answers** | Uses Tavily's distilled answers as high-priority context in reports |
 | **PDF Analysis** | Extract, chunk, summarize PDFs up to 20 MB |
-| **Knowledge Base** | SQLite + FAISS semantic vector search |
-| **Page Cache** | Avoid re-scraping the same URLs |
-| **Multi-language** | Reports match the language of your query |
-| **Auto-cleanup** | Oldest research auto-deleted when limit (20) is reached |
+| **Knowledge Base** | SQLite + FTS5 full-text search |
+| **Page Cache** | Avoids re-scraping same URLs across sessions |
+| **Always Russian** | All reports generated in Russian regardless of query language |
 | **Full Logging** | Separate logs for agent, research, and errors |
 
 ---
@@ -23,12 +27,12 @@ A production-ready Telegram bot that performs deep AI-powered internet research,
 
 - **Python 3.11+**
 - **aiogram 3** — Telegram bot framework
-- **Groq API** — LLM inference (llama-3.3-70b + llama-3.1-8b + nomic-embed-text)
-- **Tavily** — Web search
+- **Groq API** — LLM inference (llama-3.3-70b + llama-3.1-8b)
+- **Tavily** — Web search with AI answers
+- **Jina Reader** — Paywall bypass for scraping
 - **aiohttp + BeautifulSoup** — Async web scraping
 - **PyMuPDF** — PDF text extraction
-- **FAISS** — Vector similarity search
-- **SQLite** — Persistent storage
+- **SQLite FTS5** — Full-text search (no external dependencies)
 - **loguru** — Structured logging
 - **Docker + Railway** — Deployment
 
@@ -39,31 +43,29 @@ A production-ready Telegram bot that performs deep AI-powered internet research,
 ```
 telegram-research-agent/
 ├── bot/
-│   ├── main.py                  # Entry point
-│   ├── config.py                # Configuration & env vars
+│   ├── main.py
+│   ├── config.py                # Config + ResearchMode definitions
 │   ├── handlers/
-│   │   ├── research_handler.py  # /research command
-│   │   ├── pdf_handler.py       # PDF uploads + /pdf
-│   │   ├── search_handler.py    # /search command
-│   │   └── history_handler.py   # /history, /view, /delete
+│   │   ├── research_handler.py  # /research + mode selection keyboard
+│   │   ├── pdf_handler.py
+│   │   ├── search_handler.py
+│   │   └── history_handler.py
 │   ├── services/
-│   │   ├── research_agent.py    # Main research pipeline
-│   │   ├── planner.py           # LLM-powered query planner
-│   │   ├── web_search.py        # Tavily search wrapper
-│   │   ├── web_scraper.py       # Async scraper + cache
-│   │   ├── pdf_processor.py     # PDF extraction + summary
-│   │   ├── embeddings.py        # Embedding generation + FAISS
-│   │   ├── knowledge_base.py    # SQLite knowledge store
-│   │   └── cache_manager.py     # URL page cache
+│   │   ├── research_agent.py    # Main pipeline (two-stage + verification)
+│   │   ├── planner.py           # Stage 1 plan + Stage 2 query refinement
+│   │   ├── groq_rotator.py      # Multi-key Groq rotation
+│   │   ├── web_search.py        # Tavily search + AI answers
+│   │   ├── web_scraper.py       # Async scraper + Jina + dedup
+│   │   ├── pdf_processor.py
+│   │   ├── knowledge_base.py    # SQLite + FTS5
+│   │   ├── embeddings.py        # Stub (FTS5 handles search)
+│   │   └── cache_manager.py
 │   └── utils/
-│       ├── logger.py            # Logging setup
-│       └── text_utils.py        # Tokenization, chunking, cleaning
-├── database/                    # SQLite + FAISS files (auto-created)
-├── logs/                        # Log files (auto-created)
+│       ├── logger.py
+│       └── text_utils.py
+├── database/
+├── logs/
 ├── docs/
-│   ├── architecture.md
-│   ├── deployment.md
-│   └── api.md
 ├── Dockerfile
 ├── railway.json
 ├── requirements.txt
@@ -75,43 +77,36 @@ telegram-research-agent/
 
 ## 🚀 Quick Start
 
-### 1. Clone & Setup
-
 ```bash
-git clone <your-repo-url>
-cd telegram-research-agent
+git clone https://github.com/MrBoomer1981/DEEPer.git
+cd DEEPer
 cp .env.example .env
+# Edit .env with your API keys
+docker build -t deeper .
+docker run --env-file .env deeper
 ```
 
-### 2. Configure environment
+---
 
-Edit `.env`:
+## ⚙️ Environment Variables
 
 ```env
+# Required
 TELEGRAM_TOKEN=your_telegram_bot_token
-GROQ_API_KEY=your_groq_api_key
-TAVILY_API_KEY=your_tavily_api_key
-```
 
-**Getting API keys:**
-- **Telegram token** — Talk to [@BotFather](https://t.me/BotFather) on Telegram
-- **Groq API key** — [console.groq.com](https://console.groq.com) (free tier available)
-- **Tavily API key** — [tavily.com](https://tavily.com) (free tier: 1000 searches/month)
+# Groq keys — add as many as you have (from different accounts)
+GROQ_API_KEY=primary_key
+GROQ_API_KEY_2=second_key
+GROQ_API_KEY_3=third_key
+# GROQ_API_KEY_4=fourth_key  ← add unlimited keys
 
-### 3. Run locally with Docker
+# Tavily
+TAVILY_API_KEY=your_tavily_key
 
-```bash
-docker build -t research-agent .
-docker run --env-file .env research-agent
-```
-
-### 4. Run locally with Python
-
-```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python -m bot.main
+# Optional
+MAX_RESEARCHES=20
+MAX_PDF_SIZE_MB=20
+DB_PATH=database/db.sqlite
 ```
 
 ---
@@ -120,74 +115,13 @@ python -m bot.main
 
 | Command | Description |
 |---|---|
-| `/research <topic>` | Start deep research (2-5 min) |
+| `/research <topic>` | Start research — shows mode selector |
 | `/pdf` | Instructions for PDF analysis |
-| `/search <query>` | Semantic search in knowledge base |
+| `/search <query>` | Full-text search in knowledge base |
 | `/history` | List all saved research |
 | `/view <id>` | View full research report |
 | `/delete <id>` | Delete a research entry |
-| `/help` | Show help message |
-
-**Example usage:**
-```
-/research artificial intelligence in healthcare 2024
-/research квантовые вычисления применения
-/search machine learning
-/view 3
-/delete 3
-```
-
----
-
-## ☁️ Railway Deployment
-
-### Method 1: Deploy via GitHub
-
-1. Push code to GitHub
-2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
-3. Select your repository
-4. Add environment variables in Railway dashboard:
-   - `TELEGRAM_TOKEN`
-   - `GROQ_API_KEY`
-   - `TAVILY_API_KEY`
-5. Railway auto-detects `Dockerfile` and deploys
-
-### Method 2: Railway CLI
-
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway up
-```
-
-Then set env vars:
-```bash
-railway variables set TELEGRAM_TOKEN=xxx
-railway variables set GROQ_API_KEY=xxx
-railway variables set TAVILY_API_KEY=xxx
-```
-
-> **Note:** Railway's free tier provides 5 GB of memory and 100 GB of egress per month. The bot runs continuously with polling (no webhook needed).
-
----
-
-## ⚙️ Configuration
-
-All settings can be overridden via environment variables:
-
-| Variable | Default | Description |
-|---|---|---|
-| `TELEGRAM_TOKEN` | required | Telegram bot token |
-| `GROQ_API_KEY` | required | Groq API key |
-| `TAVILY_API_KEY` | required | Tavily search key |
-| `MAX_PAGES` | `30` | Max pages scraped per research |
-| `CHUNK_SIZE` | `800` | Tokens per text chunk |
-| `CHUNK_OVERLAP` | `150` | Overlapping tokens between chunks |
-| `MAX_RESEARCHES` | `20` | Max stored research entries |
-| `MAX_PDF_SIZE_MB` | `20` | Max PDF file size |
-| `DB_PATH` | `database/db.sqlite` | SQLite database path |
-| `FAISS_INDEX_PATH` | `database/faiss.index` | FAISS index path |
+| `/help` | Show help |
 
 ---
 
@@ -197,75 +131,75 @@ All settings can be overridden via environment variables:
 User Query
     │
     ▼
-[Planner] Generate research plan + 15 search queries
+[Stage 1] Planner → N/3 broad queries → Tavily search → URLs + AI answers
     │
     ▼
-[WebSearch] Tavily API → collect URLs (max 30)
+[Stage 2] Planner refines queries based on Stage 1 findings → 2N/3 targeted queries → Tavily
     │
     ▼
-[WebScraper] Async scrape pages (with cache + retry)
+[Scraper] Direct fetch → Jina Reader fallback → Deduplication → Cache
     │
     ▼
-[TextUtils] Chunk text (800 tokens, 150 overlap)
+[Analyzer] Chunk text → Groq llama-3.1-8b (key rotation on 429)
     │
     ▼
-[ResearchAgent] Analyze chunks with llama-3.1-8b
+[Reporter] Groq llama-3.3-70b → Structured Russian report
     │
     ▼
-[ResearchAgent] Generate final report with llama-3.3-70b
+[Verifier] Second LLM pass → Check contradictions + fill gaps (Deep/Study only)
     │
     ▼
-[KnowledgeBase] Save summary + embed with nomic-embed-text
-    │
-    ▼
-[FAISS] Index for semantic search
-    │
-    ▼
-Structured Report → Telegram
+[KnowledgeBase] SQLite + FTS5 index → Telegram
 ```
 
 ---
 
-## 📝 Report Format
+## ⚙️ Research Modes
 
-Each research report contains:
+| Mode | Queries | Pages | Chunks/page | Verification | Time |
+|---|---|---|---|---|---|
+| 🟢 Simple | 5 | 10 | 3 | ❌ | ~3 min |
+| 🔵 Deep | 15 | 30 | 5 | ✅ | ~5 min |
+| 🟣 Study | 20 | 50 | 7 | ✅ | ~7 min |
 
-1. **Title** — Concise research title
-2. **Summary** — 2-3 sentence executive summary
-3. **Key Findings** — 5-8 bullet points
-4. **Risks and Considerations** — Limitations and caveats
-5. **Scientific and Technical Insights** — Deep technical analysis
-6. **Conclusion** — Final synthesis
-7. **Sources** — Numbered list of URLs
+---
 
-Reports are generated in the **same language** as the user's query.
+## 🔑 Groq Key Rotation
+
+With 3 keys from different accounts: 3 × 6,000 = **18,000 TPM** effectively.
+
+The rotator switches keys instantly on 429 — no artificial delays.
+
+```
+Key 1 → 429 → Key 2 → 429 → Key 3 → ...
+```
+
+Add keys in Railway Variables:
+```
+GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, GROQ_API_KEY_4 ...
+```
+
+---
+
+## ☁️ Railway Deployment
+
+1. Push to GitHub
+2. Railway → New Project → Deploy from GitHub
+3. Add environment variables
+4. Auto-deploys on every `git push`
 
 ---
 
 ## 🪵 Logging
 
-Log files are created in the `logs/` directory:
-
 | File | Contents |
 |---|---|
-| `logs/agent.log` | General bot activity (DEBUG+) |
+| `logs/agent.log` | General activity |
 | `logs/research.log` | Research pipeline steps |
-| `logs/errors.log` | Errors with full tracebacks (30 day retention) |
-
-Logs rotate at 10 MB and compress to `.zip`.
-
----
-
-## 🔒 Limits & Safety
-
-- **Max 30 pages** scraped per research session
-- **Max 20 researches** stored (oldest auto-deleted)
-- **Max 20 MB** PDF files
-- **Scraping timeout**: 15 seconds per page with 3 retries
-- Non-text files (images, zip, video) are automatically skipped
+| `logs/errors.log` | Errors with tracebacks (30 day retention) |
 
 ---
 
 ## 📄 License
 
-MIT License — free to use and modify.
+MIT

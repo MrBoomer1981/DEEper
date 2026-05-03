@@ -1,5 +1,5 @@
 """
-Text processing utilities: tokenization, chunking, cleaning.
+Text processing utilities: tokenization, semantic chunking, cleaning.
 """
 import re
 from typing import List
@@ -17,7 +17,6 @@ def _get_encoder() -> tiktoken.Encoding:
 
 
 def count_tokens(text: str) -> int:
-    """Return approximate token count for a text string."""
     return len(_get_encoder().encode(text))
 
 
@@ -27,16 +26,89 @@ def chunk_text(
     overlap: int = 150,
 ) -> List[str]:
     """
-    Split text into overlapping token-based chunks.
+    Semantic chunking: split by paragraphs and headings first,
+    then fall back to token-based splitting for oversized blocks.
 
-    Args:
-        text: Input text.
-        chunk_size: Max tokens per chunk.
-        overlap: Overlapping tokens between consecutive chunks.
-
-    Returns:
-        List of text chunks.
+    This keeps each chunk semantically coherent — a paragraph or
+    section stays together rather than being cut mid-sentence.
     """
+    # Split into semantic blocks: headings, paragraphs, list items
+    blocks = _split_into_blocks(text)
+
+    if not blocks:
+        return _token_chunk(text, chunk_size, overlap)
+
+    chunks: List[str] = []
+    current_parts: List[str] = []
+    current_tokens = 0
+
+    for block in blocks:
+        block_tokens = count_tokens(block)
+
+        # Block is too large on its own — split it by tokens
+        if block_tokens > chunk_size:
+            # Flush current buffer first
+            if current_parts:
+                chunks.append("\n\n".join(current_parts))
+                current_parts = []
+                current_tokens = 0
+            # Split the oversized block
+            sub_chunks = _token_chunk(block, chunk_size, overlap)
+            chunks.extend(sub_chunks)
+            continue
+
+        # Adding this block would overflow — flush and start new chunk
+        if current_tokens + block_tokens > chunk_size and current_parts:
+            chunks.append("\n\n".join(current_parts))
+            # Overlap: keep last part in next chunk for context
+            if overlap > 0 and current_parts:
+                last = current_parts[-1]
+                current_parts = [last]
+                current_tokens = count_tokens(last)
+            else:
+                current_parts = []
+                current_tokens = 0
+
+        current_parts.append(block)
+        current_tokens += block_tokens
+
+    # Flush remaining
+    if current_parts:
+        chunks.append("\n\n".join(current_parts))
+
+    return chunks if chunks else [text]
+
+
+def _split_into_blocks(text: str) -> List[str]:
+    """
+    Split text into semantic blocks:
+    - Markdown headings (# ## ###)
+    - Double newline paragraphs
+    - Single newline lines (for plain text)
+    """
+    # Normalize line endings
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Split on double newlines (paragraph boundaries)
+    raw_blocks = re.split(r"\n{2,}", text)
+
+    blocks: List[str] = []
+    for block in raw_blocks:
+        block = block.strip()
+        if not block:
+            continue
+        # If block contains markdown headings, split further
+        if re.search(r"^#{1,3}\s", block, re.MULTILINE):
+            sub = re.split(r"(?=^#{1,3}\s)", block, flags=re.MULTILINE)
+            blocks.extend(s.strip() for s in sub if s.strip())
+        else:
+            blocks.append(block)
+
+    return blocks
+
+
+def _token_chunk(text: str, chunk_size: int, overlap: int) -> List[str]:
+    """Pure token-based chunking — fallback for oversized blocks."""
     encoder = _get_encoder()
     tokens = encoder.encode(text)
 
@@ -47,8 +119,7 @@ def chunk_text(
     start = 0
     while start < len(tokens):
         end = min(start + chunk_size, len(tokens))
-        chunk_tokens = tokens[start:end]
-        chunks.append(encoder.decode(chunk_tokens))
+        chunks.append(encoder.decode(tokens[start:end]))
         if end == len(tokens):
             break
         start += chunk_size - overlap
@@ -57,16 +128,13 @@ def chunk_text(
 
 
 def clean_html_text(text: str) -> str:
-    """Remove excess whitespace and non-printable characters from scraped text."""
-    # Collapse whitespace
+    """Remove excess whitespace and non-printable characters."""
     text = re.sub(r"\s+", " ", text)
-    # Remove non-printable characters (keep newlines)
     text = re.sub(r"[^\x09\x0A\x0D\x20-\x7E\u00A0-\uFFFF]", "", text)
     return text.strip()
 
 
 def truncate_text(text: str, max_tokens: int = 4000) -> str:
-    """Truncate text to max_tokens, preserving whole words."""
     encoder = _get_encoder()
     tokens = encoder.encode(text)
     if len(tokens) <= max_tokens:
@@ -75,21 +143,16 @@ def truncate_text(text: str, max_tokens: int = 4000) -> str:
 
 
 def extract_urls_from_text(text: str) -> List[str]:
-    """Extract all HTTP/HTTPS URLs from a block of text."""
-    pattern = r"https?://[^\s\]>\"')]*"
-    return re.findall(pattern, text)
+    return re.findall(r"https?://[^\s\]>\"')]*", text)
 
 
 def format_sources(sources: List[str]) -> str:
-    """Format a list of source URLs as a numbered markdown list."""
     if not sources:
-        return "_No sources available._"
-    lines = [f"{i + 1}. {url}" for i, url in enumerate(sources)]
-    return "\n".join(lines)
+        return "_Источники недоступны._"
+    return "\n".join(f"{i+1}. {url}" for i, url in enumerate(sources))
 
 
 def sanitize_filename(name: str) -> str:
-    """Convert arbitrary text to a safe filename."""
     name = re.sub(r"[^\w\s-]", "", name)
     name = re.sub(r"\s+", "_", name.strip())
     return name[:100]

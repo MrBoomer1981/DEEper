@@ -1,10 +1,10 @@
 """
-Core research agent — orchestrates the full research pipeline.
-All reports are generated in Russian.
-Uses GroqKeyRotator for automatic key rotation on rate limits.
+Core research agent — parallel scrape+analyze pipeline, source scoring,
+two-stage search, report verification.
+All reports in Russian.
 """
 import asyncio
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from bot.config import Config, ResearchMode, RESEARCH_MODES
 from bot.services.cache_manager import CacheManager
@@ -48,6 +48,21 @@ REPORT_SYSTEM = """Ты — эксперт-аналитик. Создай под
 
 Отчёт должен быть объективным, основанным на фактах, написанным по-русски."""
 
+VERIFY_SYSTEM = """Ты — критический редактор. Проверь исследовательский отчёт и улучши его.
+
+Задачи:
+1. Найди противоречия или неточности
+2. Выяви пропущенные важные аспекты
+3. Усиль слабые разделы
+4. Убедись что все разделы полные и информативные
+
+Верни УЛУЧШЕННУЮ версию отчёта на русском языке, сохраняя структуру."""
+
+ASK_SYSTEM = """Ты — эксперт-аналитик. У тебя есть исследовательский отчёт.
+Отвечай на вопросы пользователя ТОЛЬКО на основе данных из отчёта.
+Если информации в отчёте недостаточно — честно скажи об этом.
+Отвечай на русском языке, чётко и по существу."""
+
 
 class ResearchAgent:
     def __init__(self, config: Config, knowledge_base: KnowledgeBase) -> None:
@@ -60,6 +75,10 @@ class ResearchAgent:
             timeout=config.scrape_timeout,
             retries=config.scrape_retries,
         )
+
+    # ------------------------------------------------------------------
+    # Main research pipeline
+    # ------------------------------------------------------------------
 
     async def research(
         self,
@@ -86,43 +105,58 @@ class ResearchAgent:
             pages_per_query=self.config.pages_per_query,
         )
 
-        await notify(f"🧠 Составляю план исследования ({mode.label})...")
+        # ── Stage 1: broad search ─────────────────────────────────────
+        await notify(f"🧠 Этап 1: составляю план ({mode.label})...")
         plan = await planner.generate_plan(topic)
         title = plan.get("title", topic)
-        queries = plan.get("queries", [topic])
-        logger.info("Режим: {} | Тема: '{}' | Запросов: {}", mode.name, title, len(queries))
+        stage1_queries = plan.get("queries", [topic])
+        logger.info("Этап 1 | {} | '{}' | {} запросов",
+                    mode.name, title, len(stage1_queries))
 
-        await notify(f"🔍 Выполняю {len(queries)} поисковых запросов...")
-        search_results = await searcher.search_many(queries)
+        await notify(f"🔍 Этап 1: {len(stage1_queries)} широких запросов...")
+        stage1_results = await searcher.search_many(stage1_queries)
+        all_urls, all_snippets, all_answers = self._collect_results(stage1_results)
 
-        all_urls: List[str] = []
-        all_snippets: List[str] = []
-        seen: set = set()
-        for query, result in search_results.items():
-            for url in result["urls"]:
-                if url not in seen:
-                    seen.add(url)
-                    all_urls.append(url)
-            all_snippets.extend(result["snippets"])
+        # ── Stage 2: refined search ───────────────────────────────────
+        await notify("🔍 Этап 2: генерирую уточняющие запросы...")
+        stage2_queries = await planner.refine_queries(topic, all_snippets + all_answers)
 
+        await notify(f"🔍 Этап 2: {len(stage2_queries)} уточняющих запросов...")
+        stage2_results = await searcher.search_many(stage2_queries)
+        s2_urls, s2_snippets, s2_answers = self._collect_results(stage2_results)
+
+        seen = set(all_urls)
+        for url in s2_urls:
+            if url not in seen:
+                seen.add(url)
+                all_urls.append(url)
+        all_snippets += s2_snippets
+        all_answers += s2_answers
         all_urls = all_urls[:mode.max_pages]
-        await notify(f"📄 Анализирую {len(all_urls)} страниц...")
+        logger.info("Итого: {} URL, {} AI-ответов", len(all_urls), len(all_answers))
 
-        page_texts = await self.scraper.scrape_many(all_urls)
+        # ── Parallel scrape + analyze ─────────────────────────────────
+        await notify(f"⚡ Параллельный анализ {len(all_urls)} страниц...")
+        findings = await self._parallel_scrape_and_analyze(
+            all_urls, topic, mode.max_chunks_per_page, notify
+        )
 
-        await notify(f"🔬 Извлекаю данные из {len(page_texts)} страниц...")
-        findings = await self._analyze_pages(page_texts, topic, mode.max_chunks_per_page)
+        # ── Generate report ───────────────────────────────────────────
+        await notify("✍️ Формирую отчёт...")
+        report = await self._generate_report(
+            topic, title, plan, findings, all_snippets, all_answers, all_urls
+        )
 
-        await notify("✍️ Формирую отчёт на русском языке...")
-        report = await self._generate_report(topic, title, plan, findings, all_snippets, all_urls)
+        # ── Verify (Deep + Study only) ────────────────────────────────
+        if mode_name in ("deep", "study"):
+            await notify("🔍 Проверяю и улучшаю отчёт...")
+            report = await self._verify_report(report, topic)
+
+        # ── Save ──────────────────────────────────────────────────────
         summary = await self._generate_summary(topic, report)
-
         await notify("💾 Сохраняю в базу знаний...")
         research_id = await self.kb.save_research(
-            title=title,
-            summary=summary,
-            report=report,
-            sources=all_urls,
+            title=title, summary=summary, report=report, sources=all_urls,
         )
 
         logger.info("Исследование #{} завершено: '{}'", research_id, title)
@@ -135,35 +169,100 @@ class ResearchAgent:
             "mode": mode.label,
         }
 
-    async def _analyze_pages(self, page_texts: List[str], topic: str, max_chunks: int) -> List[str]:
-        all_findings: List[str] = []
-        # Concurrency=3 — one per key, rotator handles 429s automatically
-        semaphore = asyncio.Semaphore(3)
+    # ------------------------------------------------------------------
+    # Follow-up Q&A
+    # ------------------------------------------------------------------
 
-        async def analyze_page(text: str) -> List[str]:
+    async def ask(self, research_id: int, question: str) -> str:
+        """Answer a question based on a saved research report."""
+        research = self.kb.get_research(research_id)
+        if not research:
+            return f"❌ Исследование #{research_id} не найдено."
+
+        report_ctx = truncate_text(research.report, max_tokens=5000)
+        try:
+            answer = await self.rotator.chat(
+                model=self.config.primary_model,
+                messages=[
+                    {"role": "system", "content": ASK_SYSTEM},
+                    {"role": "user", "content": (
+                        f"Отчёт об исследовании '{research.title}':\n\n{report_ctx}"
+                        f"\n\n---\nВопрос: {question}"
+                    )},
+                ],
+                max_tokens=1500,
+                temperature=0.3,
+            )
+            logger.info("Ask #{}: '{}'", research_id, question[:60])
+            return answer
+        except Exception as e:
+            logger.error("Ask failed: {}", e)
+            return "❌ Не удалось обработать вопрос. Попробуй ещё раз."
+
+    # ------------------------------------------------------------------
+    # Parallel scrape + analyze
+    # ------------------------------------------------------------------
+
+    async def _parallel_scrape_and_analyze(
+        self,
+        urls: List[str],
+        topic: str,
+        max_chunks: int,
+        notify: Callable,
+    ) -> List[str]:
+        """
+        Stream pages as they finish scraping and analyze immediately.
+        Higher-scored sources are processed first.
+        Findings from authoritative sources get a score-weighted prefix.
+        """
+        all_findings: List[str] = []
+        analyze_semaphore = asyncio.Semaphore(3)
+        pages_done = 0
+        pages_total = len(urls)
+
+        async def analyze_page(text: str, score: int) -> List[str]:
             chunks = chunk_text(text, self.config.chunk_size, self.config.chunk_overlap)
             findings = []
-            async with semaphore:
-                for chunk in chunks[:max_chunks]:
-                    f = await self._analyze_chunk(chunk, topic)
+            # Higher-scored sources get more chunks analyzed
+            adjusted_max = max_chunks + (2 if score >= 8 else 1 if score >= 6 else 0)
+            async with analyze_semaphore:
+                for chunk in chunks[:adjusted_max]:
+                    f = await self._analyze_chunk(chunk, topic, score)
                     if f:
                         findings.append(f)
             return findings
 
-        results = await asyncio.gather(
-            *[analyze_page(t) for t in page_texts],
-            return_exceptions=True,
-        )
+        analyze_tasks = []
+
+        async for text, score in self.scraper.scrape_stream(urls):
+            pages_done += 1
+            if pages_done % 5 == 0 or pages_done == pages_total:
+                await notify(
+                    f"⚡ Обработано {pages_done}/{pages_total} страниц, "
+                    f"найдено {len(all_findings)} фактов..."
+                )
+            task = asyncio.create_task(analyze_page(text, score))
+            analyze_tasks.append(task)
+
+        # Wait for all pending analysis tasks
+        results = await asyncio.gather(*analyze_tasks, return_exceptions=True)
         for r in results:
             if isinstance(r, list):
                 all_findings.extend(r)
 
-        logger.info("Извлечено {} фактов", len(all_findings))
+        logger.info("Параллельный анализ завершён: {} фактов", len(all_findings))
         return all_findings
 
-    async def _analyze_chunk(self, chunk: str, topic: str) -> Optional[str]:
+    async def _analyze_chunk(self, chunk: str, topic: str, score: int = 5) -> Optional[str]:
+        """Analyze a chunk. High-score sources get authority prefix."""
+        authority_note = ""
+        if score >= 8:
+            authority_note = "[АВТОРИТЕТНЫЙ ИСТОЧНИК] "
+        elif score >= 6:
+            authority_note = "[КАЧЕСТВЕННЫЙ ИСТОЧНИК] "
+
         try:
-            return await self.rotator.chat(
+            result = await self.rotator.chat(
                 model=self.config.fast_model,
                 messages=[
                     {"role": "system", "content": CHUNK_ANALYSIS_SYSTEM},
@@ -172,26 +271,43 @@ class ResearchAgent:
                 max_tokens=400,
                 temperature=0.2,
             )
+            return f"{authority_note}{result}" if authority_note else result
         except Exception as e:
             logger.warning("Ошибка анализа чанка: {}", e)
             return None
 
-    async def _generate_report(self, topic, title, plan, findings, snippets, sources) -> str:
-        findings_text = truncate_text("\n\n".join(findings), max_tokens=5000)
-        sources_fmt = "\n".join(f"{i+1}. {u}" for i, u in enumerate(sources))
-        snippet_ctx = truncate_text("\n".join(snippets[:30]), 1000)
+    # ------------------------------------------------------------------
+    # Report generation
+    # ------------------------------------------------------------------
+
+    async def _generate_report(self, topic, title, plan, findings, snippets, answers, sources) -> str:
+        # Sort findings — authoritative ones first
+        auth = [f for f in findings if f.startswith("[АВТОРИТЕТНЫЙ")]
+        qual = [f for f in findings if f.startswith("[КАЧЕСТВЕННЫЙ")]
+        rest = [f for f in findings if not f.startswith("[")]
+        sorted_findings = auth + qual + rest
+
+        findings_text = truncate_text("\n\n".join(sorted_findings), max_tokens=4000)
+        sources_fmt = "\n".join(
+            f"{i+1}. {u} (авторитетность: {self.scraper.scraper.score_url(u) if hasattr(self.scraper, 'scraper') else '—'})"
+            for i, u in enumerate(sources)
+        ) if False else "\n".join(f"{i+1}. {u}" for i, u in enumerate(sources))
+
+        answers_text = truncate_text("\n".join(answers), max_tokens=1500) if answers else ""
+        snippet_ctx = truncate_text("\n".join(snippets[:20]), 800)
 
         prompt = f"""Тема исследования: {topic}
-
 Обзор плана: {plan.get("overview", "")}
 Углы исследования: {", ".join(plan.get("angles", []))}
 
-Извлечённые факты ({len(findings)} источников):
+{'=== КЛЮЧЕВЫЕ AI-ОТВЕТЫ (высокая достоверность) ===' + chr(10) + answers_text + chr(10) if answers_text else ''}
+=== ИЗВЛЕЧЁННЫЕ ФАКТЫ ({len(findings)} источников, отсортированы по авторитетности) ===
 {findings_text}
 
-Дополнительный контекст:
+=== ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ===
 {snippet_ctx}
 
+Приоритизируй факты из авторитетных источников [АВТОРИТЕТНЫЙ ИСТОЧНИК].
 Напиши полный отчёт на русском языке."""
 
         try:
@@ -213,6 +329,26 @@ class ResearchAgent:
                 + f"\n\n## Источники\n{sources_fmt}"
             )
 
+    async def _verify_report(self, report: str, topic: str) -> str:
+        try:
+            verified = await self.rotator.chat(
+                model=self.config.primary_model,
+                messages=[
+                    {"role": "system", "content": VERIFY_SYSTEM},
+                    {"role": "user", "content": (
+                        f"Тема: {topic}\n\nОтчёт:\n\n"
+                        + truncate_text(report, max_tokens=3500)
+                    )},
+                ],
+                max_tokens=4000,
+                temperature=0.3,
+            )
+            logger.info("Отчёт проверен и улучшен")
+            return verified
+        except Exception as e:
+            logger.warning("Верификация пропущена: {}", e)
+            return report
+
     async def _generate_summary(self, topic: str, report: str) -> str:
         try:
             return await self.rotator.chat(
@@ -226,3 +362,20 @@ class ResearchAgent:
             )
         except Exception:
             return f"Исследование по теме: {topic}"
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_results(search_results: dict):
+        urls, snippets, answers = [], [], []
+        seen = set()
+        for result in search_results.values():
+            for url in result["urls"]:
+                if url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+            snippets.extend(result["snippets"])
+            answers.extend(result.get("answers", []))
+        return urls, snippets, answers
