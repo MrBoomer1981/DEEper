@@ -344,7 +344,8 @@ async def on_mode(callback: CallbackQuery) -> None:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    # TELEGRAM_TOKEN is the name DEEper v1 used, still set on the Railway service.
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
     if not token:
         sys.exit("Нет TELEGRAM_BOT_TOKEN (в .env или в переменных окружения). Создайте бота у @BotFather и впишите токен.")
     allowed = {int(x) for x in re.findall(r"\d+", os.environ.get("TELEGRAM_ALLOWED_USERS", ""))}

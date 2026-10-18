@@ -44,16 +44,15 @@ uv run bot.py                 # Telegram-бот
 
 ## Деплой на Railway
 
-Сборка по `Dockerfile` (настройки в `railway.json`). SearXNG на Railway не поднимается, поэтому веб-поиск там идёт через Tavily (бесплатно 1000 запросов в месяц).
+Сборка по `Dockerfile` (настройки в `railway.json`). SearXNG на Railway не поднимается, поэтому веб-поиск там идёт через Tavily (бесплатно 1000 запросов в месяц): он включается сам, когда задан `TAVILY_API_KEY`, а `SEARX_URL` — нет. Явно выбрать поиск можно переменной `WEB_RETRIEVER`.
 
 Переменные сервиса:
 
 | Переменная | Значение |
 |---|---|
 | `DEEPSEEK_API_KEY` | ключ DeepSeek |
-| `TELEGRAM_BOT_TOKEN` | токен от @BotFather |
+| `TELEGRAM_BOT_TOKEN` | токен от @BotFather (старое имя `TELEGRAM_TOKEN` тоже подходит) |
 | `TELEGRAM_ALLOWED_USERS` | ваш Telegram ID (несколько — через запятую) |
-| `WEB_RETRIEVER` | `tavily` |
 | `TAVILY_API_KEY` | ключ [Tavily](https://app.tavily.com) |
 
 Чтобы отчёты и история переживали передеплой, подключите к сервису Volume с путём монтирования `/app/reports`.

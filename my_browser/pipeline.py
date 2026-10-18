@@ -18,9 +18,12 @@ REPORTS_DIR = ROOT / "reports"
 
 load_dotenv(ROOT / ".env")
 
-# Web search backend: the local SearXNG by default; on Railway set WEB_RETRIEVER=tavily,
-# since there is no SearXNG there and engines block datacenter IPs more often.
-WEB_RETRIEVER = os.environ.get("WEB_RETRIEVER", "searx")
+# Web search backend: the local SearXNG when SEARX_URL is set; otherwise Tavily if its key
+# is present (Railway has no SearXNG, and engines block datacenter IPs more often).
+# WEB_RETRIEVER overrides the choice.
+WEB_RETRIEVER = os.environ.get("WEB_RETRIEVER") or (
+    "tavily" if os.environ.get("TAVILY_API_KEY") and not os.environ.get("SEARX_URL") else "searx"
+)
 
 # semantic_scholar is left out: without an API key it answers 429 most of the time.
 SOURCES = {
