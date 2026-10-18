@@ -27,6 +27,7 @@ from aiogram.types import (
     Message,
 )
 
+from my_browser import sources
 from my_browser.ask import ask
 from my_browser.library import Entry, Library
 from my_browser.pipeline import DEFAULT_SOURCES, PreflightError, Report, env_overrides, overrides, preflight, research, save
@@ -50,7 +51,8 @@ HELP = """<b>Глубокие исследования</b>
 /view N — прислать отчёт N ещё раз
 /search текст — поиск по всем отчётам
 /ask N вопрос — вопрос по отчёту N
-/delete N — удалить отчёт N"""
+/delete N — удалить отчёт N
+/block домен — не использовать сайт как источник (/unblock, /blocked)"""
 
 dp = Dispatcher()
 library = Library()
@@ -278,6 +280,33 @@ async def cmd_delete(message: Message, command: CommandObject) -> None:
     await message.answer(f"Удалить отчёт #{entry.id} «{html.escape(entry.query)}» вместе с файлами?", reply_markup=keyboard)
 
 
+@dp.message(Command("block"))
+async def cmd_block(message: Message, command: CommandObject) -> None:
+    if not command.args:
+        await message.answer("Формат: /block example.com")
+        return
+    domain = sources.block(command.args.strip())
+    await message.answer(f"🚫 {html.escape(domain)} больше не будет источником. Вернуть: /unblock {html.escape(domain)}")
+
+
+@dp.message(Command("unblock"))
+async def cmd_unblock(message: Message, command: CommandObject) -> None:
+    if not command.args:
+        await message.answer("Формат: /unblock example.com")
+        return
+    found = sources.unblock(command.args.strip())
+    await message.answer("✅ Разблокирован." if found else "Этого домена нет в списке. Список: /blocked")
+
+
+@dp.message(Command("blocked"))
+async def cmd_blocked(message: Message) -> None:
+    domains = sources.blocked_domains()
+    await message.answer(
+        "Заблокированные источники:\n" + "\n".join(html.escape(d) for d in domains) if domains
+        else "Свой список пуст. Соцсети, видео и магазины отсеиваются всегда, остальное оценивает модель."
+    )
+
+
 @dp.callback_query(F.data.startswith("del:"))
 async def on_delete(callback: CallbackQuery) -> None:
     entry = library.delete(int(callback.data.split(":")[1]))
@@ -362,6 +391,8 @@ async def main() -> None:
         BotCommand(command="view", description="Прислать отчёт N"),
         BotCommand(command="ask", description="Вопрос по отчёту N"),
         BotCommand(command="delete", description="Удалить отчёт N"),
+        BotCommand(command="block", description="Не брать сайт в источники"),
+        BotCommand(command="blocked", description="Заблокированные сайты"),
         BotCommand(command="help", description="Как пользоваться"),
     ])
     me = await bot.get_me()

@@ -35,6 +35,13 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
   - `query_processing.generate_sub_queries`: upstream `plan_research_outline()` doesn't pass `prompt_family`, so a custom family never reached sub-query generation.
   - `DeepResearchSkill.generate_search_queries`: its query prompt is inline, so it gets the language rule and today's date.
   - `pipeline.research()` imports the module for these side effects.
+- `my_browser/sources.py`: the source quality filter. It replaces `ResearchConductor._get_new_urls`, where search results become research sources and later the references.
+  - Each candidate URL gets a score: known domains from `DOMAIN_SCORES`/`TOP_TIER_HOST` (`.gov`, `.edu`, publishers, IEA, major media), everything else from one `FAST_LLM` call per batch.
+  - 0 is dropped; 1 (SEO/vendor) is kept only if the batch has nothing ≥2, and then at most 3; at most `MAX_SOURCES_PER_QUERY`=8 are kept.
+  - URLs are re-checked against `visited_urls` after the await, because parallel sub-queries race.
+  - The user blocklist is `reports/blocked_domains.txt` (on the Railway volume), managed by the bot's `/block`, `/unblock` and `/blocked`.
+  - `SOURCE_FILTER=off` disables the filter.
+- In the detailed report, the `## Источники` list is built from the links cited inline, not from every visited URL. If fewer than 3 links are cited (APA author-date style), it falls back to all visited URLs.
 - `my_browser/export.py`: DOCX is rendered in-process (mistune → htmldocx). The PDF is rendered by WeasyPrint **in a child process** with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`, because WeasyPrint needs Homebrew's pango (`brew install pango`) and dyld reads that variable only at process start.
 
 ## Deployment
@@ -55,5 +62,5 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
 - Embeddings are intentionally not configured. With `CONTEXT_FILTER=keyword` and no `OPENAI_API_KEY`, gpt-researcher falls back to keyword ranking. If `OPENAI_API_KEY` is present in the environment, it silently switches to OpenAI embeddings. The keyword filter (`gpt_researcher/context/lexical.py`) only strips English plurals and drops only English stopwords, so Russian word forms count as different terms.
 - Report-writing calls use `stream=True`. An OpenAI-compatible endpoint or mock without SSE streaming gets each call retried 10× with backoff, which looks like a hang.
 - SearXNG (`searxng/settings.yml`) must keep the `json` format enabled. From this machine, only `google cse` and `yahoo` answer relevantly. bing returns off-topic junk for Cyrillic queries (Nickelodeon, Halloween stores, banks), and those pages also slow scraping. google, yandex, qwant, duckduckgo, brave and wikipedia return captcha or rate-limit errors. The `semantic_scholar` retriever gets 429 without a key and has no key support, so it is excluded from `--sources`.
-- The references section lists every visited URL (upstream behavior), including pages later filtered out as irrelevant.
+- In quick and deep modes, gpt-researcher writes the references itself. Citation style varies between runs: sometimes inline markdown links, sometimes APA author-date with links only at the end.
 - `GPTResearcher.get_costs()` prices unknown models at OpenAI defaults, so it is wrong for DeepSeek. Real spend is on the DeepSeek dashboard.

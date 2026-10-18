@@ -131,7 +131,7 @@ def preflight() -> None:
 async def research(query: str, mode: str, on_progress: Callable[[str], None] = print) -> tuple[str, list[str]]:
     from gpt_researcher import GPTResearcher
 
-    from my_browser import prompts  # noqa: F401  registers the english_first prompt family
+    from my_browser import prompts, sources  # noqa: F401  patch gpt-researcher: english-first queries, source filter
     from my_browser.detailed import DetailedReport
 
     if mode == "detailed":

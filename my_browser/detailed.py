@@ -6,7 +6,11 @@ each researched and written as its own section, then stitched together with an
 introduction, table of contents, conclusion and references.
 """
 
+import re
+
 from gpt_researcher import GPTResearcher
+
+CITED_LINK = re.compile(r"\]\((https?://[^)\s]+)\)")
 
 
 class DetailedReport:
@@ -19,6 +23,7 @@ class DetailedReport:
         self.global_context: list[str] = []
         self.global_written_sections: list[dict] = []
         self.global_urls: set[str] = set()
+        self.references: list[str] = []
 
     async def run(self) -> str:
         self.on_progress("Общий поиск по теме...")
@@ -41,11 +46,17 @@ class DetailedReport:
         self.on_progress("Пишу заключение...")
         toc = self.researcher.table_of_contents(body)
         conclusion = await self.researcher.write_report_conclusion(body)
-        conclusion = self.researcher.add_references(conclusion, self.researcher.visited_urls)
-        return f"{introduction}\n\n{toc}\n\n{body}\n\n{conclusion}"
+        report = f"{introduction}\n\n{toc}\n\n{body}\n\n{conclusion}"
+
+        # Upstream lists every visited URL, including pages dropped as irrelevant;
+        # list what the text actually cites, unless it barely cites inline.
+        cited = list(dict.fromkeys(CITED_LINK.findall(report)))
+        self.references = cited if len(cited) >= 3 else sorted(self.researcher.visited_urls)
+        heading = "Источники" if self.researcher.cfg.language.lower() == "russian" else "References"
+        return report + f"\n\n\n## {heading}\n\n" + "".join(f"- [{url}]({url})\n" for url in self.references)
 
     def source_urls(self) -> list[str]:
-        return sorted(self.researcher.visited_urls)
+        return self.references
 
     async def _get_subtopics(self) -> list[str]:
         data = await self.researcher.get_subtopics()
