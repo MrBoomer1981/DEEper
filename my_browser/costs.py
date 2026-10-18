@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -81,6 +82,17 @@ class Meter:
         rate = usd_rub(fetch)
         return {"usd": round(self.usd, 5), "rub": round(self.usd * rate, 2), "usd_rub": rate,
                 "unpriced_calls": self.unpriced_calls, "truncated_calls": self.truncated_calls, "by_model": self.by_model}
+
+
+@contextmanager
+def metered():
+    """A fresh Meter for LLM calls outside a research run: a question, a clarification, follow-ups."""
+    meter = Meter()
+    token = current.set(meter)
+    try:
+        yield meter
+    finally:
+        current.reset(token)
 
 
 def rub_text(rub: float | None) -> str:

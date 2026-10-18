@@ -10,7 +10,7 @@ import asyncio
 import sys
 import time
 
-from my_browser import costs
+from my_browser import costs, suggest
 from my_browser.pipeline import (DEFAULT_SOURCES, DEFAULT_WRITER, MODES, ROOT, SOURCES, WRITERS, PreflightError,
                                  env_overrides, overrides, preflight, research, save)
 
@@ -45,14 +45,19 @@ def main() -> None:
         started = time.monotonic()
         try:
             markdown, sources = asyncio.run(research(args.query, args.mode))
+            elapsed = time.monotonic() - started
+            followups = asyncio.run(suggest.followups(args.query, markdown))
         except KeyboardInterrupt:
             sys.exit(f"\nПрервано через {(time.monotonic() - started) / 60:.1f} мин, отчёт не сохранён.")
-        elapsed = time.monotonic() - started
 
         cost = meter.summary()
-        report = save(args.query, args.mode, markdown, sources, elapsed, pdf=not args.no_pdf, cost=cost)
+        report = save(args.query, args.mode, markdown, sources, elapsed, pdf=not args.no_pdf, cost=cost, followups=followups)
     print(f"\nГотово за {elapsed / 60:.1f} мин: {report.words} слов, {len(sources)} источников, {costs.rub_text(cost['rub'])}")
     print(f"Отчёт #{report.id}: {report.md_path.relative_to(ROOT)} (+ .docx, .pdf, .json рядом)")
+    if followups:
+        print("\nЧто исследовать дальше:")
+        for topic in followups:
+            print(f"  [{suggest.KINDS[topic['kind']].lower()}] {topic['query']}" + (f" — {topic['why']}" if topic["why"] else ""))
 
 
 if __name__ == "__main__":

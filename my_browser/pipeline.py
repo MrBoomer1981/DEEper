@@ -168,15 +168,21 @@ def slugify(text: str, max_len: int = 60) -> str:
 
 
 def save(query: str, mode: str, markdown: str, sources: list[str], seconds: float, pdf: bool = True,
-         cost: dict | None = None) -> Report:
-    """Write md/json/docx/pdf to reports/ and index the report in the library."""
+         cost: dict | None = None, followups: list[dict] | None = None, parent: str | None = None) -> Report:
+    """Write md/json/docx/pdf to reports/ and index the report in the library.
+
+    The follow-up topics go into the JSON and, as the last section, into the files.
+    parent is the file name (without suffix) of the report this research continues.
+    """
     from my_browser.export import write_docx, write_pdf
     from my_browser.library import Library
+    from my_browser.suggest import section
 
     REPORTS_DIR.mkdir(exist_ok=True)
     base = REPORTS_DIR / f"{datetime.now():%Y-%m-%d_%H%M%S}_{slugify(query)}"
     md_path = base.with_suffix(".md")
-    md_path.write_text(markdown, "utf-8")
+    full = markdown + section(followups or [])
+    md_path.write_text(full, "utf-8")
     base.with_suffix(".json").write_text(json.dumps({
         "query": query,
         "mode": mode,
@@ -187,10 +193,12 @@ def save(query: str, mode: str, markdown: str, sources: list[str], seconds: floa
         "duration_sec": round(seconds),
         "words": len(markdown.split()),
         "sources": sources,
+        "followups": followups or [],
+        "parent": parent,
     }, ensure_ascii=False, indent=2), "utf-8")
 
     try:
-        write_docx(markdown, base.with_suffix(".docx"))
+        write_docx(full, base.with_suffix(".docx"))
     except Exception as e:
         print(f"DOCX не собран: {e}")
     if pdf:

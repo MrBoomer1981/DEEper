@@ -18,7 +18,7 @@ import os
 import secrets
 import time
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from my_browser.pipeline import DEFAULT_SOURCES, DEFAULT_WRITER, REPORTS_DIR, ROOT
 
@@ -32,7 +32,7 @@ from nicegui import app, ui  # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
 import bot  # noqa: E402
-from my_browser import costs, jobs, sources  # noqa: E402
+from my_browser import costs, jobs, sources, suggest  # noqa: E402
 from my_browser.ask import ask, load_qa  # noqa: E402
 from my_browser.library import Library  # noqa: E402
 
@@ -121,6 +121,10 @@ ui.add_head_html("""
   .url { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--paper-40); }
   a.plain { color: var(--paper); text-decoration: none; }
   a.plain:hover { color: var(--amber); }
+  a.next { display: block; color: var(--paper); text-decoration: none; background: var(--surface);
+           border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; transition: border-color .15s; }
+  a.next:hover { border-color: var(--paper-40); }
+  .kind { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--paper-40); }
 
   .report { max-width: 820px; font-size: 16.5px; line-height: 1.72; color: rgba(242,235,225,.92); }
   .report h1 { font-weight: 700; font-size: 2rem; line-height: 1.22; margin: .2em 0 .8em; color: var(--paper); letter-spacing: -.01em; }
@@ -193,6 +197,11 @@ def label(text: str, amber: bool = False) -> None:
 
 def chip(text: str) -> None:
     ui.label(text).classes("brand-chip")
+
+
+def follow_up_url(topic: str, mode: str, parent: int) -> str:
+    """New-research form pre-filled with a topic that continues report `parent`."""
+    return "/?" + urlencode({"topic": topic, "mode": mode, "parent": parent})
 
 
 def primary_button(text: str, on_click, icon: str | None = None):
@@ -341,36 +350,97 @@ def login_page(redirect_to: str = "/") -> RedirectResponse | None:
 
 
 @ui.page("/")
-def index_page() -> None:
+def index_page(topic: str = "", mode: str = "detailed", parent: int | None = None) -> None:
+    """New research. Follow-up links pre-fill the topic and mode, and `parent` is the report it continues."""
     frame()
+    origin = Library().get(parent) if parent else None
+    toggle_props = "no-caps rounded unelevated dense color=dark text-color=paper toggle-color=bordo toggle-text-color=paper"
 
     def start() -> None:
-        query = (topic.value or "").strip()
+        query = (topic_field.value or "").strip()
         if not query:
             ui.notify("Напишите тему исследования", type="warning")
             return
-        job = jobs.submit(query, mode.value, source.value, origin="web", writer=writer.value)
+        continues = origin.base.name if origin and link_row.visible else None
+        job = jobs.submit(query, mode_toggle.value, source.value, origin="web", writer=writer.value, parent=continues)
         ui.run_javascript("window.Notification && Notification.permission === 'default' && Notification.requestPermission()")
         ui.navigate.to(f"/job/{job.id}")
+
+    async def clarify() -> None:
+        query = (topic_field.value or "").strip()
+        if not query:
+            ui.notify("Напишите тему исследования", type="warning")
+            return
+        clarify_button.props("loading")
+        try:
+            questions, rub = await suggest.questions(query)
+        except Exception as e:
+            ui.notify(f"Не получилось: {e}", type="negative")
+            return
+        finally:
+            clarify_button.props(remove="loading")
+        if not questions:
+            ui.notify("Уточнять нечего: тема и так конкретная", type="info")
+            return
+        answers = []
+
+        async def apply() -> None:
+            chosen = [(question, toggle.value) for question, toggle in answers if toggle.value != suggest.ANY_ANSWER]
+            if chosen:
+                apply_button.props("loading")
+                try:
+                    refined, extra = await suggest.refine(query, chosen)
+                except Exception as e:
+                    ui.notify(f"Не получилось: {e}", type="negative")
+                    return
+                finally:
+                    apply_button.props(remove="loading")
+                topic_field.value = refined
+                ui.notify(f"Тема уточнена · {costs.rub_text(rub + extra)}", type="positive")
+            clarify_box.clear()
+
+        clarify_box.clear()
+        with clarify_box, ui.card().classes("w-full px-5 py-4 gap-3"):
+            label("Уточнение")
+            for item in questions:
+                ui.label(item["q"]).classes("text-[15px] font-medium")
+                toggle = ui.toggle([*item["options"], suggest.ANY_ANSWER], value=suggest.ANY_ANSWER) \
+                    .props(toggle_props).style("flex-wrap: wrap; gap: 6px")
+                answers.append((item["q"], toggle))
+            with ui.row().classes("items-center gap-2 w-full mt-1"):
+                ui.label(f"вопросы: {costs.rub_text(rub)}").classes("mono text-[11px] faint")
+                ui.space()
+                ui.button("Отмена", on_click=clarify_box.clear).props("flat no-caps color=paper").classes("opacity-70")
+                apply_button = primary_button("Применить", apply)
 
     with ui.column().classes("w-full max-w-3xl mx-auto mt-16 gap-5 px-6"):
         label("Новое исследование", amber=True)
         ui.label("Что исследуем?").classes("display text-[38px] leading-tight")
-        topic = ui.textarea(placeholder="Например: перспективы натрий-ионных аккумуляторов до 2030 года") \
+        if origin:
+            with ui.row().classes("items-center gap-2 no-wrap w-full -mt-2") as link_row:
+                ui.icon("subdirectory_arrow_right").classes("faint")
+                ui.link(f"продолжение отчёта #{origin.id}: {origin.query}", f"/report/{origin.id}") \
+                    .classes("plain mono text-[12px] muted truncate")
+                ui.button(icon="close", on_click=lambda: link_row.set_visibility(False)) \
+                    .props('flat round dense size=sm color=paper aria-label="Не связывать с отчётом"').classes("opacity-50")
+        topic_field = ui.textarea(value=topic, placeholder="Например: перспективы натрий-ионных аккумуляторов до 2030 года") \
             .props("outlined autogrow autofocus dark").classes("w-full text-[18px]")
-        topic.on("keydown.meta.enter", start)
-        topic.on("keydown.ctrl.enter", start)
+        topic_field.on("keydown.meta.enter", start)
+        topic_field.on("keydown.ctrl.enter", start)
         with ui.row().classes("items-center gap-3 w-full"):
-            toggle_props = "no-caps rounded unelevated dense color=dark text-color=paper toggle-color=bordo toggle-text-color=paper"
-            mode = ui.toggle(MODES, value="detailed").props(toggle_props).classes("border border-[color:var(--line)] rounded-full")
+            mode_toggle = ui.toggle(MODES, value=mode if mode in MODES else "detailed").props(toggle_props) \
+                .classes("border border-[color:var(--line)] rounded-full")
             source = ui.toggle(SOURCE_LABELS, value=DEFAULT_SOURCES).props(toggle_props) \
                 .classes("border border-[color:var(--line)] rounded-full")
             writer = ui.toggle(WRITER_LABELS, value=DEFAULT_WRITER).props(toggle_props) \
                 .classes("border border-[color:var(--line)] rounded-full")
             ui.space()
+            clarify_button = ui.button("Уточнить", icon="tune", on_click=clarify).props("flat no-caps color=paper") \
+                .classes("opacity-80").tooltip("2–3 вопроса с вариантами, чтобы точнее сформулировать тему")
             primary_button("Исследовать", start, icon="arrow_forward").props("size=lg")
-        hint = ui.label(MODE_HINTS["detailed"]).classes("mono text-[12px] muted")
-        mode.on_value_change(lambda e: hint.set_text(MODE_HINTS[e.value]))
+        clarify_box = ui.column().classes("w-full")
+        hint = ui.label(MODE_HINTS[mode_toggle.value]).classes("mono text-[12px] muted")
+        mode_toggle.on_value_change(lambda e: hint.set_text(MODE_HINTS[e.value]))
         writer_hint = ui.label(WRITER_HINTS[DEFAULT_WRITER]).classes("mono text-[12px] muted -mt-3")
         writer.on_value_change(lambda e: writer_hint.set_text(WRITER_HINTS[e.value]))
         ui.label("запросы к поиску — на английском · отчёт — на русском · ⌘ Enter — запуск").classes("mono text-[11px] faint")
@@ -394,6 +464,8 @@ def job_page(job_id: str) -> RedirectResponse | None:
             chip(MODES[job.mode].lower())
             chip(f"источники: {SOURCE_LABELS.get(job.sources, job.sources).lower()}")
             chip(f"текст: {job.writer}")
+            if job.parent and (origin := Library().by_name(job.parent)):
+                chip(f"продолжение #{origin.id}")
             if job.origin == "telegram":
                 chip("из telegram")
         with ui.card().classes("w-full px-5 py-4"):
@@ -447,8 +519,11 @@ def job_page(job_id: str) -> RedirectResponse | None:
             with error_box, ui.card().classes("w-full px-5 py-4").style(
                     "background: rgba(122,42,53,.22) !important; border-color: var(--bordo) !important"):
                 ui.label(job.error or "Ошибка").classes("text-[15px]")
-                primary_button("Попробовать снова", lambda: ui.navigate.to(
-                    f"/job/{jobs.submit(job.query, job.mode, job.sources).id}"), icon="refresh").classes("mt-2 self-start")
+                def retry() -> None:
+                    again = jobs.submit(job.query, job.mode, job.sources, writer=job.writer, parent=job.parent)
+                    ui.navigate.to(f"/job/{again.id}")
+
+                primary_button("Попробовать снова", retry, icon="refresh").classes("mt-2 self-start")
 
     timer = ui.timer(1.0, update, immediate=False)
     update()
@@ -498,6 +573,54 @@ def report_page(report_id: int) -> None:
                         .props("flat dense no-caps color=paper").classes("mono text-[12px] opacity-80 px-2")
             ui.button(icon="delete_outline", on_click=confirm.open) \
                 .props('flat round dense color=paper aria-label="Удалить отчёт"').classes("opacity-50").tooltip("Удалить отчёт")
+        origin = library.by_name(meta["parent"]) if meta.get("parent") else None
+        if origin:
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                ui.icon("subdirectory_arrow_right").classes("faint")
+                ui.link(f"продолжение отчёта #{origin.id}: {origin.query}", f"/report/{origin.id}") \
+                    .classes("plain mono text-[12px] muted")
+
+        async def propose(button) -> None:
+            button.props("loading")
+            try:
+                found = await suggest.followups_for(entry.base.with_suffix(".json"))
+            finally:
+                button.props(remove="loading")
+            if not found:
+                ui.notify("Не получилось подобрать темы, попробуйте ещё раз", type="warning")
+                return
+            meta.update(json.loads(entry.base.with_suffix(".json").read_text("utf-8")))
+            next_steps.refresh()
+
+        @ui.refreshable
+        def next_steps() -> None:
+            topics = meta.get("followups") or []
+            children = library.children(entry)
+            related = library.related(entry, exclude={c.id for c in children} | ({origin.id} if origin else set()))
+            with ui.column().classes("w-full max-w-[820px] gap-3 mt-12 pt-8").style("border-top: 1px solid var(--line)"):
+                label("Что исследовать дальше")
+                if topics:
+                    with ui.element("div").classes("grid grid-cols-1 md:grid-cols-2 gap-3 w-full"):
+                        for t in topics:
+                            with ui.link(target=follow_up_url(t["query"], t["mode"], entry.id)).classes("next"):
+                                ui.label(f"{suggest.KINDS[t['kind']]} · {MODES.get(t['mode'], t['mode']).lower()}").classes("kind")
+                                ui.label(t["query"]).classes("text-[15.5px] leading-snug mt-1")
+                                if t["why"]:
+                                    ui.label(t["why"]).classes("text-[13px] muted mt-1")
+                    if meta.get("followups_cost_rub") is not None:
+                        ui.label(f"подбор тем: {costs.rub_text(meta['followups_cost_rub'])}").classes("mono text-[11px] faint")
+                else:
+                    with ui.row().classes("items-center gap-3"):
+                        propose_button = ui.button("Предложить темы", icon="auto_awesome",
+                                                   on_click=lambda: propose(propose_button)).props("outline no-caps color=paper")
+                        ui.label("модель прочтёт оглавление и выводы · ≈ 0,1 ₽").classes("mono text-[11px] faint")
+                for title, items in (("Продолжения этого отчёта", children), ("Похожие в библиотеке", related)):
+                    if items:
+                        ui.label(title).classes("brand-label mt-4")
+                    for e in items:
+                        with ui.row().classes("items-baseline gap-3 no-wrap"):
+                            ui.label(f"#{e.id}").classes("mono text-[12px] faint")
+                            ui.link(e.query, f"/report/{e.id}").classes("plain text-[15px]")
 
         with ui.tabs().props("no-caps dense align=left").classes("w-full") as tabs:
             ui.tab("report", label="Отчёт")
@@ -507,7 +630,8 @@ def report_page(report_id: int) -> None:
 
         with ui.tab_panels(tabs, value="report").classes("w-full").style("background: transparent"):
             with ui.tab_panel("report").classes("px-0 pt-6"):
-                ui.markdown(markdown).classes("report")
+                ui.markdown(suggest.body(markdown)).classes("report")
+                next_steps()
 
             with ui.tab_panel("sources").classes("px-0 pt-4 gap-1"):
                 def block(d: str, button) -> None:
@@ -529,16 +653,20 @@ def report_page(report_id: int) -> None:
             with ui.tab_panel("qa").classes("px-0 pt-4"):
                 qa_box = ui.column().classes("w-full gap-4")
 
-                def show(q: str, a: str, cost_rub: float | None = None) -> None:
+                def show(item: dict) -> None:
                     with qa_box, ui.card().classes("w-full px-6 py-5 gap-2"):
                         label("Вопрос")
-                        ui.label(q).classes("text-[16px] font-semibold")
-                        ui.markdown(a).classes("report compact")
-                        if cost_rub is not None:
-                            ui.label(costs.rub_text(cost_rub)).classes("mono text-[11px] faint")
+                        ui.label(item["q"]).classes("text-[16px] font-semibold")
+                        ui.markdown(item["a"]).classes("report compact")
+                        if item.get("research"):
+                            with ui.link(target=follow_up_url(item["research"], "quick", entry.id)).classes("next mt-1"):
+                                ui.label("Исследовать отдельно").classes("kind")
+                                ui.label(item["research"]).classes("text-[15px] leading-snug mt-1")
+                        if item.get("cost_rub") is not None:
+                            ui.label(costs.rub_text(item["cost_rub"])).classes("mono text-[11px] faint")
 
                 for item in qa:
-                    show(item["q"], item["a"], item.get("cost_rub"))
+                    show(item)
 
                 async def submit() -> None:
                     q = (question.value or "").strip()
@@ -547,14 +675,14 @@ def report_page(report_id: int) -> None:
                     send.props("loading")
                     question.disable()
                     try:
-                        answer = await ask(entry.md_path, q)
+                        item = await ask(entry.md_path, q)
                     except Exception as e:
                         ui.notify(f"Ошибка: {e}", type="negative")
                         return
                     finally:
                         send.props(remove="loading")
                         question.enable()
-                    show(q, answer, (load_qa(entry.md_path) or [{}])[-1].get("cost_rub"))
+                    show(item)
                     question.value = ""
                     qa_tab.props(f'label="Вопросы · {len(load_qa(entry.md_path))}"')
 

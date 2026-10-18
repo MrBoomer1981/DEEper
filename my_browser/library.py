@@ -43,10 +43,13 @@ class Library:
                 id INTEGER PRIMARY KEY,
                 base TEXT UNIQUE NOT NULL,
                 query TEXT, mode TEXT, created TEXT,
-                words INTEGER, duration_sec INTEGER, sources_count INTEGER
+                words INTEGER, duration_sec INTEGER, sources_count INTEGER,
+                parent TEXT  -- file name of the report this one continues
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS reports_fts USING fts5(query, body, tokenize = 'unicode61');
         """)
+        if "parent" not in {row[1] for row in self.db.execute("PRAGMA table_info(reports)")}:
+            self.db.execute("ALTER TABLE reports ADD COLUMN parent TEXT")  # databases from before follow-ups
 
     def add(self, json_path: Path) -> int:
         base = json_path.with_suffix("")
@@ -58,8 +61,10 @@ class Library:
             if row:
                 return row[0]
             cur = self.db.execute(
-                "INSERT INTO reports (base, query, mode, created, words, duration_sec, sources_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (str(base), meta["query"], meta["mode"], meta["created"], meta["words"], meta["duration_sec"], len(meta["sources"])),
+                "INSERT INTO reports (base, query, mode, created, words, duration_sec, sources_count, parent) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(base), meta["query"], meta["mode"], meta["created"], meta["words"], meta["duration_sec"],
+                 len(meta["sources"]), meta.get("parent")),
             )
             self.db.execute("INSERT INTO reports_fts (rowid, query, body) VALUES (?, ?, ?)", (cur.lastrowid, meta["query"], body))
             return cur.lastrowid
@@ -92,6 +97,29 @@ class Library:
             (match, limit),
         ).fetchall()
         return [(_entry(r[:-1]), r[-1]) for r in rows]
+
+    def by_name(self, name: str) -> Entry | None:
+        """The report whose files are reports/<name>.*; parents are stored by name, which survives a rebuilt DB."""
+        row = self.db.execute(f"SELECT {_COLUMNS} FROM reports WHERE base = ?", (str(REPORTS_DIR / name),)).fetchone()
+        return _entry(row) if row else None
+
+    def children(self, entry: Entry) -> list[Entry]:
+        rows = self.db.execute(f"SELECT {_COLUMNS} FROM reports WHERE parent = ? ORDER BY id", (entry.base.name,)).fetchall()
+        return [_entry(r) for r in rows]
+
+    def related(self, entry: Entry, exclude: set[int], limit: int = 3) -> list[Entry]:
+        """Other reports whose topic shares words with this one (any word, best match first)."""
+        words = [w for w in re.findall(r"\w+", entry.query.lower()) if len(w) >= 4 and not w.isdigit()]
+        if not words:
+            return []
+        match = "query : (" + " OR ".join(f'"{w}"*' for w in words) + ")"
+        columns = ", ".join(f"reports.{c.strip()}" for c in _COLUMNS.split(","))
+        rows = self.db.execute(
+            f"""SELECT {columns} FROM reports_fts JOIN reports ON reports.id = reports_fts.rowid
+                WHERE reports_fts MATCH ? ORDER BY bm25(reports_fts) LIMIT ?""",
+            (match, limit + len(exclude) + 1),
+        ).fetchall()
+        return [e for e in map(_entry, rows) if e.id != entry.id and e.id not in exclude][:limit]
 
     def delete(self, report_id: int) -> Entry | None:
         """Remove the entry and its files."""

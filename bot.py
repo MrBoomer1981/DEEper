@@ -28,8 +28,8 @@ from aiogram.types import (
     Message,
 )
 
-from my_browser import costs, jobs, sources
-from my_browser.ask import ask
+from my_browser import costs, jobs, sources, suggest
+from my_browser.ask import ask, load_qa
 from my_browser.library import Entry, Library
 from my_browser.pipeline import DEFAULT_SOURCES
 
@@ -44,8 +44,10 @@ HELP = """<b>Глубокие исследования</b>
 📄 Подробный — разделы по подтемам, самый длинный (~4 мин)
 🔬 Глубокий — рекурсивный поиск вширь и вглубь (дольше всех)
 ⚡ Быстрый — один проход (~1 мин)
+❓ Уточнить тему — 2–3 вопроса с вариантами, если тема широкая
 
 Отчёт придёт файлами PDF, DOCX и Markdown, а заключение — сообщением.
+Следом — темы «что исследовать дальше»: нажмите номер, чтобы запустить.
 Ответьте на сообщение с номером отчёта, чтобы задать по нему вопрос.
 
 /history — последние отчёты
@@ -57,7 +59,7 @@ HELP = """<b>Глубокие исследования</b>
 
 dp = Dispatcher()
 library = Library()
-pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the user's message
+pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the message that offered it
 background: set[asyncio.Task] = set()
 
 
@@ -126,13 +128,43 @@ def _conclusion(markdown: str) -> str | None:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(1)).strip() or None
 
 
-def _topic_keyboard(key: str, sources: str) -> InlineKeyboardMarkup:
-    modes = [InlineKeyboardButton(text=label, callback_data=f"m:{key}:{mode}") for mode, label in MODE_BUTTONS.items()]
+def _topic_text(item: dict, note: str = "") -> str:
+    lines = [f"🔎 <b>{html.escape(item['query'])}</b>"]
+    if item.get("parent_id"):
+        lines.append(f"↳ продолжение отчёта #{item['parent_id']}")
+    if item.get("recommended"):
+        lines.append(f"рекомендую: {MODE_BUTTONS[item['recommended']]}")
+    if note:
+        lines.append(f"<i>{html.escape(note)}</i>")
+    return "\n".join(lines) + "\n\nВыберите режим. Второй ряд — источники."
+
+
+def _topic_keyboard(key: str) -> InlineKeyboardMarkup:
+    item = pending[key]
+    modes = [
+        InlineKeyboardButton(text=("★ " if mode == item.get("recommended") else "") + label, callback_data=f"m:{key}:{mode}")
+        for mode, label in MODE_BUTTONS.items()
+    ]
     srcs = [
-        InlineKeyboardButton(text=("✓ " if src == sources else "") + label, callback_data=f"s:{key}:{src}")
+        InlineKeyboardButton(text=("✓ " if src == item["sources"] else "") + label, callback_data=f"s:{key}:{src}")
         for src, label in SOURCE_BUTTONS.items()
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[modes, srcs])
+    rows = [modes, srcs]
+    if not item.get("clarified"):
+        rows.append([InlineKeyboardButton(text="❓ Уточнить тему", callback_data=f"c:{key}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _offer(send, key: str, query: str, parent: Entry | None = None, recommended: str | None = None) -> None:
+    """Ask for the mode and sources of a new research; `send` is message.reply or message.answer."""
+    pending[key] = {"query": query, "sources": DEFAULT_SOURCES, "recommended": recommended,
+                    "parent": parent.base.name if parent else None, "parent_id": parent.id if parent else None}
+    await send(_topic_text(pending[key]), reply_markup=_topic_keyboard(key))
+
+
+def _followups(entry: Entry) -> list[dict]:
+    path = entry.base.with_suffix(".json")
+    return (json.loads(path.read_text("utf-8")).get("followups") or []) if path.exists() else []
 
 
 def _cost(entry: Entry) -> str:
@@ -162,11 +194,21 @@ async def send_report(message: Message, entry: Entry) -> None:
             await message.answer(part, parse_mode=None)
     await message.answer(f"Ответьте на сообщение с «#{entry.id}», чтобы задать вопрос по этому отчёту.")
 
+    topics = _followups(entry)
+    if topics:
+        lines = [f"🧭 <b>Что исследовать дальше</b> — по отчёту #{entry.id}"]
+        for i, t in enumerate(topics, 1):
+            lines.append(f"{i}. <b>{suggest.KINDS[t['kind']]}:</b> {html.escape(t['query'])}"
+                         + (f"\n<i>{html.escape(t['why'])}</i>" if t["why"] else ""))
+        buttons = [InlineKeyboardButton(text=str(i), callback_data=f"f:{entry.id}:{i - 1}") for i in range(1, len(topics) + 1)]
+        await message.answer("\n\n".join(lines) + "\n\nНажмите номер темы, чтобы выбрать режим и запустить.",
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]))
 
-async def run_research(status: Status, query: str, mode: str, sources: str) -> None:
+
+async def run_research(status: Status, query: str, mode: str, sources: str, parent: str | None = None) -> None:
     if jobs.busy():
         await status.render("⏳ В очереди: дождусь окончания текущего исследования...")
-    job = jobs.submit(query, mode, sources, origin="telegram")
+    job = jobs.submit(query, mode, sources, origin="telegram", parent=parent)
     await status.follow(job)
     if job.status == "error":
         await status.render(f"❌ {html.escape(job.error or 'Ошибка')}")
@@ -183,14 +225,20 @@ async def answer_question(message: Message, report_id: int, question: str) -> No
         return
     thinking = await message.reply(f"🤔 Ищу ответ в отчёте #{report_id}...")
     try:
-        answer = await ask(entry.md_path, question)
+        item = await ask(entry.md_path, question)
     except Exception as e:
         logging.exception("Ask failed")
         await thinking.edit_text(f"❌ Ошибка: {html.escape(str(e)[:300])}")
         return
     await thinking.delete()
-    for part in _chunks(f"💬 По отчёту #{report_id}:\n\n{answer}"):
+    for part in _chunks(f"💬 По отчёту #{report_id}:\n\n{item['a']}"):
         await message.reply(part, parse_mode=None)
+    if item.get("research"):
+        index = len(load_qa(entry.md_path)) - 1
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔎 Исследовать отдельно", callback_data=f"r:{report_id}:{index}"),
+        ]])
+        await message.answer(f"Тема для отдельного исследования:\n<b>{html.escape(item['research'])}</b>", reply_markup=keyboard)
 
 
 @dp.message(Command("start", "help"))
@@ -317,12 +365,101 @@ async def on_topic(message: Message) -> None:
     query = message.text.strip()
     if not query:
         return
-    key = f"{message.chat.id}_{message.message_id}"
-    pending[key] = {"query": query, "sources": DEFAULT_SOURCES}
-    await message.reply(
-        f"🔎 <b>{html.escape(query)}</b>\n\nВыберите режим. Второй ряд — источники.",
-        reply_markup=_topic_keyboard(key, DEFAULT_SOURCES),
-    )
+    await _offer(message.reply, f"{message.chat.id}_{message.message_id}", query)
+
+
+@dp.callback_query(F.data.startswith("f:"))
+async def on_followup(callback: CallbackQuery) -> None:
+    _, report_id, index = callback.data.split(":")
+    entry = library.get(int(report_id))
+    topics = _followups(entry) if entry else []
+    if int(index) >= len(topics):
+        await callback.answer("Отчёт или тема не найдены", show_alert=True)
+        return
+    await callback.answer()
+    topic = topics[int(index)]
+    key = f"{callback.message.chat.id}_{callback.message.message_id}_{index}"
+    await _offer(callback.message.answer, key, topic["query"], parent=entry, recommended=topic["mode"])
+
+
+@dp.callback_query(F.data.startswith("r:"))
+async def on_research_question(callback: CallbackQuery) -> None:
+    _, report_id, index = callback.data.split(":")
+    entry = library.get(int(report_id))
+    qa = load_qa(entry.md_path) if entry else []
+    topic = qa[int(index)].get("research") if int(index) < len(qa) else None
+    if not topic:
+        await callback.answer("Вопрос не найден", show_alert=True)
+        return
+    await callback.answer()
+    key = f"{callback.message.chat.id}_{callback.message.message_id}_r"
+    await _offer(callback.message.answer, key, topic, parent=entry, recommended="quick")
+
+
+@dp.callback_query(F.data.startswith("c:"))
+async def on_clarify(callback: CallbackQuery) -> None:
+    key = callback.data.split(":", 1)[1]
+    item = pending.get(key)
+    if not item:
+        await callback.answer("Тема устарела, пришлите её ещё раз", show_alert=True)
+        return
+    await callback.answer("Готовлю вопросы...")
+    try:
+        questions, rub = await suggest.questions(item["query"])
+    except Exception as e:
+        logging.exception("Clarify failed")
+        await callback.message.answer(f"❌ Не получилось: {html.escape(str(e)[:300])}")
+        return
+    if not questions:
+        item["clarified"] = True
+        with suppress(TelegramBadRequest):
+            await callback.message.edit_text(_topic_text(item, "уточнять нечего: тема и так конкретная"),
+                                             reply_markup=_topic_keyboard(key))
+        return
+    item["clarify"] = {"questions": questions, "answers": [], "rub": rub}
+    await _show_question(callback.message, key)
+
+
+async def _show_question(message: Message, key: str) -> None:
+    state = pending[key]["clarify"]
+    i = len(state["answers"])
+    question = state["questions"][i]
+    rows = [[InlineKeyboardButton(text=option, callback_data=f"a:{key}:{i}:{n}")] for n, option in enumerate(question["options"])]
+    rows.append([InlineKeyboardButton(text=suggest.ANY_ANSWER.capitalize(), callback_data=f"a:{key}:{i}:-1")])
+    with suppress(TelegramBadRequest):
+        await message.edit_text(f"❓ <b>{i + 1}/{len(state['questions'])}.</b> {html.escape(question['q'])}",
+                                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data.startswith("a:"))
+async def on_clarify_answer(callback: CallbackQuery) -> None:
+    _, key, i, n = callback.data.split(":")
+    item = pending.get(key)
+    state = (item or {}).get("clarify")
+    if not state or int(i) != len(state["answers"]):  # stale topic or a double tap
+        await callback.answer()
+        return
+    await callback.answer()
+    question = state["questions"][int(i)]
+    state["answers"].append((question["q"], question["options"][int(n)] if int(n) >= 0 else None))
+    if len(state["answers"]) < len(state["questions"]):
+        await _show_question(callback.message, key)
+        return
+    chosen = [(q, a) for q, a in state["answers"] if a]
+    rub = state["rub"]
+    if chosen:
+        with suppress(TelegramBadRequest):
+            await callback.message.edit_text("⏳ Уточняю тему...")
+        try:
+            item["query"], extra = await suggest.refine(item["query"], chosen)
+            rub += extra
+        except Exception:
+            logging.exception("Refine failed, keeping the topic as is")
+    del item["clarify"]
+    item["clarified"] = True
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_text(_topic_text(item, f"тема уточнена · {costs.rub_text(rub)}" if chosen else ""),
+                                         reply_markup=_topic_keyboard(key))
 
 
 @dp.callback_query(F.data.startswith("s:"))
@@ -334,7 +471,7 @@ async def on_sources(callback: CallbackQuery) -> None:
     pending[key]["sources"] = sources
     await callback.answer()
     with suppress(TelegramBadRequest):
-        await callback.message.edit_reply_markup(reply_markup=_topic_keyboard(key, sources))
+        await callback.message.edit_reply_markup(reply_markup=_topic_keyboard(key))
 
 
 @dp.callback_query(F.data.startswith("m:"))
@@ -346,9 +483,11 @@ async def on_mode(callback: CallbackQuery) -> None:
         return
     await callback.answer()
     header = f"🔎 <b>{html.escape(item['query'])}</b>\n{MODE_BUTTONS[mode]} · {SOURCE_BUTTONS[item['sources']]}"
+    if item.get("parent_id"):
+        header += f"\n↳ продолжение отчёта #{item['parent_id']}"
     status = Status(callback.message, header)
     await status.render("⏳ Начинаю...")
-    task = asyncio.create_task(run_research(status, item["query"], mode, item["sources"]))
+    task = asyncio.create_task(run_research(status, item["query"], mode, item["sources"], item.get("parent")))
     background.add(task)
     task.add_done_callback(background.discard)
 
