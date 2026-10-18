@@ -346,7 +346,7 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
-        sys.exit("Нет TELEGRAM_BOT_TOKEN в .env. Создайте бота у @BotFather и впишите токен.")
+        sys.exit("Нет TELEGRAM_BOT_TOKEN (в .env или в переменных окружения). Создайте бота у @BotFather и впишите токен.")
     allowed = {int(x) for x in re.findall(r"\d+", os.environ.get("TELEGRAM_ALLOWED_USERS", ""))}
     if not allowed:
         logging.warning("TELEGRAM_ALLOWED_USERS пуст: бот только сообщит каждому его Telegram ID")
