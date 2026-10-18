@@ -1,22 +1,32 @@
-"""Source quality filter applied before pages are scraped.
+"""Source selection applied before pages are scraped.
 
-Candidate URLs found for a search query are scored 0-3:
-  3  primary/authoritative (research, government, international bodies, major media/analysts)
-  2  solid secondary (trade press, encyclopedias, reputable company pages)
-  1  weak (SEO blogs, vendor marketing, aggregators, forums)
-  0  useless (shops, social/video, unrelated, user-blocked)
-Known domains are scored from the lists below; the rest by one cheap LLM call per query.
-Zeros are dropped; ones are used only when a query found nothing better; the best go first.
+Every candidate URL found for a search query gets a 0-3 score from one cheap LLM call that sees
+its title and snippet (captured from the retrievers) and judges relevance to the research topic
+together with credibility and freshness:
+  3  highly relevant and primary/authoritative
+  2  relevant and solid
+  1  weak (SEO blogs, vendor marketing, aggregators, forums) or only tangential
+  0  off-topic or useless (shops, spam, a paper about something else that shares some words)
+Known domains (DOMAIN_SCORES) only raise the score of a relevant source and never rescue an
+off-topic one; social/video/shops and the user's blocklist are dropped without asking the model.
+Selection: zeros out; ones only when a query found nothing better (at most WEAK_FALLBACK); at most
+PER_DOMAIN_QUERY per domain per query and PER_DOMAIN_RESEARCH per research, so one site
+(typically arXiv) cannot crowd out the rest; best first, at most MAX_SOURCES_PER_QUERY.
 
-Importing this module patches gpt-researcher's ResearchConductor._get_new_urls, the point
-where search results become research sources (and later the reference list).
+Importing this module patches gpt-researcher: the retrievers' search() remembers titles and
+snippets, and ResearchConductor._get_new_urls (where search results become research sources,
+and later the references) applies the selection.
 """
 
+import inspect
 import logging
 import os
 import re
+from collections import Counter
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+import gpt_researcher.retrievers as retrievers
 import json_repair
 from gpt_researcher.actions import stream_output
 from gpt_researcher.skills.researcher import ResearchConductor
@@ -27,8 +37,11 @@ from my_browser.pipeline import REPORTS_DIR
 logger = logging.getLogger(__name__)
 
 MAX_SOURCES_PER_QUERY = int(os.environ.get("MAX_SOURCES_PER_QUERY", 8))
-WEAK_FALLBACK = 3  # weak (1) sources are used only when a query found nothing better, and at most this many
+PER_DOMAIN_QUERY = int(os.environ.get("PER_DOMAIN_QUERY", 2))
+PER_DOMAIN_RESEARCH = int(os.environ.get("PER_DOMAIN_RESEARCH", 5))
+WEAK_FALLBACK = 3
 BLOCKLIST_PATH = REPORTS_DIR / "blocked_domains.txt"  # on Railway this lives on the volume
+SEARCH_META: dict[str, dict] = {}  # url -> title/snippet from the last searches that returned it
 
 TOP_TIER_HOST = re.compile(r"(^|\.)(gov|edu|int|mil)(\.[a-z]{2})?$|(^|\.)ac\.[a-z]{2}$|(^|\.)gov\.ru$")
 
@@ -67,15 +80,16 @@ DOMAIN_SCORES = {
     ],
 }
 
-RATE_PROMPT = """You rate web sources for a research report on: "{query}".
-For each URL give a credibility score:
-3 - primary or authoritative: research papers, universities, government and regulators, international organizations, official statistics, major reputable news agencies and analyst firms.
-2 - solid secondary: established trade or industry media, encyclopedias, reputable companies' official or technical pages.
-1 - weak: SEO blogs, vendor marketing and product pages, affiliate or review sites, aggregators, forums, generic listicles.
-0 - useless: unrelated to the topic, shops, spam, login or error pages.
-Judge by the domain and the URL path.
+RATE_PROMPT = """You select sources for a research report on: "{query}". Today is {today}.
+Score every search result:
+3 - highly relevant to the topic AND primary or authoritative: research, official data, regulators, major news agencies or analysts, the company itself.
+2 - relevant and solid: trade or industry press, encyclopedias, reputable companies' technical pages.
+1 - weak: only tangential, or SEO blogs, vendor marketing, aggregators, forums, listicles.
+0 - off-topic or useless: about something else even if some words match, shops, spam, error pages.
+If the topic is about the current state of things, clearly outdated results get at most 1 unless they are foundational.
+[known] marks domains known for credibility; that says nothing about relevance.
 
-{urls}
+{listing}
 
 Return ONLY a JSON array of {count} integers in the same order, e.g. [3, 1, 0]."""
 
@@ -125,42 +139,95 @@ def static_score(url: str, blocked: list[str]) -> int | None:
     return None
 
 
-async def llm_scores(urls: list[str], query: str, cfg) -> list[int] | None:
-    listing = "\n".join(f"{i + 1}. {u}" for i, u in enumerate(urls))
+def _remember(results) -> None:
+    if not isinstance(results, list):
+        return
+    if len(SEARCH_META) > 20000:
+        SEARCH_META.clear()
+    for r in results:
+        url = isinstance(r, dict) and (r.get("href") or r.get("url"))
+        if url:
+            SEARCH_META[url] = {"title": str(r.get("title") or "").strip(), "snippet": str(r.get("body") or "").strip()}
+
+
+def _patch_retrievers() -> None:
+    for name in dir(retrievers):
+        cls = getattr(retrievers, name)
+        search = getattr(cls, "search", None)
+        if not (isinstance(cls, type) and name.endswith("Search") and callable(search)) \
+                or inspect.iscoroutinefunction(search) or getattr(search, "remembers", False):
+            continue
+
+        def remembering(self, *args, _search=search, **kwargs):
+            results = _search(self, *args, **kwargs)
+            _remember(results)
+            return results
+
+        remembering.remembers = True
+        cls.search = remembering
+
+
+def _describe(i: int, url: str, known: bool) -> str:
+    meta = SEARCH_META.get(url, {})
+    lines = [f"{i}. {url}" + (" [known]" if known else "")]
+    if meta.get("title"):
+        lines.append(f"   title: {meta['title'][:160]}")
+    if meta.get("snippet"):
+        lines.append(f"   snippet: {' '.join(meta['snippet'].split())[:240]}")
+    return "\n".join(lines)
+
+
+async def llm_scores(urls: list[str], query: str, cfg, known: set[str]) -> dict[str, int] | None:
+    listing = "\n".join(_describe(i + 1, u, u in known) for i, u in enumerate(urls))
+    today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     try:
         response = await create_chat_completion(
-            messages=[{"role": "user", "content": RATE_PROMPT.format(query=query, urls=listing, count=len(urls))}],
+            messages=[{"role": "user", "content": RATE_PROMPT.format(query=query, today=today, listing=listing, count=len(urls))}],
             model=cfg.fast_llm_model,
             llm_provider=cfg.fast_llm_provider,
             temperature=0,
-            max_tokens=200,
+            max_tokens=400,
             llm_kwargs=cfg.llm_kwargs,
         )
         scores = json_repair.loads(response)
         if isinstance(scores, list) and len(scores) == len(urls):
-            return [max(0, min(3, int(s))) for s in scores]
+            return {u: max(0, min(3, int(s))) for u, s in zip(urls, scores)}
         logger.warning("Source rating: unexpected answer %r", response[:200])
     except Exception as e:
         logger.warning("Source rating failed, using known domains only: %s", e)
     return None
 
 
-async def rank(urls: list[str], query: str, cfg) -> list[tuple[str, int]]:
+async def rank(urls: list[str], query: str, cfg, domain_counts: Counter | None = None) -> list[tuple[str, int]]:
     """Score and select URLs, best first."""
     blocked = blocked_domains()
-    scores = {u: static_score(u, blocked) for u in urls}
-    unknown = [u for u, s in scores.items() if s is None]
-    if unknown:
-        rated = await llm_scores(unknown, query, cfg)
-        for u, s in zip(unknown, rated or [1] * len(unknown)):
-            scores[u] = s
+    static = {u: static_score(u, blocked) for u in urls}
+    to_rate = [u for u in urls if static[u] != 0]
+    rated = await llm_scores(to_rate, query, cfg, {u for u in to_rate if static[u]}) if to_rate else {}
+    scores = {}
+    for u in to_rate:
+        if rated is None:  # rating failed: known domains keep their tier, the rest count as weak
+            scores[u] = static[u] or 1
+        elif rated[u] > 0:  # authority raises a relevant result, never rescues an off-topic one
+            scores[u] = max(rated[u], static[u] or 0)
     good = sorted(((u, s) for u, s in scores.items() if s >= 2), key=lambda item: item[1], reverse=True)
-    weak = [(u, s) for u, s in scores.items() if s == 1]
-    return good[:MAX_SOURCES_PER_QUERY] if good else weak[:WEAK_FALLBACK]
+    pool = good or [(u, s) for u, s in scores.items() if s == 1][:WEAK_FALLBACK]
+
+    domain_counts = domain_counts or Counter()
+    selected, per_query = [], Counter()
+    for u, s in pool:
+        d = host(u)
+        if per_query[d] >= PER_DOMAIN_QUERY or domain_counts[d] + per_query[d] >= PER_DOMAIN_RESEARCH:
+            continue
+        selected.append((u, s))
+        per_query[d] += 1
+        if len(selected) >= MAX_SOURCES_PER_QUERY:
+            break
+    return selected
 
 
 async def _get_new_urls_filtered(self, url_set_input):
-    """Replacement for ResearchConductor._get_new_urls: rank before marking as visited."""
+    """Replacement for ResearchConductor._get_new_urls: select before marking as visited."""
     candidates = list(dict.fromkeys(u for u in url_set_input if u not in self.researcher.visited_urls))
     if os.environ.get("SOURCE_FILTER", "on") == "off" or not candidates:
         selected = [(u, None) for u in candidates]
@@ -168,9 +235,10 @@ async def _get_new_urls_filtered(self, url_set_input):
         query = self.researcher.query
         if self.researcher.parent_query:
             query = f"{self.researcher.parent_query} - {query}"
-        selected = await rank(candidates, query, self.researcher.cfg)
-        dropped = len(candidates) - len(selected)
-        if dropped and self.researcher.verbose:
+        # visited_urls is shared by the sub-researchers of a detailed report, so this caps
+        # each domain across the whole research.
+        selected = await rank(candidates, query, self.researcher.cfg, Counter(host(u) for u in self.researcher.visited_urls))
+        if len(selected) < len(candidates) and self.researcher.verbose:
             await stream_output("logs", "source_filter", f"🧹 Source filter: kept {len(selected)} of {len(candidates)} URLs\n",
                                 self.researcher.websocket)
 
@@ -187,4 +255,5 @@ async def _get_new_urls_filtered(self, url_set_input):
     return new_urls
 
 
+_patch_retrievers()
 ResearchConductor._get_new_urls = _get_new_urls_filtered
