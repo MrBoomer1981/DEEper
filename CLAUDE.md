@@ -33,6 +33,15 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
 - Modes: `quick` = `research_report`; `deep` = gpt-researcher's recursive `deep` report (`DEEP_RESEARCH_*` keys); `detailed` = `my_browser/detailed.py`, a port of upstream `backend/report_type/detailed_report`, which is **not shipped in the pip package**. It runs one broad research pass, then each subtopic is researched and written as its own section (each at least `TOTAL_WORDS` long), then the intro, TOC, conclusion and references are stitched together.
 - `my_browser/export.py`: DOCX is rendered in-process (mistune → htmldocx). The PDF is rendered by WeasyPrint **in a child process** with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`, because WeasyPrint needs Homebrew's pango (`brew install pango`) and dyld reads that variable only at process start.
 
+## Deployment
+
+- GitHub: public repo `MrBoomer1981/DEEper`. The pre-2026-10 DEEper code (aiogram + Groq + Tavily) lives in the `legacy` branch. Old history contains a leaked `.env`.
+- Railway deploys `main` with the `Dockerfile` (`railway.json`, a single replica, because two Telegram pollers conflict).
+- There is no SearXNG on Railway: set `WEB_RETRIEVER=tavily` + `TAVILY_API_KEY`. `SOURCES["web"]` reads `WEB_RETRIEVER`, which defaults to `searx`.
+- Reports persist only if a volume is mounted at `/app/reports`.
+- The container runs in UTC, and on Linux WeasyPrint finds pango without the DYLD workaround.
+- Build the image locally with `docker build -t my-browser-bot .` (about 6 min, ~1.9 GB). To test it against the host's SearXNG and mock LLM, use `host.docker.internal`.
+
 ## Non-obvious behavior
 
 - DeepSeek through gpt-researcher's `deepseek` provider (ChatOpenAI pointed at api.deepseek.com):

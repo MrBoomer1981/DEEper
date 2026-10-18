@@ -18,11 +18,15 @@ REPORTS_DIR = ROOT / "reports"
 
 load_dotenv(ROOT / ".env")
 
+# Web search backend: the local SearXNG by default; on Railway set WEB_RETRIEVER=tavily,
+# since there is no SearXNG there and engines block datacenter IPs more often.
+WEB_RETRIEVER = os.environ.get("WEB_RETRIEVER", "searx")
+
 # semantic_scholar is left out: without an API key it answers 429 most of the time.
 SOURCES = {
-    "web": "searx",
+    "web": WEB_RETRIEVER,
     "academic": "arxiv,openalex",
-    "all": "searx,arxiv,openalex",
+    "all": f"{WEB_RETRIEVER},arxiv,openalex",
 }
 
 MODES = {
@@ -109,6 +113,8 @@ def preflight() -> None:
         check_deepseek(model, llm_kwargs.get("extra_body", {}))
 
     retrievers = os.environ.get("RETRIEVER") or config.get("RETRIEVER", "")
+    if "tavily" in retrievers.split(",") and not os.environ.get("TAVILY_API_KEY"):
+        raise PreflightError("Нет TAVILY_API_KEY: он нужен для поиска через Tavily (https://app.tavily.com)")
     if "searx" in retrievers.split(","):
         url = os.environ.get("SEARX_URL", "")
         try:
