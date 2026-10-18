@@ -1,0 +1,19 @@
+# Local SearXNG instance used as the free web search backend.
+# Bound to 127.0.0.1 only: it is for this machine, not the network.
+name: my-browser
+
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: my-browser-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
+    volumes:
+      - ./searxng/:/etc/searxng/
+      - searxng-data:/var/cache/searxng/
+
+volumes:
+  searxng-data:

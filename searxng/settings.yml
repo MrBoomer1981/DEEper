@@ -1,0 +1,22 @@
+# Minimal overrides on top of SearXNG defaults.
+# Docs: https://docs.searxng.org/admin/settings/
+use_default_settings: true
+
+server:
+  # secret_key comes from the SEARXNG_SECRET env var (see docker-compose.yml)
+  limiter: false        # personal instance, no bot protection needed
+  image_proxy: false
+  public_instance: false
+
+search:
+  formats:
+    - html
+    - json              # required: GPT Researcher queries SearXNG via the JSON API
+
+# Yahoo is off by default, but answers relevantly from this machine (checked 2026-10-18).
+# Tried and rejected here: bing (off-topic junk for Cyrillic queries, e.g. Nickelodeon/IMDb,
+# and timeouts for English ones), google (access denied), yandex (captcha page),
+# qwant (access denied); duckduckgo and brave from the defaults hit captcha/rate limits.
+engines:
+  - name: yahoo
+    disabled: false
