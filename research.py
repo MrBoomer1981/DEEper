@@ -10,7 +10,9 @@ import asyncio
 import sys
 import time
 
-from my_browser.pipeline import DEFAULT_SOURCES, MODES, ROOT, SOURCES, PreflightError, env_overrides, overrides, preflight, research, save
+from my_browser import costs
+from my_browser.pipeline import (DEFAULT_SOURCES, DEFAULT_WRITER, MODES, ROOT, SOURCES, WRITERS, PreflightError,
+                                 env_overrides, overrides, preflight, research, save)
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sources", choices=SOURCES, default=DEFAULT_SOURCES,
                         help="web — веб-поиск (SearXNG или Tavily); academic — arXiv и OpenAlex; "
                              "all — всё сразу (по умолчанию)")
+    parser.add_argument("--writer", choices=WRITERS, default=DEFAULT_WRITER,
+                        help="модель для итогового текста: pro — DeepSeek V4 Pro (лучше, дороже ≈3×), flash — DeepSeek Flash")
     parser.add_argument("--words", type=int, help="минимальная длина отчёта/раздела в словах (TOTAL_WORDS)")
     parser.add_argument("--lang", help="язык отчёта, например russian или english (LANGUAGE)")
     parser.add_argument("--no-pdf", action="store_true", help="не собирать PDF")
@@ -29,7 +33,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    with env_overrides(overrides(args.sources, args.words, args.lang)):
+    meter = costs.Meter()
+    costs.current.set(meter)
+    with env_overrides(overrides(args.sources, args.words, args.lang, args.writer)):
         try:
             preflight()
         except PreflightError as e:
@@ -43,8 +49,9 @@ def main() -> None:
             sys.exit(f"\nПрервано через {(time.monotonic() - started) / 60:.1f} мин, отчёт не сохранён.")
         elapsed = time.monotonic() - started
 
-        report = save(args.query, args.mode, markdown, sources, elapsed, pdf=not args.no_pdf)
-    print(f"\nГотово за {elapsed / 60:.1f} мин: {report.words} слов, {len(sources)} источников")
+        cost = meter.summary()
+        report = save(args.query, args.mode, markdown, sources, elapsed, pdf=not args.no_pdf, cost=cost)
+    print(f"\nГотово за {elapsed / 60:.1f} мин: {report.words} слов, {len(sources)} источников, {costs.rub_text(cost['rub'])}")
     print(f"Отчёт #{report.id}: {report.md_path.relative_to(ROOT)} (+ .docx, .pdf, .json рядом)")
 
 

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- DEEper app icon: a black hole on the brand's red-black field (bordo -> night).
+       The accretion disk crosses in front of the hole; its far side is lensed into
+       the bright arc over the top; photon ring and disk in amber and paper. -->
+  <defs>
+    <radialGradient id="field" cx="50%" cy="50%" r="72%">
+      <stop offset="0" stop-color="#7A2A35"/>
+      <stop offset="0.45" stop-color="#43171E"/>
+      <stop offset="1" stop-color="#14100E"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0.48" stop-color="#E8A24A" stop-opacity="0"/>
+      <stop offset="0.58" stop-color="#E8A24A" stop-opacity="0.5"/>
+      <stop offset="0.72" stop-color="#7A2A35" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#7A2A35" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="disk" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E8A24A" stop-opacity="0"/>
+      <stop offset="0.22" stop-color="#E8A24A" stop-opacity="0.9"/>
+      <stop offset="0.5" stop-color="#F2EBE1"/>
+      <stop offset="0.78" stop-color="#E8A24A" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#E8A24A" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="arc" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E8A24A" stop-opacity="0.2"/>
+      <stop offset="0.5" stop-color="#F2EBE1"/>
+      <stop offset="1" stop-color="#E8A24A" stop-opacity="0.2"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="26"/></filter>
+    <filter id="soft" x="-20%" y="-80%" width="140%" height="260%"><feGaussianBlur stdDeviation="9"/></filter>
+    <filter id="crisp" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="2.5"/></filter>
+    <clipPath id="front"><rect x="0" y="540" width="1024" height="484"/></clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#field)"/>
+  <circle cx="512" cy="512" r="400" fill="url(#halo)"/>
+
+  <!-- far side of the disk, lensed over the top of the hole -->
+  <path d="M 262 548 A 250 250 0 0 1 762 548" fill="none" stroke="#E8A24A" stroke-width="64" filter="url(#glow)" opacity="0.85"/>
+  <path d="M 276 548 A 236 236 0 0 1 748 548" fill="none" stroke="url(#arc)" stroke-width="22" filter="url(#crisp)"/>
+
+  <!-- back half of the disk, behind the hole -->
+  <ellipse cx="512" cy="548" rx="440" ry="66" fill="none" stroke="url(#disk)" stroke-width="46" filter="url(#soft)" opacity="0.7"/>
+
+  <!-- photon ring and event horizon -->
+  <circle cx="512" cy="512" r="206" fill="none" stroke="#F2EBE1" stroke-width="7" opacity="0.9" filter="url(#crisp)"/>
+  <circle cx="512" cy="512" r="198" fill="#0A0706"/>
+
+  <!-- near half of the disk, in front of the hole -->
+  <ellipse cx="512" cy="548" rx="440" ry="66" fill="none" stroke="url(#disk)" stroke-width="54" clip-path="url(#front)" filter="url(#soft)"/>
+  <ellipse cx="512" cy="548" rx="440" ry="66" fill="none" stroke="url(#disk)" stroke-width="14" clip-path="url(#front)" filter="url(#crisp)"/>
+</svg>

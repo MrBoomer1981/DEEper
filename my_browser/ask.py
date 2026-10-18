@@ -34,15 +34,23 @@ async def ask(md_path: Path, question: str) -> str:
     from gpt_researcher.config import Config
     from gpt_researcher.utils.llm import create_chat_completion
 
+    from my_browser import costs
+
     cfg = Config(str(CONFIG_PATH))
-    answer = await create_chat_completion(
-        messages=[{"role": "user", "content": PROMPT.format(report=md_path.read_text("utf-8"), question=question)}],
-        model=cfg.smart_llm_model,
-        llm_provider=cfg.smart_llm_provider,
-        temperature=0.2,
-        max_tokens=4000,
-        llm_kwargs=cfg.llm_kwargs,
-    )
-    history = load_qa(md_path) + [{"q": question, "a": answer, "at": datetime.now().isoformat(timespec="seconds")}]
+    meter = costs.Meter()
+    metering = costs.current.set(meter)
+    try:
+        answer = await create_chat_completion(
+            messages=[{"role": "user", "content": PROMPT.format(report=md_path.read_text("utf-8"), question=question)}],
+            model=cfg.smart_llm_model,
+            llm_provider=cfg.smart_llm_provider,
+            temperature=0.2,
+            max_tokens=4000,
+            llm_kwargs=cfg.llm_kwargs,
+        )
+    finally:
+        costs.current.reset(metering)
+    history = load_qa(md_path) + [{"q": question, "a": answer, "at": datetime.now().isoformat(timespec="seconds"),
+                                   "cost_rub": round(meter.rub(), 2)}]
     qa_path(md_path).write_text(json.dumps(history, ensure_ascii=False, indent=2), "utf-8")
     return answer

@@ -34,6 +34,10 @@ SOURCES = {
 
 DEFAULT_SOURCES = "all"
 
+# Model that writes the report text (SMART_LLM); search, planning and source rating stay on FAST/STRATEGIC.
+WRITERS = {"pro": "deepseek:deepseek-v4-pro", "flash": "deepseek:deepseek-flash"}
+DEFAULT_WRITER = "pro"
+
 MODES = {
     "detailed": "подробный отчёт: введение, разделы по подтемам, заключение (самый длинный)",
     "deep": "глубокое исследование: рекурсивный поиск вширь и вглубь, затем один отчёт",
@@ -56,11 +60,14 @@ class Report:
     sources: list[str] = field(default_factory=list)
 
 
-def overrides(sources: str | None = None, words: int | None = None, lang: str | None = None) -> dict[str, str]:
+def overrides(sources: str | None = None, words: int | None = None, lang: str | None = None,
+              writer: str | None = None) -> dict[str, str]:
     """GPT Researcher reads env vars with priority over config.json, so per-run options go there."""
     values = {}
     if sources:
         values["RETRIEVER"] = SOURCES[sources]
+    if writer:
+        values["SMART_LLM"] = WRITERS[writer]
     if words:
         values["TOTAL_WORDS"] = str(words)
     if lang:
@@ -135,7 +142,7 @@ def preflight() -> None:
 async def research(query: str, mode: str, on_progress: Callable[[str], None] = print) -> tuple[str, list[str]]:
     from gpt_researcher import GPTResearcher
 
-    from my_browser import prompts, sources, stemming  # noqa: F401  patch gpt-researcher: queries, source selection, Russian BM25
+    from my_browser import costs, prompts, sources, stemming  # noqa: F401  patch gpt-researcher (see each module)
     from my_browser.detailed import DetailedReport
 
     if mode == "detailed":
@@ -160,7 +167,8 @@ def slugify(text: str, max_len: int = 60) -> str:
     return slug[:max_len].rstrip("-") or "report"
 
 
-def save(query: str, mode: str, markdown: str, sources: list[str], seconds: float, pdf: bool = True) -> Report:
+def save(query: str, mode: str, markdown: str, sources: list[str], seconds: float, pdf: bool = True,
+         cost: dict | None = None) -> Report:
     """Write md/json/docx/pdf to reports/ and index the report in the library."""
     from my_browser.export import write_docx, write_pdf
     from my_browser.library import Library
@@ -173,6 +181,8 @@ def save(query: str, mode: str, markdown: str, sources: list[str], seconds: floa
         "query": query,
         "mode": mode,
         "retriever": os.environ.get("RETRIEVER") or _config().get("RETRIEVER"),
+        "writer": (os.environ.get("SMART_LLM") or _config().get("SMART_LLM", "")).split(":", 1)[-1],
+        "cost": cost,
         "created": datetime.now().isoformat(timespec="seconds"),
         "duration_sec": round(seconds),
         "words": len(markdown.split()),

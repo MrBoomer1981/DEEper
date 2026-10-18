@@ -5,6 +5,7 @@ Run: uv run bot.py   (needs TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS in .en
 
 import asyncio
 import html
+import json
 import logging
 import os
 import re
@@ -27,7 +28,7 @@ from aiogram.types import (
     Message,
 )
 
-from my_browser import jobs, sources
+from my_browser import costs, jobs, sources
 from my_browser.ask import ask
 from my_browser.library import Entry, Library
 from my_browser.pipeline import DEFAULT_SOURCES
@@ -134,10 +135,15 @@ def _topic_keyboard(key: str, sources: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[modes, srcs])
 
 
+def _cost(entry: Entry) -> str:
+    cost = json.loads(entry.base.with_suffix(".json").read_text("utf-8")).get("cost") or {}
+    return costs.rub_text(cost.get("rub")) if cost else "—"
+
+
 async def send_report(message: Message, entry: Entry) -> None:
     caption = (
         f"📄 <b>Отчёт #{entry.id}</b>: {html.escape(entry.query)}\n"
-        f"{entry.words} слов · {entry.sources_count} источников · {_mmss(entry.duration_sec)}"
+        f"{entry.words} слов · {entry.sources_count} источников · {_mmss(entry.duration_sec)} · {_cost(entry)}"
     )
     files = entry.files()
     if not files:
@@ -166,7 +172,7 @@ async def run_research(status: Status, query: str, mode: str, sources: str) -> N
         await status.render(f"❌ {html.escape(job.error or 'Ошибка')}")
         return
     entry = library.get(job.report_id)
-    await status.render(f"✅ Готово за {_mmss(job.elapsed)}: {entry.words} слов, {entry.sources_count} источников")
+    await status.render(f"✅ Готово за {_mmss(job.elapsed)}: {entry.words} слов, {entry.sources_count} источников, {_cost(entry)}")
     await send_report(status.message, entry)
 
 

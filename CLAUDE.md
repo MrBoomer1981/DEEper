@@ -53,6 +53,12 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
   - URLs are re-checked against `visited_urls` after the await, because parallel sub-queries race.
   - The user blocklist is `reports/blocked_domains.txt` (on the Railway volume), managed by the bot's `/block`, `/unblock` and `/blocked`.
   - `SOURCE_FILTER=off` disables the filter.
+- `my_browser/costs.py` meters real cost. It wraps `GenericLLMProvider.get_chat_response` and adds usage tokens to the `Meter` in the `costs.current` ContextVar, which a job sets in its worker thread (`asyncio.run` copies it) and `ask()` sets per question.
+  - DeepSeek prices (peak 01–04 and 06–10 UTC on weekdays, half price otherwise) and the CBR USD/RUB rate (cached 12 h; `USD_RUB` overrides) go into `cost` in each report's JSON and into `cost_rub` per Q&A. The UI and the bot show them.
+  - Streamed calls report usage only because `LLM_KWARGS.stream_usage` is true.
+  - `finish_reason == "length"` is logged and counted as `truncated_calls`.
+- Writer: `SMART_LLM` (report text and Q&A) defaults to `deepseek-v4-pro`; FAST and STRATEGIC stay on `deepseek-flash`. `--writer`, the bot default and the web toggle pick `WRITERS[...]` through `overrides(writer=...)`. The writer override also beats a mock `SMART_LLM` env in tests, so pass `writer="flash"` or mock both.
+- URLs are made readable (`sources.readable_url`): percent-encoded Cyrillic is decoded, ASCII escapes are kept. Encoded slugs cost 3–4 tokens per letter and made long reports hit the output cap mid-reference (16k back then, now 32k).
 - `my_browser/stemming.py` swaps gpt-researcher's BM25 tokenizer (`context/lexical.py`) for one with the Snowball Russian stemmer (from nltk) and Russian stopwords; Latin tokens go through upstream's stemmer unchanged.
 - In the detailed report, the `## Источники` list is built from the links cited inline, not from every visited URL. If fewer than 3 links are cited (APA author-date style), it falls back to all visited URLs.
 - `my_browser/export.py`: DOCX is rendered in-process (mistune → htmldocx). The PDF is rendered by WeasyPrint **in a child process** with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`, because WeasyPrint needs Homebrew's pango (`brew install pango`) and dyld reads that variable only at process start.
@@ -63,7 +69,9 @@ The UI and PDFs follow the user's brandbook (`aven-brandbook.pdf`, kept locally 
 - Dark only. Background is night `#14100E`, text is paper `#F2EBE1` (never `#FFF`), bordo `#7A2A35` is used only for fills such as buttons, selected toggles and 3/3 badges (never as text on dark), and amber `#E8A24A` is the single accent per screen (one label, the timer, the tab underline, link underlines).
 - There is no fifth color and no blue, green, neon or gradients, apart from the brand's own subtle bordo glow.
 - Fonts are self-hosted in `static/fonts` (OFL): Unbounded only for 2–4 word headings, Onest for text (including long report titles), JetBrains Mono for labels, chips, numbers and URLs.
-- The mark SVGs (`static/aven-mark*.svg`, `aven-app-icon.svg`) are copied verbatim from the user's aven-logo artifact. The PNG icons are rendered from `aven-app-icon.svg` with headless Chrome. Brand colors are registered as Quasar colors (`ui.colors(**BRAND_COLORS)`: `bordo`, `paper`, `amber`, `night`), so props like `color=bordo text-color=paper` work.
+- Header and login use the AVEN mark (`static/aven-mark.svg`, copied verbatim from the user's aven-logo artifact).
+- The app's avatar is the user-requested black hole on a red-black field: `static/deeper-blackhole.svg`, in brand colors only. All PNG icons (Dock/PWA/apple-touch/favicon) and `bot-avatar.png` (640×640, for BotFather) are rendered from it with headless Chrome.
+- Brand colors are registered as Quasar colors (`ui.colors(**BRAND_COLORS)`: `bordo`, `paper`, `amber`, `night`), so props like `color=bordo text-color=paper` work.
 - WeasyPrint gotchas:
   - `@font-face` only works when a `FontConfiguration` is passed to both `CSS()` and `write_pdf()`.
   - `font-weight` ranges and non-100 steps such as 650 are rejected.

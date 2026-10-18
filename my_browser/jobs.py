@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 
 import gpt_researcher.actions  # noqa: F401  creates the "scraper" logger's console handler first
 
-from my_browser.pipeline import PreflightError, env_overrides, overrides, preflight, research, save
+from my_browser import costs
+from my_browser.pipeline import DEFAULT_WRITER, PreflightError, env_overrides, overrides, preflight, research, save
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class Job:
     mode: str
     sources: str
     origin: str = "web"  # web | telegram
+    writer: str = DEFAULT_WRITER
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     status: str = "queued"  # queued | running | done | error
     phase: str = "В очереди"
@@ -43,6 +45,7 @@ class Job:
     log_count: int = 0  # total lines ever logged, so pollers can tell which deque entries are new
     report_id: int | None = None
     error: str | None = None
+    meter: costs.Meter = field(default_factory=costs.Meter)
 
     @property
     def active(self) -> bool:
@@ -82,8 +85,8 @@ class _LogToJob(logging.Handler):
 logging.getLogger("scraper").addHandler(_LogToJob())
 
 
-def submit(query: str, mode: str, sources: str, origin: str = "web") -> Job:
-    job = Job(query=query, mode=mode, sources=sources, origin=origin)
+def submit(query: str, mode: str, sources: str, origin: str = "web", writer: str = DEFAULT_WRITER) -> Job:
+    job = Job(query=query, mode=mode, sources=sources, origin=origin, writer=writer)
     JOBS[job.id] = job
     for old in sorted((j for j in JOBS.values() if not j.active), key=lambda j: j.created)[:-MAX_KEPT_JOBS]:
         JOBS.pop(old.id, None)
@@ -104,13 +107,14 @@ def _run(job: Job) -> None:
     with RESEARCH_LOCK:
         _current = job
         job.status, job.started, job.phase = "running", time.time(), "Проверяю DeepSeek и поиск..."
+        metering = costs.current.set(job.meter)  # asyncio.run copies this context into the research
         try:
-            with env_overrides(overrides(job.sources)):
+            with env_overrides(overrides(job.sources, writer=job.writer)):
                 preflight()
                 started = time.monotonic()
                 markdown, urls = asyncio.run(research(job.query, job.mode, on_progress=lambda text: setattr(job, "phase", text)))
                 job.phase = "Собираю PDF и DOCX..."
-                report = save(job.query, job.mode, markdown, urls, time.monotonic() - started)
+                report = save(job.query, job.mode, markdown, urls, time.monotonic() - started, cost=job.meter.summary())
             job.report_id, job.status, job.phase = report.id, "done", "Готово"
         except PreflightError as e:
             job.status, job.error, job.phase = "error", str(e), "Остановлено"
@@ -118,5 +122,6 @@ def _run(job: Job) -> None:
             logger.exception("Research failed: %s", job.query)
             job.status, job.error, job.phase = "error", str(e)[:500] or type(e).__name__, "Остановлено"
         finally:
+            costs.current.reset(metering)
             job.finished = time.time()
             _current = None

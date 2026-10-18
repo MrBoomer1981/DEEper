@@ -1,9 +1,9 @@
 {
   "FAST_LLM": "deepseek:deepseek-flash",
-  "SMART_LLM": "deepseek:deepseek-flash",
+  "SMART_LLM": "deepseek:deepseek-v4-pro",
   "STRATEGIC_LLM": "deepseek:deepseek-flash",
-  "LLM_KWARGS": {"extra_body": {"thinking": {"type": "disabled"}, "max_tokens": 16000}},
-  "SMART_TOKEN_LIMIT": 16000,
+  "LLM_KWARGS": {"extra_body": {"thinking": {"type": "disabled"}, "max_tokens": 32000}, "stream_usage": true},
+  "SMART_TOKEN_LIMIT": 32000,
 
   "RETRIEVER": "searx,arxiv,openalex",
   "PROMPT_FAMILY": "english_first",

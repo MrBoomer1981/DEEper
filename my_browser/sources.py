@@ -24,7 +24,7 @@ import os
 import re
 from collections import Counter
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import gpt_researcher.retrievers as retrievers
 import json_repair
@@ -139,6 +139,28 @@ def static_score(url: str, blocked: list[str]) -> int | None:
     return None
 
 
+_ENCODED_RUN = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
+
+
+def readable_url(url: str) -> str:
+    """Decode percent-encoded non-ASCII text (Cyrillic slugs) but keep ASCII escapes like %2F or %20.
+
+    Encoded Cyrillic costs the writer model 3-4 tokens per letter; long reports with many such
+    links hit the output limit and got cut off mid-reference. Requests re-encodes these URLs.
+    """
+    def decode(match: re.Match) -> str:
+        raw = bytes.fromhex(match.group(0).replace("%", ""))
+        if all(b < 0x80 for b in raw):
+            return match.group(0)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return match.group(0)
+        return "".join(quote(ch, safe="") if ord(ch) < 0x80 else ch for ch in text)
+
+    return _ENCODED_RUN.sub(decode, url)
+
+
 def _remember(results) -> None:
     if not isinstance(results, list):
         return
@@ -147,7 +169,7 @@ def _remember(results) -> None:
     for r in results:
         url = isinstance(r, dict) and (r.get("href") or r.get("url"))
         if url:
-            SEARCH_META[url] = {"title": str(r.get("title") or "").strip(), "snippet": str(r.get("body") or "").strip()}
+            SEARCH_META[readable_url(url)] = {"title": str(r.get("title") or "").strip(), "snippet": str(r.get("body") or "").strip()}
 
 
 def _patch_retrievers() -> None:
@@ -228,7 +250,7 @@ async def rank(urls: list[str], query: str, cfg, domain_counts: Counter | None =
 
 async def _get_new_urls_filtered(self, url_set_input):
     """Replacement for ResearchConductor._get_new_urls: select before marking as visited."""
-    candidates = list(dict.fromkeys(u for u in url_set_input if u not in self.researcher.visited_urls))
+    candidates = list(dict.fromkeys(u for u in map(readable_url, url_set_input) if u not in self.researcher.visited_urls))
     if os.environ.get("SOURCE_FILTER", "on") == "off" or not candidates:
         selected = [(u, None) for u in candidates]
     else:

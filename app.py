@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from urllib.parse import urlparse
 
-from my_browser.pipeline import DEFAULT_SOURCES, REPORTS_DIR, ROOT
+from my_browser.pipeline import DEFAULT_SOURCES, DEFAULT_WRITER, REPORTS_DIR, ROOT
 
 REPORTS_DIR.mkdir(exist_ok=True)
 # Read by NiceGUI at import: keep login sessions on the Railway volume across redeploys.
@@ -32,7 +32,7 @@ from nicegui import app, ui  # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
 import bot  # noqa: E402
-from my_browser import jobs, sources  # noqa: E402
+from my_browser import costs, jobs, sources  # noqa: E402
 from my_browser.ask import ask, load_qa  # noqa: E402
 from my_browser.library import Library  # noqa: E402
 
@@ -48,6 +48,9 @@ MODE_HINTS = {
     "quick": "≈ 1 мин · один проход",
 }
 SOURCE_LABELS = {"all": "Всё", "web": "Веб", "academic": "Наука"}
+WRITER_LABELS = {"pro": "Pro", "flash": "Flash"}
+WRITER_HINTS = {"pro": "текст пишет DeepSeek V4 Pro — сильнее, дороже ≈ 3×", "flash": "текст пишет DeepSeek Flash — быстрее и дешевле"}
+WRITER_OF_MODEL = {"deepseek-v4-pro": "pro", "deepseek-flash": "flash"}
 BRAND_COLORS = dict(
     primary="#7A2A35", secondary="#F2EBE1", accent="#E8A24A", dark="#1D1916", dark_page="#14100E",
     positive="#7A2A35", negative="#7A2A35", info="#7A2A35", warning="#E8A24A",
@@ -346,7 +349,7 @@ def index_page() -> None:
         if not query:
             ui.notify("Напишите тему исследования", type="warning")
             return
-        job = jobs.submit(query, mode.value, source.value, origin="web")
+        job = jobs.submit(query, mode.value, source.value, origin="web", writer=writer.value)
         ui.run_javascript("window.Notification && Notification.permission === 'default' && Notification.requestPermission()")
         ui.navigate.to(f"/job/{job.id}")
 
@@ -362,10 +365,14 @@ def index_page() -> None:
             mode = ui.toggle(MODES, value="detailed").props(toggle_props).classes("border border-[color:var(--line)] rounded-full")
             source = ui.toggle(SOURCE_LABELS, value=DEFAULT_SOURCES).props(toggle_props) \
                 .classes("border border-[color:var(--line)] rounded-full")
+            writer = ui.toggle(WRITER_LABELS, value=DEFAULT_WRITER).props(toggle_props) \
+                .classes("border border-[color:var(--line)] rounded-full")
             ui.space()
             primary_button("Исследовать", start, icon="arrow_forward").props("size=lg")
         hint = ui.label(MODE_HINTS["detailed"]).classes("mono text-[12px] muted")
         mode.on_value_change(lambda e: hint.set_text(MODE_HINTS[e.value]))
+        writer_hint = ui.label(WRITER_HINTS[DEFAULT_WRITER]).classes("mono text-[12px] muted -mt-3")
+        writer.on_value_change(lambda e: writer_hint.set_text(WRITER_HINTS[e.value]))
         ui.label("запросы к поиску — на английском · отчёт — на русском · ⌘ Enter — запуск").classes("mono text-[11px] faint")
 
 
@@ -386,6 +393,7 @@ def job_page(job_id: str) -> RedirectResponse | None:
         with ui.row().classes("gap-2"):
             chip(MODES[job.mode].lower())
             chip(f"источники: {SOURCE_LABELS.get(job.sources, job.sources).lower()}")
+            chip(f"текст: {job.writer}")
             if job.origin == "telegram":
                 chip("из telegram")
         with ui.card().classes("w-full px-5 py-4"):
@@ -393,6 +401,7 @@ def job_page(job_id: str) -> RedirectResponse | None:
                 spinner = ui.spinner(size="sm", color="paper").classes("opacity-70")
                 phase = ui.label().classes("text-[16px]")
                 ui.space()
+                spent = ui.label().classes("mono text-[13px] muted").tooltip("Расход на DeepSeek по реальным токенам")
                 clock = ui.label().classes("mono text-[18px] amber-text")
         error_box = ui.column().classes("w-full")
         queries_title = ui.label().classes("brand-label mt-4")
@@ -408,6 +417,7 @@ def job_page(job_id: str) -> RedirectResponse | None:
     def update() -> None:
         phase.set_text("В очереди — дождусь окончания текущего исследования" if job.status == "queued" else job.phase)
         clock.set_text(mmss(job.elapsed))
+        spent.set_text(costs.rub_text(job.meter.rub()) if job.meter.by_model else "")
         queries_title.set_text(f"Поисковые запросы · {len(job.queries)}")
         with queries_box:
             for q in job.queries[shown["queries"]:]:
@@ -477,6 +487,10 @@ def report_page(report_id: int) -> None:
             chip(f"{number(entry.words)} {plural(entry.words, 'слово', 'слова', 'слов')}")
             chip(f"{entry.sources_count} {plural(entry.sources_count, 'источник', 'источника', 'источников')}")
             chip(mmss(entry.duration_sec))
+            if meta.get("writer"):
+                chip(f"текст: {WRITER_OF_MODEL.get(meta['writer'], meta['writer'])}")
+            if meta.get("cost"):
+                chip(costs.rub_text(meta["cost"].get("rub")))
             ui.space()
             for kind in ("pdf", "docx", "md"):
                 if entry.base.with_suffix(f".{kind}").exists():
@@ -515,14 +529,16 @@ def report_page(report_id: int) -> None:
             with ui.tab_panel("qa").classes("px-0 pt-4"):
                 qa_box = ui.column().classes("w-full gap-4")
 
-                def show(q: str, a: str) -> None:
+                def show(q: str, a: str, cost_rub: float | None = None) -> None:
                     with qa_box, ui.card().classes("w-full px-6 py-5 gap-2"):
                         label("Вопрос")
                         ui.label(q).classes("text-[16px] font-semibold")
                         ui.markdown(a).classes("report compact")
+                        if cost_rub is not None:
+                            ui.label(costs.rub_text(cost_rub)).classes("mono text-[11px] faint")
 
                 for item in qa:
-                    show(item["q"], item["a"])
+                    show(item["q"], item["a"], item.get("cost_rub"))
 
                 async def submit() -> None:
                     q = (question.value or "").strip()
@@ -538,7 +554,7 @@ def report_page(report_id: int) -> None:
                     finally:
                         send.props(remove="loading")
                         question.enable()
-                    show(q, answer)
+                    show(q, answer, (load_qa(entry.md_path) or [{}])[-1].get("cost_rub"))
                     question.value = ""
                     qa_tab.props(f'label="Вопросы · {len(load_qa(entry.md_path))}"')
 
@@ -562,6 +578,7 @@ async def report_file(report_id: int, kind: str):
 
 async def on_startup() -> None:
     Library().sync()
+    await asyncio.to_thread(costs.usd_rub)  # so live cost labels never block on the network
     if bot.token():
         task = asyncio.create_task(bot.start(handle_signals=False))
         background.add(task)
