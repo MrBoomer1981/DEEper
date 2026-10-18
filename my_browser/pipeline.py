@@ -32,6 +32,8 @@ SOURCES = {
     "all": f"{WEB_RETRIEVER},arxiv,openalex",
 }
 
+DEFAULT_SOURCES = "all"
+
 MODES = {
     "detailed": "подробный отчёт: введение, разделы по подтемам, заключение (самый длинный)",
     "deep": "глубокое исследование: рекурсивный поиск вширь и вглубь, затем один отчёт",
@@ -129,6 +131,7 @@ def preflight() -> None:
 async def research(query: str, mode: str, on_progress: Callable[[str], None] = print) -> tuple[str, list[str]]:
     from gpt_researcher import GPTResearcher
 
+    from my_browser import prompts  # noqa: F401  registers the english_first prompt family
     from my_browser.detailed import DetailedReport
 
     if mode == "detailed":

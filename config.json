@@ -5,7 +5,8 @@
   "LLM_KWARGS": {"extra_body": {"thinking": {"type": "disabled"}, "max_tokens": 16000}},
   "SMART_TOKEN_LIMIT": 16000,
 
-  "RETRIEVER": "searx",
+  "RETRIEVER": "searx,arxiv,openalex",
+  "PROMPT_FAMILY": "english_first",
   "CONTEXT_FILTER": "keyword",
   "MAX_SEARCH_RESULTS_PER_QUERY": 5,
 

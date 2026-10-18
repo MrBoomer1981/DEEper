@@ -29,7 +29,7 @@ from aiogram.types import (
 
 from my_browser.ask import ask
 from my_browser.library import Entry, Library
-from my_browser.pipeline import PreflightError, Report, env_overrides, overrides, preflight, research, save
+from my_browser.pipeline import DEFAULT_SOURCES, PreflightError, Report, env_overrides, overrides, preflight, research, save
 
 MODE_BUTTONS = {"detailed": "📄 Подробный", "deep": "🔬 Глубокий", "quick": "⚡ Быстрый"}
 SOURCE_BUTTONS = {"web": "🌐 Веб", "academic": "🎓 Наука", "all": "🌐+🎓 Всё"}
@@ -307,10 +307,10 @@ async def on_topic(message: Message) -> None:
     if not query:
         return
     key = f"{message.chat.id}_{message.message_id}"
-    pending[key] = {"query": query, "sources": "web"}
+    pending[key] = {"query": query, "sources": DEFAULT_SOURCES}
     await message.reply(
         f"🔎 <b>{html.escape(query)}</b>\n\nВыберите режим. Второй ряд — источники.",
-        reply_markup=_topic_keyboard(key, "web"),
+        reply_markup=_topic_keyboard(key, DEFAULT_SOURCES),
     )
 
 

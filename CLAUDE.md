@@ -31,6 +31,10 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
   - Each research runs in a worker thread with its own event loop (`asyncio.to_thread` + `asyncio.run`), so the bot stays responsive. Progress is passed as a plain string that a ticker task renders into the status message every few seconds.
   - Replying to any message that contains `#N`, or using `/ask N`, answers from report N's text (`my_browser/ask.py`).
 - Modes: `quick` = `research_report`; `deep` = gpt-researcher's recursive `deep` report (`DEEP_RESEARCH_*` keys); `detailed` = `my_browser/detailed.py`, a port of upstream `backend/report_type/detailed_report`, which is **not shipped in the pip package**. It runs one broad research pass, then each subtopic is researched and written as its own section (each at least `TOTAL_WORDS` long), then the intro, TOC, conclusion and references are stitched together.
+- `my_browser/prompts.py` makes search queries English-first while the report stays in `LANGUAGE`. It registers the `english_first` prompt family (`PROMPT_FAMILY` in `config.json`) and monkeypatches two upstream spots:
+  - `query_processing.generate_sub_queries`: upstream `plan_research_outline()` doesn't pass `prompt_family`, so a custom family never reached sub-query generation.
+  - `DeepResearchSkill.generate_search_queries`: its query prompt is inline, so it gets the language rule and today's date.
+  - `pipeline.research()` imports the module for these side effects.
 - `my_browser/export.py`: DOCX is rendered in-process (mistune → htmldocx). The PDF is rendered by WeasyPrint **in a child process** with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`, because WeasyPrint needs Homebrew's pango (`brew install pango`) and dyld reads that variable only at process start.
 
 ## Deployment
