@@ -3,9 +3,19 @@ name = "my-browser"
 version = "0.1.0"
 description = "Personal deep-research engine (GPT Researcher + SearXNG + DeepSeek)"
 requires-python = ">=3.12"
+# Shared by every part (my_browser/common); each part's own packages are in its group below.
 dependencies = [
-    "aiogram>=3.31.0",
-    "gpt-researcher>=0.16.1",
-    "langchain-mcp-adapters>=0.3.2",
-    "nicegui>=3.18.0",
+    "httpx>=0.28.1",
+    "python-dotenv>=1.2.4",
 ]
+
+[dependency-groups]
+core = ["nicegui>=3.18.0"]
+worker = ["gpt-researcher>=0.16.1", "langchain-mcp-adapters>=0.3.2", "fastapi>=0.143.3", "uvicorn>=0.54.0"]
+search = ["gpt-researcher>=0.16.1", "json-repair>=0.64.0", "fastapi>=0.143.3", "uvicorn>=0.54.0"]
+bot = ["aiogram>=3.31.0"]
+
+[tool.uv]
+# app.py runs every part in one process, so `uv run` installs all groups; an image for a single
+# part would use `uv sync --no-default-groups --group <part>`.
+default-groups = ["core", "worker", "search", "bot"]

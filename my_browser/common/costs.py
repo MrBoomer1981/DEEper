@@ -78,6 +78,14 @@ class Meter:
     def rub(self, fetch: bool = False) -> float:
         return self.usd * usd_rub(fetch)
 
+    def merge(self, rows: dict) -> None:
+        """Add another part's usage (its Meter.by_model), e.g. the search part's source rating."""
+        for model, other in rows.items():
+            row = self.by_model.setdefault(model, {"calls": 0, "input": 0, "cached": 0, "output": 0, "usd": 0.0})
+            for key in row:
+                row[key] += other.get(key, 0)
+            self.usd += other.get("usd", 0.0)
+
     def summary(self, fetch: bool = True) -> dict:
         rate = usd_rub(fetch)
         return {"usd": round(self.usd, 5), "rub": round(self.usd * rate, 2), "usd_rub": rate,
@@ -93,12 +101,6 @@ def metered():
         yield meter
     finally:
         current.reset(token)
-
-
-def rub_text(rub: float | None) -> str:
-    if rub is None:
-        return "—"
-    return f"{rub:.2f} ₽".replace(".", ",") if rub < 10 else f"{rub:.1f} ₽".replace(".", ",")
 
 
 _get_chat_response = GenericLLMProvider.get_chat_response

@@ -1,39 +1,33 @@
-"""Source selection applied before pages are scraped.
+"""Source selection, the search part's POST /select: which search results become research sources.
 
 Every candidate URL found for a search query gets a 0-3 score from one cheap LLM call that sees
-its title and snippet (captured from the retrievers) and judges relevance to the research topic
-together with credibility and freshness:
+its title and snippet (the worker captures them from the retrievers) and judges relevance to the
+research topic together with credibility and freshness:
   3  highly relevant and primary/authoritative
   2  relevant and solid
   1  weak (SEO blogs, vendor marketing, aggregators, forums) or only tangential
   0  off-topic or useless (shops, spam, a paper about something else that shares some words)
 Known domains (DOMAIN_SCORES) only raise the score of a relevant source and never rescue an
-off-topic one; social/video/shops and the user's blocklist are dropped without asking the model.
+off-topic one; social/video/shops and the user's blocklist are dropped without asking the model,
+and domains that stay unreadable (reader.stats) lose a point.
 Selection: zeros out; ones only when a query found nothing better (at most WEAK_FALLBACK); at most
 PER_DOMAIN_QUERY per domain per query and PER_DOMAIN_RESEARCH per research, so one site
 (typically arXiv) cannot crowd out the rest; best first, at most MAX_SOURCES_PER_QUERY.
-
-Importing this module patches gpt-researcher: the retrievers' search() remembers titles and
-snippets, and ResearchConductor._get_new_urls (where search results become research sources,
-and later the references) applies the selection.
 """
 
-import inspect
 import logging
 import os
 import re
 from collections import Counter
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse
 
-import gpt_researcher.retrievers as retrievers
 import json_repair
-from gpt_researcher.actions import stream_output
-from gpt_researcher.skills.researcher import ResearchConductor
+from gpt_researcher.config import Config
 from gpt_researcher.utils.llm import create_chat_completion
 
-from my_browser.pipeline import REPORTS_DIR
-from my_browser.reader import stats as read_stats
+from my_browser.common.settings import CONFIG_PATH
+from my_browser.common.text import host
+from my_browser.search.reader import stats as read_stats
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +35,6 @@ MAX_SOURCES_PER_QUERY = int(os.environ.get("MAX_SOURCES_PER_QUERY", 8))
 PER_DOMAIN_QUERY = int(os.environ.get("PER_DOMAIN_QUERY", 2))
 PER_DOMAIN_RESEARCH = int(os.environ.get("PER_DOMAIN_RESEARCH", 5))
 WEAK_FALLBACK = 3
-BLOCKLIST_PATH = REPORTS_DIR / "blocked_domains.txt"  # on Railway this lives on the volume
-SEARCH_META: dict[str, dict] = {}  # url -> title/snippet from the last searches that returned it
 
 TOP_TIER_HOST = re.compile(r"(^|\.)(gov|edu|int|mil)(\.[a-z]{2})?$|(^|\.)ac\.[a-z]{2}$|(^|\.)gov\.ru$")
 
@@ -95,36 +87,8 @@ If the topic is about the current state of things, clearly outdated results get 
 Return ONLY a JSON array of {count} integers in the same order, e.g. [3, 1, 0]."""
 
 
-def host(url: str) -> str:
-    return (urlparse(url).hostname or "").lower().removeprefix("www.")
-
-
 def _matches(hostname: str, domain: str) -> bool:
     return hostname == domain or hostname.endswith("." + domain)
-
-
-def blocked_domains() -> list[str]:
-    if not BLOCKLIST_PATH.exists():
-        return []
-    return [line.strip().lower() for line in BLOCKLIST_PATH.read_text("utf-8").splitlines() if line.strip()]
-
-
-def block(domain: str) -> str:
-    domain = host(domain if "://" in domain else f"https://{domain}")
-    if domain and domain not in blocked_domains():
-        BLOCKLIST_PATH.parent.mkdir(exist_ok=True)
-        with BLOCKLIST_PATH.open("a", encoding="utf-8") as f:
-            f.write(domain + "\n")
-    return domain
-
-
-def unblock(domain: str) -> bool:
-    domain = host(domain if "://" in domain else f"https://{domain}")
-    current = blocked_domains()
-    if domain not in current:
-        return False
-    BLOCKLIST_PATH.write_text("".join(d + "\n" for d in current if d != domain), "utf-8")
-    return True
 
 
 def static_score(url: str, blocked: list[str]) -> int | None:
@@ -140,68 +104,19 @@ def static_score(url: str, blocked: list[str]) -> int | None:
     return None
 
 
-_ENCODED_RUN = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
-
-
-def readable_url(url: str) -> str:
-    """Decode percent-encoded non-ASCII text (Cyrillic slugs) but keep ASCII escapes like %2F or %20.
-
-    Encoded Cyrillic costs the writer model 3-4 tokens per letter; long reports with many such
-    links hit the output limit and got cut off mid-reference. Requests re-encodes these URLs.
-    """
-    def decode(match: re.Match) -> str:
-        raw = bytes.fromhex(match.group(0).replace("%", ""))
-        if all(b < 0x80 for b in raw):
-            return match.group(0)
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return match.group(0)
-        return "".join(quote(ch, safe="") if ord(ch) < 0x80 else ch for ch in text)
-
-    return _ENCODED_RUN.sub(decode, url)
-
-
-def _remember(results) -> None:
-    if not isinstance(results, list):
-        return
-    if len(SEARCH_META) > 20000:
-        SEARCH_META.clear()
-    for r in results:
-        url = isinstance(r, dict) and (r.get("href") or r.get("url"))
-        if url:
-            SEARCH_META[readable_url(url)] = {"title": str(r.get("title") or "").strip(), "snippet": str(r.get("body") or "").strip()}
-
-
-def _patch_retrievers() -> None:
-    for name in dir(retrievers):
-        cls = getattr(retrievers, name)
-        search = getattr(cls, "search", None)
-        if not (isinstance(cls, type) and name.endswith("Search") and callable(search)) \
-                or inspect.iscoroutinefunction(search) or getattr(search, "remembers", False):
-            continue
-
-        def remembering(self, *args, _search=search, **kwargs):
-            results = _search(self, *args, **kwargs)
-            _remember(results)
-            return results
-
-        remembering.remembers = True
-        cls.search = remembering
-
-
-def _describe(i: int, url: str, known: bool) -> str:
-    meta = SEARCH_META.get(url, {})
-    lines = [f"{i}. {url}" + (" [known]" if known else "")]
-    if meta.get("title"):
-        lines.append(f"   title: {meta['title'][:160]}")
-    if meta.get("snippet"):
-        lines.append(f"   snippet: {' '.join(meta['snippet'].split())[:240]}")
+def _describe(i: int, candidate: dict, known: bool) -> str:
+    lines = [f"{i}. {candidate['url']}" + (" [known]" if known else "")]
+    if candidate.get("title"):
+        lines.append(f"   title: {candidate['title'][:160]}")
+    if candidate.get("snippet"):
+        lines.append(f"   snippet: {' '.join(candidate['snippet'].split())[:240]}")
     return "\n".join(lines)
 
 
-async def llm_scores(urls: list[str], query: str, cfg, known: set[str]) -> dict[str, int] | None:
-    listing = "\n".join(_describe(i + 1, u, u in known) for i, u in enumerate(urls))
+async def llm_scores(candidates: list[dict], query: str, known: set[str]) -> dict[str, int] | None:
+    cfg = Config(str(CONFIG_PATH))
+    urls = [c["url"] for c in candidates]
+    listing = "\n".join(_describe(i + 1, c, c["url"] in known) for i, c in enumerate(candidates))
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     try:
         response = await create_chat_completion(
@@ -221,25 +136,25 @@ async def llm_scores(urls: list[str], query: str, cfg, known: set[str]) -> dict[
     return None
 
 
-async def rank(urls: list[str], query: str, cfg, domain_counts: Counter | None = None) -> list[tuple[str, int]]:
-    """Score and select URLs, best first."""
-    blocked = blocked_domains()
-    static = {u: static_score(u, blocked) for u in urls}
-    to_rate = [u for u in urls if static[u] != 0]
-    rated = await llm_scores(to_rate, query, cfg, {u for u in to_rate if static[u]}) if to_rate else {}
+async def rank(candidates: list[dict], query: str, domain_counts: Counter, blocked: list[str]) -> list[tuple[str, int]]:
+    """Score and select candidates ({url, title, snippet}), best first."""
+    static = {c["url"]: static_score(c["url"], blocked) for c in candidates}
+    to_rate = [c for c in candidates if static[c["url"]] != 0]
+    known = {c["url"] for c in to_rate if static[c["url"]]}
+    rated = await llm_scores(to_rate, query, known) if to_rate else {}
     scores = {}
-    for u in to_rate:
+    for c in to_rate:
+        u = c["url"]
         if rated is None:  # rating failed: known domains keep their tier, the rest count as weak
             scores[u] = static[u] or 1
         elif rated[u] > 0:  # authority raises a relevant result, never rescues an off-topic one
             scores[u] = max(rated[u], static[u] or 0)
-    for u in scores:  # a domain that stays unreadable even through reader's fallbacks loses a point
+    for u in scores:  # a domain that stays unreadable even through the reader's fallbacks loses a point
         if scores[u] > 1 and read_stats.unreadable(u):
             scores[u] -= 1
     good = sorted(((u, s) for u, s in scores.items() if s >= 2), key=lambda item: item[1], reverse=True)
     pool = good or [(u, s) for u, s in scores.items() if s == 1][:WEAK_FALLBACK]
 
-    domain_counts = domain_counts or Counter()
     selected, per_query = [], Counter()
     for u, s in pool:
         d = host(u)
@@ -250,36 +165,3 @@ async def rank(urls: list[str], query: str, cfg, domain_counts: Counter | None =
         if len(selected) >= MAX_SOURCES_PER_QUERY:
             break
     return selected
-
-
-async def _get_new_urls_filtered(self, url_set_input):
-    """Replacement for ResearchConductor._get_new_urls: select before marking as visited."""
-    candidates = list(dict.fromkeys(u for u in map(readable_url, url_set_input) if u not in self.researcher.visited_urls))
-    if os.environ.get("SOURCE_FILTER", "on") == "off" or not candidates:
-        selected = [(u, None) for u in candidates]
-    else:
-        query = self.researcher.query
-        if self.researcher.parent_query:
-            query = f"{self.researcher.parent_query} - {query}"
-        # visited_urls is shared by the sub-researchers of a detailed report, so this caps
-        # each domain across the whole research.
-        selected = await rank(candidates, query, self.researcher.cfg, Counter(host(u) for u in self.researcher.visited_urls))
-        if len(selected) < len(candidates) and self.researcher.verbose:
-            await stream_output("logs", "source_filter", f"🧹 Source filter: kept {len(selected)} of {len(candidates)} URLs\n",
-                                self.researcher.websocket)
-
-    new_urls = []
-    for url, score in selected:
-        if url in self.researcher.visited_urls:  # added by a parallel sub-query while we awaited the rating
-            continue
-        self.researcher.visited_urls.add(url)
-        new_urls.append(url)
-        if self.researcher.verbose:
-            await stream_output("logs", "added_source_url",
-                                f"✅ Added source url to research ({score if score is not None else '-'}/3): {url}\n",
-                                self.researcher.websocket, True, url)
-    return new_urls
-
-
-_patch_retrievers()
-ResearchConductor._get_new_urls = _get_new_urls_filtered

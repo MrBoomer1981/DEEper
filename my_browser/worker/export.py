@@ -7,7 +7,7 @@ from pathlib import Path
 
 import mistune
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 HOMEBREW_LIB = "/opt/homebrew/lib"
 
 FONTS = ROOT / "static" / "fonts"
@@ -62,7 +62,7 @@ def write_pdf(md_path: Path, pdf_path: Path) -> None:
             filter(None, [env.get("DYLD_FALLBACK_LIBRARY_PATH"), HOMEBREW_LIB])
         )
     subprocess.run(
-        [sys.executable, "-m", "my_browser.export", str(md_path), str(pdf_path)],
+        [sys.executable, "-m", "my_browser.worker.export", str(md_path), str(pdf_path)],
         env=env,
         cwd=ROOT,
         check=True,

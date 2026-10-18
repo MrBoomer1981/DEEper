@@ -1,18 +1,18 @@
 """Telegram bot: send a topic, pick a mode, get the report as PDF, DOCX and Markdown.
 
-Run: uv run bot.py   (needs TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS in .env)
+It talks to core's API only (CORE_URL with the service token). The all-in-one app.py starts it;
+on its own: uv run python -m my_browser.bot (needs TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS).
 """
 
 import asyncio
 import html
-import json
 import logging
 import os
 import re
-import sys
 import time
 from contextlib import suppress
 
+import httpx
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -20,23 +20,25 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     BotCommand,
+    BufferedInputFile,
     CallbackQuery,
-    FSInputFile,
+    ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaDocument,
     Message,
 )
 
-from my_browser import costs, jobs, sources, suggest
-from my_browser.ask import ask, load_qa
-from my_browser.library import Entry, Library
-from my_browser.pipeline import DEFAULT_SOURCES
+from my_browser.common.clients import call
+from my_browser.common.report import ANY_ANSWER, KINDS
+from my_browser.common.settings import DEFAULT_SOURCES
+from my_browser.common.text import rub_text
 
 MODE_BUTTONS = {"detailed": "📄 Подробный", "deep": "🔬 Глубокий", "quick": "⚡ Быстрый"}
 SOURCE_BUTTONS = {"web": "🌐 Веб", "academic": "🎓 Наука", "all": "🌐+🎓 Всё"}
 TG_LIMIT = 4000
 TICK_SEC = 5  # status refresh; also proves the bot is alive during long runs
+NOTIFY_SEC = 60  # how often to look for researches interrupted by a restart
 
 HELP = """<b>Глубокие исследования</b>
 
@@ -58,9 +60,22 @@ HELP = """<b>Глубокие исследования</b>
 /block домен — не использовать сайт как источник (/unblock, /blocked)"""
 
 dp = Dispatcher()
-library = Library()
 pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the message that offered it
 background: set[asyncio.Task] = set()
+
+
+async def core(method: str, path: str, **kwargs):
+    """JSON from core's API; httpx.HTTPStatusError on 4xx/5xx."""
+    return (await call("core", method, path, **kwargs)).json()
+
+
+async def report_view(report_id: int) -> dict | None:
+    try:
+        return await core("GET", f"/api/reports/{report_id}")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise
 
 
 class AllowedUsers(BaseMiddleware):
@@ -83,7 +98,7 @@ class AllowedUsers(BaseMiddleware):
 
 
 class Status:
-    """The status message of one research run, re-rendered from the job's state."""
+    """The status message of one research run, re-rendered from the job's state in core."""
 
     def __init__(self, message: Message, header: str):
         self.message = message
@@ -91,19 +106,20 @@ class Status:
         self._shown = ""
         self._shown_at = 0.0
 
-    async def follow(self, job: jobs.Job) -> None:
-        while job.active:
+    async def follow(self, job_id: str) -> dict:
+        while True:
             await asyncio.sleep(TICK_SEC)
-            if not job.active:  # finished while we slept; the caller renders the result
-                break
-            text = "В очереди: дождусь окончания текущего исследования..." if job.status == "queued" else job.phase
+            job = await core("GET", f"/api/jobs/{job_id}")
+            if not job["active"]:
+                return job
+            text = "В очереди: дождусь окончания текущего исследования..." if job["status"] == "queued" else job["phase"]
             if text != self._shown or time.monotonic() - self._shown_at >= 15:
-                await self.render(f"⏳ {html.escape(text)}\n⏱ {_mmss(job.elapsed)}")
+                await self.render(f"⏳ {html.escape(text or '')}\n⏱ {_mmss(job['elapsed'])}")
                 self._shown, self._shown_at = text, time.monotonic()
 
-    async def render(self, body: str) -> None:
+    async def render(self, body: str, keyboard: InlineKeyboardMarkup | None = None) -> None:
         with suppress(TelegramBadRequest):
-            await self.message.edit_text(f"{self.header}\n\n{body}")
+            await self.message.edit_text(f"{self.header}\n\n{body}", reply_markup=keyboard)
 
 
 def _mmss(seconds: float) -> str:
@@ -126,6 +142,18 @@ def _conclusion(markdown: str) -> str | None:
     if not match:
         return None
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(1)).strip() or None
+
+
+def _cost(meta: dict) -> str:
+    return rub_text((meta.get("cost") or {}).get("rub")) if meta.get("cost") else "—"
+
+
+def _header(job: dict) -> str:
+    return f"🔎 <b>{html.escape(job['query'])}</b>\n{MODE_BUTTONS[job['mode']]} · {SOURCE_BUTTONS.get(job['sources'], job['sources'])}"
+
+
+def _restart_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔁 Перезапустить", callback_data=f"x:{job_id}")]])
 
 
 def _topic_text(item: dict, note: str = "") -> str:
@@ -155,77 +183,81 @@ def _topic_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _offer(send, key: str, query: str, parent: Entry | None = None, recommended: str | None = None) -> None:
+async def _offer(send, key: str, query: str, parent_id: int | None = None, recommended: str | None = None) -> None:
     """Ask for the mode and sources of a new research; `send` is message.reply or message.answer."""
-    pending[key] = {"query": query, "sources": DEFAULT_SOURCES, "recommended": recommended,
-                    "parent": parent.base.name if parent else None, "parent_id": parent.id if parent else None}
+    pending[key] = {"query": query, "sources": DEFAULT_SOURCES, "recommended": recommended, "parent_id": parent_id}
     await send(_topic_text(pending[key]), reply_markup=_topic_keyboard(key))
 
 
-def _followups(entry: Entry) -> list[dict]:
-    path = entry.base.with_suffix(".json")
-    return (json.loads(path.read_text("utf-8")).get("followups") or []) if path.exists() else []
-
-
-def _cost(entry: Entry) -> str:
-    cost = json.loads(entry.base.with_suffix(".json").read_text("utf-8")).get("cost") or {}
-    return costs.rub_text(cost.get("rub")) if cost else "—"
-
-
-async def send_report(message: Message, entry: Entry) -> None:
+async def send_report(message: Message, view: dict) -> None:
+    entry, meta = view["entry"], view["meta"]
     caption = (
-        f"📄 <b>Отчёт #{entry.id}</b>: {html.escape(entry.query)}\n"
-        f"{entry.words} слов · {entry.sources_count} источников · {_mmss(entry.duration_sec)} · {_cost(entry)}"
+        f"📄 <b>Отчёт #{entry['id']}</b>: {html.escape(entry['query'])}\n"
+        f"{entry['words']} слов · {entry['sources_count']} источников · {_mmss(entry['duration_sec'])} · {_cost(meta)}"
     )
-    files = entry.files()
+    files = []
+    for kind in ("pdf", "docx", "md"):
+        with suppress(httpx.HTTPStatusError):
+            response = await call("core", "GET", f"/api/reports/{entry['id']}/files/{kind}")
+            files.append(BufferedInputFile(response.content, filename=f"{entry['name']}.{kind}"))
     if not files:
-        await message.answer(f"Файлы отчёта #{entry.id} не найдены.")
+        await message.answer(f"Файлы отчёта #{entry['id']} не найдены.")
         return
     if len(files) == 1:  # a media group needs 2-10 items
-        await message.answer_document(FSInputFile(files[0]), caption=caption)
+        await message.answer_document(files[0], caption=caption)
     else:
         await message.answer_media_group([
-            InputMediaDocument(media=FSInputFile(p), caption=caption if p == files[-1] else None) for p in files
+            InputMediaDocument(media=f, caption=caption if f is files[-1] else None) for f in files
         ])
 
-    conclusion = _conclusion(entry.md_path.read_text("utf-8"))
+    conclusion = _conclusion(view["markdown"])
     if conclusion:
-        for part in _chunks(f"📌 Отчёт #{entry.id} — заключение\n\n{conclusion}"):
+        for part in _chunks(f"📌 Отчёт #{entry['id']} — заключение\n\n{conclusion}"):
             await message.answer(part, parse_mode=None)
-    await message.answer(f"Ответьте на сообщение с «#{entry.id}», чтобы задать вопрос по этому отчёту.")
+    await message.answer(f"Ответьте на сообщение с «#{entry['id']}», чтобы задать вопрос по этому отчёту.")
 
-    topics = _followups(entry)
+    topics = meta.get("followups") or []
     if topics:
-        lines = [f"🧭 <b>Что исследовать дальше</b> — по отчёту #{entry.id}"]
+        lines = [f"🧭 <b>Что исследовать дальше</b> — по отчёту #{entry['id']}"]
         for i, t in enumerate(topics, 1):
-            lines.append(f"{i}. <b>{suggest.KINDS[t['kind']]}:</b> {html.escape(t['query'])}"
+            lines.append(f"{i}. <b>{KINDS[t['kind']]}:</b> {html.escape(t['query'])}"
                          + (f"\n<i>{html.escape(t['why'])}</i>" if t["why"] else ""))
-        buttons = [InlineKeyboardButton(text=str(i), callback_data=f"f:{entry.id}:{i - 1}") for i in range(1, len(topics) + 1)]
+        buttons = [InlineKeyboardButton(text=str(i), callback_data=f"f:{entry['id']}:{i - 1}") for i in range(1, len(topics) + 1)]
         await message.answer("\n\n".join(lines) + "\n\nНажмите номер темы, чтобы выбрать режим и запустить.",
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]))
 
 
-async def run_research(status: Status, query: str, mode: str, sources: str, parent: str | None = None) -> None:
-    if jobs.busy():
-        await status.render("⏳ В очереди: дождусь окончания текущего исследования...")
-    job = jobs.submit(query, mode, sources, origin="telegram", parent=parent)
-    await status.follow(job)
-    if job.status == "error":
-        await status.render(f"❌ {html.escape(job.error or 'Ошибка')}")
+async def finish(status: Status, job: dict) -> None:
+    """Render a finished, failed or interrupted job; send the report when it is ready."""
+    if job["status"] == "error":
+        await status.render(f"❌ {html.escape(job['error'] or 'Ошибка')}", _restart_keyboard(job["id"]))
         return
-    entry = library.get(job.report_id)
-    await status.render(f"✅ Готово за {_mmss(job.elapsed)}: {entry.words} слов, {entry.sources_count} источников, {_cost(entry)}")
-    await send_report(status.message, entry)
+    if job["status"] == "interrupted":
+        await status.render("⚠️ Исследование прервано: сервер перезапускался.", _restart_keyboard(job["id"]))
+        await core("POST", f"/api/jobs/{job['id']}/notified")
+        return
+    view = await report_view(job["report_id"])
+    entry = view["entry"]
+    await status.render(f"✅ Готово за {_mmss(job['elapsed'])}: {entry['words']} слов, "
+                        f"{entry['sources_count']} источников, {_cost(view['meta'])}")
+    await send_report(status.message, view)
+
+
+async def run_research(status: Status, item: dict, mode: str) -> None:
+    job = await core("POST", "/api/jobs", json={
+        "query": item["query"], "mode": mode, "sources": item["sources"], "parent_id": item.get("parent_id"),
+        "origin": "telegram", "origin_ref": {"chat": status.message.chat.id, "message": status.message.message_id},
+    })
+    await finish(status, await status.follow(job["id"]))
 
 
 async def answer_question(message: Message, report_id: int, question: str) -> None:
-    entry = library.get(report_id)
-    if not entry or not entry.md_path.exists():
+    if not await report_view(report_id):
         await message.reply(f"Отчёт #{report_id} не найден. Список: /history")
         return
     thinking = await message.reply(f"🤔 Ищу ответ в отчёте #{report_id}...")
     try:
-        item = await ask(entry.md_path, question)
+        item = await core("POST", f"/api/reports/{report_id}/ask", json={"question": question}, timeout=300)
     except Exception as e:
         logging.exception("Ask failed")
         await thinking.edit_text(f"❌ Ошибка: {html.escape(str(e)[:300])}")
@@ -234,7 +266,7 @@ async def answer_question(message: Message, report_id: int, question: str) -> No
     for part in _chunks(f"💬 По отчёту #{report_id}:\n\n{item['a']}"):
         await message.reply(part, parse_mode=None)
     if item.get("research"):
-        index = len(load_qa(entry.md_path)) - 1
+        index = len((await report_view(report_id))["qa"]) - 1
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🔎 Исследовать отдельно", callback_data=f"r:{report_id}:{index}"),
         ]])
@@ -248,12 +280,12 @@ async def cmd_help(message: Message) -> None:
 
 @dp.message(Command("history"))
 async def cmd_history(message: Message) -> None:
-    entries = library.recent(15)
+    entries = await core("GET", "/api/reports", params={"limit": 15})
     if not entries:
         await message.answer("Отчётов пока нет. Пришлите тему.")
         return
     lines = [
-        f"<b>#{e.id}</b> · {e.created[:10]} · {MODE_BUTTONS.get(e.mode, e.mode)} · {e.words} слов\n{html.escape(e.query)}"
+        f"<b>#{e['id']}</b> · {e['created'][:10]} · {MODE_BUTTONS.get(e['mode'], e['mode'])} · {e['words']} слов\n{html.escape(e['query'])}"
         for e in entries
     ]
     for part in _chunks("\n\n".join(lines)):
@@ -265,11 +297,11 @@ async def cmd_view(message: Message, command: CommandObject) -> None:
     if not command.args or not command.args.strip().isdigit():
         await message.answer("Укажите номер: /view 3")
         return
-    entry = library.get(int(command.args))
-    if not entry:
+    view = await report_view(int(command.args))
+    if not view:
         await message.answer(f"Отчёт #{command.args.strip()} не найден. Список: /history")
         return
-    await send_report(message, entry)
+    await send_report(message, view)
 
 
 @dp.message(Command("search"))
@@ -277,11 +309,11 @@ async def cmd_search(message: Message, command: CommandObject) -> None:
     if not command.args:
         await message.answer("Укажите, что искать: /search натрий-ионные")
         return
-    results = library.search(command.args)
+    results = await core("GET", "/api/reports", params={"q": command.args, "limit": 5})
     if not results:
         await message.answer("Ничего не нашлось.")
         return
-    lines = [f"<b>#{e.id}</b> {html.escape(e.query)}\n<i>{html.escape(snippet)}</i>" for e, snippet in results]
+    lines = [f"<b>#{e['id']}</b> {html.escape(e['query'])}\n<i>{html.escape(e['snippet'])}</i>" for e in results]
     await message.answer("\n\n".join(lines) + "\n\nОткрыть: /view N")
 
 
@@ -299,15 +331,16 @@ async def cmd_delete(message: Message, command: CommandObject) -> None:
     if not command.args or not command.args.strip().isdigit():
         await message.answer("Укажите номер: /delete 3")
         return
-    entry = library.get(int(command.args))
-    if not entry:
+    view = await report_view(int(command.args))
+    if not view:
         await message.answer(f"Отчёт #{command.args.strip()} не найден.")
         return
+    entry = view["entry"]
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del:{entry.id}"),
+        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del:{entry['id']}"),
         InlineKeyboardButton(text="Отмена", callback_data="cancel"),
     ]])
-    await message.answer(f"Удалить отчёт #{entry.id} «{html.escape(entry.query)}» вместе с файлами?", reply_markup=keyboard)
+    await message.answer(f"Удалить отчёт #{entry['id']} «{html.escape(entry['query'])}» вместе с файлами?", reply_markup=keyboard)
 
 
 @dp.message(Command("block"))
@@ -315,7 +348,7 @@ async def cmd_block(message: Message, command: CommandObject) -> None:
     if not command.args:
         await message.answer("Формат: /block example.com")
         return
-    domain = sources.block(command.args.strip())
+    domain = (await core("POST", "/api/blocklist", json={"domain": command.args.strip()}))["domain"]
     await message.answer(f"🚫 {html.escape(domain)} больше не будет источником. Вернуть: /unblock {html.escape(domain)}")
 
 
@@ -324,13 +357,13 @@ async def cmd_unblock(message: Message, command: CommandObject) -> None:
     if not command.args:
         await message.answer("Формат: /unblock example.com")
         return
-    found = sources.unblock(command.args.strip())
+    found = (await core("DELETE", f"/api/blocklist/{command.args.strip()}"))["removed"]
     await message.answer("✅ Разблокирован." if found else "Этого домена нет в списке. Список: /blocked")
 
 
 @dp.message(Command("blocked"))
 async def cmd_blocked(message: Message) -> None:
-    domains = sources.blocked_domains()
+    domains = (await core("GET", "/api/blocklist"))["domains"]
     await message.answer(
         "Заблокированные источники:\n" + "\n".join(html.escape(d) for d in domains) if domains
         else "Свой список пуст. Соцсети, видео и магазины отсеиваются всегда, остальное оценивает модель."
@@ -339,9 +372,9 @@ async def cmd_blocked(message: Message) -> None:
 
 @dp.callback_query(F.data.startswith("del:"))
 async def on_delete(callback: CallbackQuery) -> None:
-    entry = library.delete(int(callback.data.split(":")[1]))
+    deleted = (await core("DELETE", f"/api/reports/{int(callback.data.split(':')[1])}"))["deleted"]
     await callback.answer()
-    await callback.message.edit_text(f"🗑 Отчёт #{entry.id} удалён." if entry else "Уже удалён.")
+    await callback.message.edit_text(f"🗑 Отчёт #{deleted['id']} удалён." if deleted else "Уже удалён.")
 
 
 @dp.callback_query(F.data == "cancel")
@@ -371,29 +404,29 @@ async def on_topic(message: Message) -> None:
 @dp.callback_query(F.data.startswith("f:"))
 async def on_followup(callback: CallbackQuery) -> None:
     _, report_id, index = callback.data.split(":")
-    entry = library.get(int(report_id))
-    topics = _followups(entry) if entry else []
+    view = await report_view(int(report_id))
+    topics = (view["meta"].get("followups") or []) if view else []
     if int(index) >= len(topics):
         await callback.answer("Отчёт или тема не найдены", show_alert=True)
         return
     await callback.answer()
     topic = topics[int(index)]
     key = f"{callback.message.chat.id}_{callback.message.message_id}_{index}"
-    await _offer(callback.message.answer, key, topic["query"], parent=entry, recommended=topic["mode"])
+    await _offer(callback.message.answer, key, topic["query"], parent_id=int(report_id), recommended=topic["mode"])
 
 
 @dp.callback_query(F.data.startswith("r:"))
 async def on_research_question(callback: CallbackQuery) -> None:
     _, report_id, index = callback.data.split(":")
-    entry = library.get(int(report_id))
-    qa = load_qa(entry.md_path) if entry else []
+    view = await report_view(int(report_id))
+    qa = view["qa"] if view else []
     topic = qa[int(index)].get("research") if int(index) < len(qa) else None
     if not topic:
         await callback.answer("Вопрос не найден", show_alert=True)
         return
     await callback.answer()
     key = f"{callback.message.chat.id}_{callback.message.message_id}_r"
-    await _offer(callback.message.answer, key, topic, parent=entry, recommended="quick")
+    await _offer(callback.message.answer, key, topic, parent_id=int(report_id), recommended="quick")
 
 
 @dp.callback_query(F.data.startswith("c:"))
@@ -405,18 +438,18 @@ async def on_clarify(callback: CallbackQuery) -> None:
         return
     await callback.answer("Готовлю вопросы...")
     try:
-        questions, rub = await suggest.questions(item["query"])
+        result = await core("POST", "/api/clarify", json={"query": item["query"]})
     except Exception as e:
         logging.exception("Clarify failed")
         await callback.message.answer(f"❌ Не получилось: {html.escape(str(e)[:300])}")
         return
-    if not questions:
+    if not result["questions"]:
         item["clarified"] = True
         with suppress(TelegramBadRequest):
             await callback.message.edit_text(_topic_text(item, "уточнять нечего: тема и так конкретная"),
                                              reply_markup=_topic_keyboard(key))
         return
-    item["clarify"] = {"questions": questions, "answers": [], "rub": rub}
+    item["clarify"] = {"questions": result["questions"], "answers": [], "rub": result["cost_rub"]}
     await _show_question(callback.message, key)
 
 
@@ -425,7 +458,7 @@ async def _show_question(message: Message, key: str) -> None:
     i = len(state["answers"])
     question = state["questions"][i]
     rows = [[InlineKeyboardButton(text=option, callback_data=f"a:{key}:{i}:{n}")] for n, option in enumerate(question["options"])]
-    rows.append([InlineKeyboardButton(text=suggest.ANY_ANSWER.capitalize(), callback_data=f"a:{key}:{i}:-1")])
+    rows.append([InlineKeyboardButton(text=ANY_ANSWER.capitalize(), callback_data=f"a:{key}:{i}:-1")])
     with suppress(TelegramBadRequest):
         await message.edit_text(f"❓ <b>{i + 1}/{len(state['questions'])}.</b> {html.escape(question['q'])}",
                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -451,14 +484,14 @@ async def on_clarify_answer(callback: CallbackQuery) -> None:
         with suppress(TelegramBadRequest):
             await callback.message.edit_text("⏳ Уточняю тему...")
         try:
-            item["query"], extra = await suggest.refine(item["query"], chosen)
-            rub += extra
+            result = await core("POST", "/api/refine", json={"query": item["query"], "answers": chosen})
+            item["query"], rub = result["topic"], rub + result["cost_rub"]
         except Exception:
             logging.exception("Refine failed, keeping the topic as is")
     del item["clarify"]
     item["clarified"] = True
     with suppress(TelegramBadRequest):
-        await callback.message.edit_text(_topic_text(item, f"тема уточнена · {costs.rub_text(rub)}" if chosen else ""),
+        await callback.message.edit_text(_topic_text(item, f"тема уточнена · {rub_text(rub)}" if chosen else ""),
                                          reply_markup=_topic_keyboard(key))
 
 
@@ -487,9 +520,55 @@ async def on_mode(callback: CallbackQuery) -> None:
         header += f"\n↳ продолжение отчёта #{item['parent_id']}"
     status = Status(callback.message, header)
     await status.render("⏳ Начинаю...")
-    task = asyncio.create_task(run_research(status, item["query"], mode, item["sources"], item.get("parent")))
+    _spawn(run_research(status, item, mode))
+
+
+@dp.callback_query(F.data.startswith("x:"))
+async def on_restart(callback: CallbackQuery) -> None:
+    job_id = callback.data.split(":", 1)[1]
+    try:
+        job = await core("POST", f"/api/jobs/{job_id}/restart")
+    except httpx.HTTPStatusError:
+        await callback.answer("Задание не найдено", show_alert=True)
+        return
+    await callback.answer()
+    status = Status(callback.message, _header(job))
+    await status.render("⏳ Перезапускаю...")
+    _spawn(follow_and_finish(status, job["id"]))
+
+
+async def follow_and_finish(status: Status, job_id: str) -> None:
+    await finish(status, await status.follow(job_id))
+
+
+def _spawn(coroutine) -> None:
+    task = asyncio.create_task(coroutine)
     background.add(task)
     task.add_done_callback(background.discard)
+
+
+async def notify_interrupted(bot: Bot) -> None:
+    """Researches started from Telegram and cut off by a restart: say so in their status message."""
+    while True:
+        with suppress(Exception):
+            for job in await core("GET", "/api/jobs", params={"status": "interrupted", "origin": "telegram"}):
+                ref = job.get("origin_ref") or {}
+                if ref.get("chat"):
+                    with suppress(TelegramBadRequest):
+                        await bot.edit_message_text(
+                            f"{_header(job)}\n\n⚠️ Исследование прервано: сервер перезапускался.",
+                            chat_id=ref["chat"], message_id=ref["message"], reply_markup=_restart_keyboard(job["id"]))
+                await core("POST", f"/api/jobs/{job['id']}/notified")
+        await asyncio.sleep(NOTIFY_SEC)
+
+
+@dp.errors()
+async def on_error(event: ErrorEvent) -> None:
+    logging.error("Bot handler failed: %r", event.exception, exc_info=event.exception)
+    target = event.update.message or (event.update.callback_query and event.update.callback_query.message)
+    if target:
+        with suppress(Exception):
+            await target.answer(f"❌ Ошибка: {html.escape(str(event.exception)[:300])}")
 
 
 def token() -> str | None:
@@ -504,7 +583,6 @@ async def start(handle_signals: bool = True) -> None:
         logging.warning("TELEGRAM_ALLOWED_USERS пуст: бот только сообщит каждому его Telegram ID")
     dp.message.outer_middleware(AllowedUsers(allowed))
     dp.callback_query.outer_middleware(AllowedUsers(allowed))
-    library.sync()
 
     bot = Bot(token(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await bot.set_my_commands([
@@ -519,11 +597,5 @@ async def start(handle_signals: bool = True) -> None:
     ])
     me = await bot.get_me()
     logging.info("Бот @%s запущен, доступ: %s", me.username, sorted(allowed) or "никому")
+    _spawn(notify_interrupted(bot))
     await dp.start_polling(bot, handle_signals=handle_signals)
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    if not token():
-        sys.exit("Нет TELEGRAM_BOT_TOKEN (в .env или в переменных окружения). Создайте бота у @BotFather и впишите токен.")
-    asyncio.run(start())

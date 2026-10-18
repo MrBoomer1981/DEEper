@@ -8,11 +8,14 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-from my_browser.pipeline import REPORTS_DIR
+from my_browser.common.settings import REPORTS_DIR
+from my_browser.common.text import slugify
 
 DB_PATH = REPORTS_DIR / "library.sqlite"
+REPORT_NAME = re.compile(r"\d{4}-\d{2}-\d{2}_")  # reports are <date>_<time>_<slug>.*
 
 
 @dataclass
@@ -69,10 +72,19 @@ class Library:
             self.db.execute("INSERT INTO reports_fts (rowid, query, body) VALUES (?, ?, ?)", (cur.lastrowid, meta["query"], body))
             return cur.lastrowid
 
+    def store(self, files: dict[str, bytes]) -> int:
+        """Write a report's files (.md, .json, .docx, .pdf from the worker) and index it; returns its number."""
+        meta = json.loads(files[".json"])
+        base = REPORTS_DIR / f"{datetime.now():%Y-%m-%d_%H%M%S}_{slugify(meta['query'])}"
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        for suffix, data in files.items():
+            base.with_suffix(suffix).write_bytes(data)
+        return self.add(base.with_suffix(".json"))
+
     def sync(self) -> None:
         """Index reports made before the library existed (or by an older version)."""
         for json_path in sorted(REPORTS_DIR.glob("*.json")):
-            if not json_path.name.endswith(".qa.json"):
+            if REPORT_NAME.match(json_path.name) and not json_path.name.endswith(".qa.json"):  # not read_stats.json etc.
                 self.add(json_path)
 
     def get(self, report_id: int) -> Entry | None:

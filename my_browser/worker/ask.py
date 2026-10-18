@@ -1,16 +1,13 @@
-"""Follow-up questions about a saved report, answered from its text only.
+"""Follow-up questions about a report, answered from its text only.
 
-The questions and answers are kept next to the report as <name>.qa.json, so the
-Telegram bot and the web app share them. When the report has no answer, the model
-names a topic for a separate research, which both UIs offer to run.
+The worker answers (POST /ask); core keeps the history next to the report as <name>.qa.json.
+When the report has no answer, the model names a topic for a separate research, which both
+UIs offer to run.
 """
 
-import json
 import re
-from datetime import datetime
-from pathlib import Path
 
-from my_browser.pipeline import CONFIG_PATH
+from my_browser.common.settings import CONFIG_PATH
 
 PROMPT = """Ниже полный текст исследовательского отчёта. Ответь на вопрос пользователя, опираясь только на этот отчёт.
 Отвечай по-русски, по существу, без вступлений. Сохраняй ссылки на источники из отчёта, если они относятся к ответу.
@@ -25,38 +22,27 @@ PROMPT = """Ниже полный текст исследовательског�
 RESEARCH_LINE = re.compile(r"^[\W_]*ИССЛЕДОВАТЬ[\s*_]*:(.+)$", re.M | re.I)
 
 
-def qa_path(md_path: Path) -> Path:
-    return md_path.with_suffix(".qa.json")
-
-
-def load_qa(md_path: Path) -> list[dict]:
-    path = qa_path(md_path)
-    return json.loads(path.read_text("utf-8")) if path.exists() else []
-
-
-async def ask(md_path: Path, question: str) -> dict:
-    """Answer and store the question; returns the stored item (q, a, at, cost_rub, maybe research)."""
+async def answer(markdown: str, question: str) -> dict:
+    """{a, cost_rub} and, when the report lacks the answer, research: a topic to look into separately."""
     from gpt_researcher.config import Config
     from gpt_researcher.utils.llm import create_chat_completion
 
-    from my_browser import costs
+    from my_browser.common import costs
 
     cfg = Config(str(CONFIG_PATH))
     with costs.metered() as meter:
-        answer = await create_chat_completion(
-            messages=[{"role": "user", "content": PROMPT.format(report=md_path.read_text("utf-8"), question=question)}],
+        text = await create_chat_completion(
+            messages=[{"role": "user", "content": PROMPT.format(report=markdown, question=question)}],
             model=cfg.smart_llm_model,
             llm_provider=cfg.smart_llm_provider,
             temperature=0.2,
             max_tokens=4000,
             llm_kwargs=cfg.llm_kwargs,
         )
-    item = {"q": question, "a": answer.strip(), "at": datetime.now().isoformat(timespec="seconds"),
-            "cost_rub": round(meter.rub(), 2)}
-    if lines := list(RESEARCH_LINE.finditer(answer)):
+    item = {"a": text.strip(), "cost_rub": round(meter.rub(), 2)}
+    if lines := list(RESEARCH_LINE.finditer(text)):
         topic = lines[-1].group(1).strip(" .*_«»\"")
-        item["a"] = (answer[:lines[-1].start()] + answer[lines[-1].end():]).strip()
+        item["a"] = (text[:lines[-1].start()] + text[lines[-1].end():]).strip()
         if len(topic) >= 8:
             item["research"] = topic
-    qa_path(md_path).write_text(json.dumps(load_qa(md_path) + [item], ensure_ascii=False, indent=2), "utf-8")
     return item

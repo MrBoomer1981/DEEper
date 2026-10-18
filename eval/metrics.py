@@ -3,9 +3,10 @@
 import re
 from collections import Counter
 
-from my_browser.sources import host, static_score
-from my_browser.stemming import tokenize
-from my_browser.suggest import body
+from my_browser.common.text import host
+from my_browser.search.sources import static_score
+from my_browser.worker.stemming import tokenize
+from my_browser.common.report import body
 
 LINK = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
 REFERENCES = re.compile(r"^#{1,3}\s*(?:список\s+)?(?:источник|литератур|ссылк|reference|bibliograph)", re.I | re.M)
@@ -13,7 +14,7 @@ CYRILLIC = re.compile("[а-яё]", re.I)
 RUSSIAN_TLDS = (".ru", ".su", ".рф", ".xn--p1ai", ".by", ".kz")
 ADDED = re.compile(r"Added source url to research(?: \(([^)]*)\))?: (\S+)")
 FAILED = re.compile(r"for (\S+), treating as fetch failure|PyMuPDFScraper retry also failed for (\S+)|Error processing (\S+?): ")
-RESCUED = re.compile(r"Read via (\S+): (\S+)")  # my_browser.reader
+RESCUED = re.compile(r"Read via (\S+): (\S+)")  # my_browser.search.reader
 LOST = re.compile(r"Unreadable after fallbacks: (\S+)")
 SENTENCE_END = re.compile(r"(?<=[.!?…])\s+(?=[«\"(\[A-ZА-ЯЁ0-9])")
 LIST_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s")

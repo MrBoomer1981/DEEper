@@ -24,7 +24,6 @@ import asyncio  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 import random  # noqa: E402
-import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import time  # noqa: E402
 import zlib  # noqa: E402
@@ -32,10 +31,12 @@ from collections import Counter  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
 import metrics  # noqa: E402
-from my_browser import costs, suggest  # noqa: E402
-from my_browser.pipeline import (MODES, REPORTS_DIR, ROOT, SOURCES, WRITERS, PreflightError,  # noqa: E402
-                                 env_overrides, overrides, preflight, research, save)
-from my_browser.sources import SEARCH_META  # noqa: E402
+from my_browser.common import costs  # noqa: E402
+from my_browser.common.settings import MODES, ROOT, SOURCES, WRITERS  # noqa: E402
+from my_browser.core.library import Library  # noqa: E402
+from my_browser.worker import hooks, suggest  # noqa: E402
+from my_browser.worker.hooks import SEARCH_META  # noqa: E402
+from my_browser.worker.pipeline import PreflightError, config_file, preflight, render, research, run_settings  # noqa: E402
 
 RESULTS_DIR = EVAL_DIR / "results"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
@@ -72,12 +73,12 @@ COLUMNS = [
 
 METHOD = """Как считается:
 - Англ. — источники без кириллицы в адресе, заголовке и фрагменте и не на российских доменах.
-- Автор. — домены из верхнего списка `my_browser/sources.py` и gov/edu: наука, международные организации, агентства.
+- Автор. — домены из верхнего списка `my_browser/search/sources.py` и gov/edu: наука, международные организации, агентства.
 - 3/3 — доля источников, которым отбор поставил высшую оценку.
 - В отчёте — источники, ссылка на которые есть в тексте или в списке источников.
 - Абзацы со ссылкой — абзацы и пункты списков от 25 слов хотя бы с одной ссылкой.
 - Не скачалось — страницы, которые не удалось прочитать ни напрямую, ни в обход.
-- Спасено — страницы, прочитанные только в обход (`my_browser/reader.py`): Europe PMC, открытая копия через OpenAlex, Jina Reader или аннотация OpenAlex.
+- Спасено — страницы, прочитанные только в обход (`my_browser/search/reader.py`): Europe PMC, открытая копия через OpenAlex, Jina Reader или аннотация OpenAlex.
 - В подробном режиме список источников отчёта — это процитированные ссылки, поэтому «В отчёте» там всегда 100%, а «Источн.», «Англ.» и «Автор.» считаются только по ним.
 - Не по теме — оценка Flash по адресу и фрагменту из поисковика (заголовков SearXNG не отдаёт). Ссылкам arXiv и doi.org без описания судья часто ставит «не по теме», поэтому цифра завышена и годится только для сравнения замеров между собой.
 - Точность цитат — до {pairs} случайных пар «утверждение → ссылка» на отчёт. Страница скачивается заново, \
@@ -97,9 +98,9 @@ class LogLines(logging.Handler):
 
 
 LOG = LogLines()
-for _name in ("scraper", "gpt_researcher.scraper.scraper", "my_browser.reader"):
+for _name in ("scraper", "gpt_researcher.scraper.scraper", "my_browser.search.reader"):
     logging.getLogger(_name).addHandler(LOG)
-logging.getLogger("my_browser.reader").setLevel(logging.INFO)  # its outcome lines are INFO
+logging.getLogger("my_browser.search.reader").setLevel(logging.INFO)  # its outcome lines are INFO
 
 
 def load_topics() -> list[str]:
@@ -163,11 +164,13 @@ async def measure(query: str, args: argparse.Namespace, judging: costs.Meter) ->
     token = costs.current.set(meter)
     started = time.monotonic()
     try:
-        markdown, urls = await research(query, args.mode, on_progress=lambda text: None)
+        markdown, urls = await research(query, args.mode, args.config_path, on_progress=lambda text: None)
     finally:
         costs.current.reset(token)
     seconds = time.monotonic() - started
-    report = save(query, args.mode, markdown, urls, seconds, pdf=False, cost=meter.summary())
+    library = Library()
+    report = library.get(library.store(render(query, args.mode, markdown, urls, seconds, args.settings,
+                                              cost=meter.summary(), pdf=False)))
     row = {
         "topic": query, "report": report.md_path.name, "words": report.words, "seconds": round(seconds),
         "rub": round(meter.rub(), 2), "truncated": meter.truncated_calls,
@@ -275,17 +278,18 @@ def main() -> None:
     if args.topics:
         wanted = {int(n) for n in args.topics.split(",")}
         topics = [(n, t) for n, t in topics if n in wanted]
-    blocklist = ROOT / "reports" / "blocked_domains.txt"
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    if blocklist.exists() and REPORTS_DIR != blocklist.parent:
-        shutil.copy(blocklist, REPORTS_DIR / blocklist.name)  # the same blocklist as the app
+    blocklist = ROOT / "reports" / "blocked_domains.txt"  # the same blocklist as the app
+    hooks.blocked.set([line.strip().lower() for line in blocklist.read_text("utf-8").splitlines() if line.strip()]
+                      if blocklist.exists() else [])
+    args.settings = run_settings(args.sources, writer=args.writer)
+    try:
+        preflight(args.settings)
+    except PreflightError as e:
+        sys.exit(str(e))
 
     started = datetime.now().astimezone()
-    with env_overrides(overrides(args.sources, writer=args.writer)):
-        try:
-            preflight()
-        except PreflightError as e:
-            sys.exit(str(e))
+    with config_file(args.settings) as path:
+        args.config_path = path
         rows, judging = asyncio.run(run_all(topics, args))
     path = write_results(rows, judging, args, started)
     print("\n" + path.read_text("utf-8"))

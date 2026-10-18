@@ -2,27 +2,23 @@
 
 Before a run, «Уточнить» asks 2-3 questions with ready answers and rewrites the topic with the
 chosen ones. After a run, «Что исследовать дальше» proposes five follow-up topics from the
-report's outline, conclusions and limitations. save() stores them in the report's JSON and
-appends them to its files as the last section; body() strips that section for the web view.
+report's outline, conclusions and limitations; the worker's job loop and its API call these, and
+core stores the topics (common/report.py renders and strips their section).
 """
 
-import json
 import logging
 import re
 from datetime import date
-from pathlib import Path
 
 import json_repair
 
-from my_browser import costs
-from my_browser.pipeline import CONFIG_PATH
+from my_browser.common import costs
+from my_browser.common.report import ANY_ANSWER, KINDS, body
+from my_browser.common.settings import CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 
-KINDS = {"deeper": "Углубить", "adjacent": "Рядом", "verify": "Проверить"}
 FOLLOWUP_MODES = ("quick", "detailed", "deep")
-SECTION_TITLE = "## Что исследовать дальше"
-ANY_ANSWER = "не важно"
 
 FOLLOWUPS_PROMPT = """Ты планируешь следующие исследования. Ниже выдержки из готового отчёта на тему «{query}»: оглавление, выводы и разделы об ограничениях. Сегодня {today}.
 
@@ -94,19 +90,6 @@ def json_list(text: str) -> list:
     return data if isinstance(data, list) else []
 
 
-def body(markdown: str) -> str:
-    """The report without the follow-ups section that save() appends."""
-    head, found, _ = markdown.rpartition(f"\n{SECTION_TITLE}\n")
-    return head.rstrip() if found else markdown
-
-
-def section(topics: list[dict]) -> str:
-    if not topics:
-        return ""
-    items = "\n".join(f"- **{KINDS[t['kind']]}.** {t['query']}" + (f" — {t['why']}" if t["why"] else "") for t in topics)
-    return f"\n\n{SECTION_TITLE}\n\n{items}\n"
-
-
 def _excerpt(markdown: str, max_words: int = 1500, section_words: int = 700) -> tuple[str, str]:
     """Outline plus the conclusions, then the limitation sections, without links and references."""
     text = LINK.sub(r"\1", body(markdown))
@@ -156,18 +139,6 @@ async def followups(query: str, markdown: str) -> list[dict]:
         topics.append({"kind": item["kind"], "query": text, "why": str(item.get("why") or "").strip(), "mode": mode})
     topics.sort(key=lambda t: list(KINDS).index(t["kind"]))
     return topics[:5]
-
-
-async def followups_for(json_path: Path) -> list[dict]:
-    """Follow-ups for a report saved before they existed; kept in its JSON, the files stay as they are."""
-    meta = json.loads(json_path.read_text("utf-8"))
-    with costs.metered() as meter:
-        topics = await followups(meta["query"], json_path.with_suffix(".md").read_text("utf-8"))
-    if topics:
-        meta["followups"] = topics
-        meta["followups_cost_rub"] = round(meter.rub(), 2)
-        json_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), "utf-8")
-    return topics
 
 
 async def questions(query: str) -> tuple[list[dict], float]:

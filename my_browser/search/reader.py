@@ -1,14 +1,15 @@
-"""Second chance for pages gpt-researcher's scraper could not read.
+"""Reading a page for the research: the plain fetch first, then free fallbacks.
 
 Publishers and other bot-protected sites answer a plain fetch with 403 or an empty page, and they are
 often the best-rated sources: the eval baseline lost 29% of selected pages, two thirds of them 3/3.
-After a failed fetch this module tries, in order: the open-access full text from Europe PMC (PubMed
+After a failed fetch read() tries, in order: the open-access full text from Europe PMC (PubMed
 Central links) or from an open copy found via OpenAlex (links carrying a DOI), Jina Reader (any URL,
-read by a headless browser), and finally the abstract from OpenAlex. Every step is free.
+read by a headless browser), and finally the abstract from OpenAlex.
 
-Per-domain outcomes are kept in reports/read_stats.json: domains whose plain fetch keeps failing go
-straight to the fallbacks (no 403 retries and timeouts), and sources.rank() demotes domains that stay
-unreadable even then. Importing the module wraps Scraper.extract_data_from_url.
+Per-domain outcomes are kept in read_stats.json next to the reports: domains whose plain fetch keeps
+failing go straight to the fallbacks (no 403 retries and timeouts), and sources.rank() demotes
+domains that stay unreadable even then. The worker sends every page of a research here through the
+search API (POST /read).
 """
 
 import asyncio
@@ -18,14 +19,19 @@ import os
 import re
 import threading
 import time
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree
 
 import httpx
 from gpt_researcher.scraper.scraper import Scraper
 from gpt_researcher.utils.url_security import UnsafeURLError, validate_url
+from gpt_researcher.utils.workers import WorkerPool
 
-from my_browser.pipeline import REPORTS_DIR
+from my_browser.common.gptr import ORIGINAL_EXTRACT
+from my_browser.common.settings import REPORTS_DIR
+from my_browser.common.text import host
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +49,6 @@ PMCID = re.compile(r"\b(PMC\d+)\b", re.I)
 JINA_ERROR = re.compile(r"^Warning: Target URL returned error", re.M)
 BLOCK_PAGE = re.compile(r"just a moment|verify you are human|enable javascript and cookies|are you a robot|"
                         r"access denied|unusual traffic", re.I)
-
-
-def host(url: str) -> str:
-    return (urlparse(url).hostname or "").lower().removeprefix("www.")
 
 
 class ReadStats:
@@ -100,6 +102,21 @@ class Pace:
 stats = ReadStats()
 # Jina Reader allows 20 requests a minute without a key and 500 with a free one.
 jina_pace = Pace(0.15 if os.environ.get("JINA_API_KEY") else 3.1)
+
+# gpt-researcher's WorkerPool holds an asyncio.Semaphore, which binds to one event loop, so each loop
+# gets its own Scraper; they share one thread pool so that finished researches leave no threads behind.
+_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="read")
+_scrapers: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Scraper]" = weakref.WeakKeyDictionary()
+
+
+def _scraper() -> Scraper:
+    loop = asyncio.get_running_loop()
+    if loop not in _scrapers:
+        pool = WorkerPool(8)
+        pool.executor.shutdown(wait=False)  # created idle; the shared pool does the work
+        pool.executor = _EXECUTOR
+        _scrapers[loop] = Scraper([], USER_AGENT, "bs", pool)
+    return _scrapers[loop]
 
 
 def find_doi(url: str) -> str | None:
@@ -166,7 +183,7 @@ async def jina(client: httpx.AsyncClient, url: str) -> tuple[str, str] | None:
     return (text, title.group(1).strip() if title else "") if usable(text) else None
 
 
-async def rescue(url: str, scraper: Scraper, session) -> tuple[str, str, str] | None:
+async def rescue(url: str, scraper: Scraper) -> tuple[str, str, str] | None:
     """(text, title, via) from the first fallback that works, or None."""
     async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
         pmcid = PMCID.search(url)
@@ -184,7 +201,7 @@ async def rescue(url: str, scraper: Scraper, session) -> tuple[str, str, str] | 
             except (httpx.HTTPError, ValueError) as e:
                 logger.info("OpenAlex lookup failed for %s: %s", doi, e)
             for copy in open_copies(work or {}, url):
-                result = await _extract(scraper, copy, session)
+                result = await ORIGINAL_EXTRACT(scraper, copy, scraper.session)
                 if result and usable(result.get("raw_content")):
                     return result["raw_content"], result.get("title") or work.get("title") or "", "open-access"
 
@@ -200,34 +217,30 @@ async def rescue(url: str, scraper: Scraper, session) -> tuple[str, str, str] | 
     return None
 
 
-_extract = Scraper.extract_data_from_url
-
-
-async def _extract_with_fallbacks(self, link, session):
+async def read(url: str) -> dict:
+    """The page as gpt-researcher's scraper result: {url, raw_content (None if unreadable), title, image_urls}."""
+    scraper = _scraper()
     try:
-        validate_url(link)
+        validate_url(url)
     except UnsafeURLError:
-        return await _extract(self, link, session)  # upstream rejects and logs it
+        return await ORIGINAL_EXTRACT(scraper, url, scraper.session)  # upstream rejects and logs it
     result = None
-    if not stats.skip_direct(link):
-        result = await _extract(self, link, session)
+    if not stats.skip_direct(url):
+        result = await ORIGINAL_EXTRACT(scraper, url, scraper.session)
         if result and result.get("raw_content"):
-            stats.record(link, "direct_ok")
+            stats.record(url, "direct_ok")
             return result
-        stats.record(link, "direct_fail")
+        stats.record(url, "direct_fail")
     try:
-        found = await rescue(link, self, session)
+        found = await rescue(url, scraper)
     except Exception as e:  # a fallback must never break the research
-        logger.warning("Fallback reading failed for %s: %s", link, e)
+        logger.warning("Fallback reading failed for %s: %s", url, e)
         found = None
     if not found:
-        stats.record(link, "lost")
-        logger.info("Unreadable after fallbacks: %s", link)
-        return result or {"url": link, "raw_content": None, "image_urls": [], "title": ""}
+        stats.record(url, "lost")
+        logger.info("Unreadable after fallbacks: %s", url)
+        return result or {"url": url, "raw_content": None, "image_urls": [], "title": ""}
     text, title, via = found
-    stats.record(link, "rescued")
-    logger.info("Read via %s: %s (%d chars)", via, link, len(text))
-    return {"url": link, "raw_content": text[:MAX_CHARS], "image_urls": [], "title": title}
-
-
-Scraper.extract_data_from_url = _extract_with_fallbacks
+    stats.record(url, "rescued")
+    logger.info("Read via %s: %s (%d chars)", via, url, len(text))
+    return {"url": url, "raw_content": text[:MAX_CHARS], "image_urls": [], "title": title}

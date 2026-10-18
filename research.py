@@ -1,4 +1,4 @@
-"""Run a research report and save it to reports/ as Markdown, DOCX and PDF.
+"""Run a research report and save it to reports/ as Markdown, DOCX and PDF (no server needed).
 
 Examples:
     uv run research.py "тема исследования"
@@ -10,9 +10,14 @@ import asyncio
 import sys
 import time
 
-from my_browser import costs, suggest
-from my_browser.pipeline import (DEFAULT_SOURCES, DEFAULT_WRITER, MODES, ROOT, SOURCES, WRITERS, PreflightError,
-                                 env_overrides, overrides, preflight, research, save)
+from my_browser.common import costs
+from my_browser.common.report import KINDS
+from my_browser.common.settings import DEFAULT_SOURCES, DEFAULT_WRITER, MODES, ROOT, SOURCES, WRITERS
+from my_browser.common.text import rub_text
+from my_browser.core import blocklist
+from my_browser.core.library import Library
+from my_browser.worker import hooks, suggest
+from my_browser.worker.pipeline import PreflightError, config_file, preflight, render, research, run_settings
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,29 +40,33 @@ def main() -> None:
     args = parse_args()
     meter = costs.Meter()
     costs.current.set(meter)
-    with env_overrides(overrides(args.sources, args.words, args.lang, args.writer)):
-        try:
-            preflight()
-        except PreflightError as e:
-            sys.exit(str(e))
+    hooks.blocked.set(blocklist.blocked_domains())
+    settings = run_settings(args.sources, args.writer, args.words, args.lang)
+    try:
+        preflight(settings)
+    except PreflightError as e:
+        sys.exit(str(e))
 
-        print(f"Режим: {args.mode} — {MODES[args.mode]}\nТема: {args.query}\n")
-        started = time.monotonic()
-        try:
-            markdown, sources = asyncio.run(research(args.query, args.mode))
-            elapsed = time.monotonic() - started
-            followups = asyncio.run(suggest.followups(args.query, markdown))
-        except KeyboardInterrupt:
-            sys.exit(f"\nПрервано через {(time.monotonic() - started) / 60:.1f} мин, отчёт не сохранён.")
+    print(f"Режим: {args.mode} — {MODES[args.mode]}\nТема: {args.query}\n")
+    started = time.monotonic()
+    try:
+        with config_file(settings) as path:
+            markdown, sources = asyncio.run(research(args.query, args.mode, path))
+        elapsed = time.monotonic() - started
+        followups = asyncio.run(suggest.followups(args.query, markdown))
+    except KeyboardInterrupt:
+        sys.exit(f"\nПрервано через {(time.monotonic() - started) / 60:.1f} мин, отчёт не сохранён.")
 
-        cost = meter.summary()
-        report = save(args.query, args.mode, markdown, sources, elapsed, pdf=not args.no_pdf, cost=cost, followups=followups)
-    print(f"\nГотово за {elapsed / 60:.1f} мин: {report.words} слов, {len(sources)} источников, {costs.rub_text(cost['rub'])}")
-    print(f"Отчёт #{report.id}: {report.md_path.relative_to(ROOT)} (+ .docx, .pdf, .json рядом)")
+    cost = meter.summary()
+    files = render(args.query, args.mode, markdown, sources, elapsed, settings, cost=cost, followups=followups, pdf=not args.no_pdf)
+    library = Library()
+    entry = library.get(library.store(files))
+    print(f"\nГотово за {elapsed / 60:.1f} мин: {entry.words} слов, {len(sources)} источников, {rub_text(cost['rub'])}")
+    print(f"Отчёт #{entry.id}: {entry.md_path.relative_to(ROOT)} (+ .docx, .pdf, .json рядом)")
     if followups:
         print("\nЧто исследовать дальше:")
         for topic in followups:
-            print(f"  [{suggest.KINDS[topic['kind']].lower()}] {topic['query']}" + (f" — {topic['why']}" if topic["why"] else ""))
+            print(f"  [{KINDS[topic['kind']].lower()}] {topic['query']}" + (f" — {topic['why']}" if topic["why"] else ""))
 
 
 if __name__ == "__main__":
