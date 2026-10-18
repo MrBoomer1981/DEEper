@@ -56,6 +56,17 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
 - In the detailed report, the `## Источники` list is built from the links cited inline, not from every visited URL. If fewer than 3 links are cited (APA author-date style), it falls back to all visited URLs.
 - `my_browser/export.py`: DOCX is rendered in-process (mistune → htmldocx). The PDF is rendered by WeasyPrint **in a child process** with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`, because WeasyPrint needs Homebrew's pango (`brew install pango`) and dyld reads that variable only at process start.
 
+## Design (AVEN brandbook)
+
+The UI and PDFs follow the user's brandbook (`aven-brandbook.pdf`, kept locally and gitignored because the repo is public).
+- Dark only. Background is night `#14100E`, text is paper `#F2EBE1` (never `#FFF`), bordo `#7A2A35` is used only for fills such as buttons, selected toggles and 3/3 badges (never as text on dark), and amber `#E8A24A` is the single accent per screen (one label, the timer, the tab underline, link underlines).
+- There is no fifth color and no blue, green, neon or gradients, apart from the brand's own subtle bordo glow.
+- Fonts are self-hosted in `static/fonts` (OFL): Unbounded only for 2–4 word headings, Onest for text (including long report titles), JetBrains Mono for labels, chips, numbers and URLs.
+- The mark SVGs (`static/aven-mark*.svg`, `aven-app-icon.svg`) are copied verbatim from the user's aven-logo artifact. The PNG icons are rendered from `aven-app-icon.svg` with headless Chrome. Brand colors are registered as Quasar colors (`ui.colors(**BRAND_COLORS)`: `bordo`, `paper`, `amber`, `night`), so props like `color=bordo text-color=paper` work.
+- WeasyPrint gotchas:
+  - `@font-face` only works when a `FontConfiguration` is passed to both `CSS()` and `write_pdf()`.
+  - `font-weight` ranges and non-100 steps such as 650 are rejected.
+
 ## Deployment
 
 - GitHub: public repo `MrBoomer1981/DEEper`. The pre-2026-10 DEEper code (aiogram + Groq + Tavily) lives in the `legacy` branch. Old history contains a leaked `.env`.

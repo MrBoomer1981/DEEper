@@ -1,10 +1,14 @@
-"""DEEper web app: a Perplexity-like UI for the research pipeline.
+"""DEEper web app: a Perplexity-like UI for the research pipeline, styled per the AVEN brandbook.
 
     uv run app.py      -> http://127.0.0.1:8501 (password only if APP_PASSWORD is set)
 
 On Railway (PORT is set) it listens publicly, requires APP_PASSWORD, and also runs the
 Telegram bot when its token is configured, so both share one report library.
 Install on a Mac: open the URL in Safari -> File -> Add to Dock.
+
+Brand (aven-brandbook.pdf): night #14100E background, paper #F2EBE1 text (never pure white),
+bordo #7A2A35 fills only (never text on dark), amber #E8A24A as the single accent per screen;
+Unbounded for 2-4 word headings, Onest for text, JetBrains Mono for labels and numbers.
 """
 
 import asyncio
@@ -39,12 +43,16 @@ OPEN_PATHS = ("/login", "/static/", "/_nicegui", "/favicon")
 
 MODES = {"detailed": "Подробный", "deep": "Глубокий", "quick": "Быстрый"}
 MODE_HINTS = {
-    "detailed": "Введение, отдельное исследование под каждую подтему, заключение — около 4 минут",
-    "deep": "Рекурсивный поиск вширь и вглубь, затем один отчёт — дольше всех",
-    "quick": "Один проход — около минуты",
+    "detailed": "≈ 4 мин · введение, отдельное исследование каждой подтемы, заключение",
+    "deep": "дольше всех · рекурсивный поиск вширь и вглубь, затем один отчёт",
+    "quick": "≈ 1 мин · один проход",
 }
 SOURCE_LABELS = {"all": "Всё", "web": "Веб", "academic": "Наука"}
-SCORE_COLORS = {"3/3": "positive", "2/3": "primary", "1/3": "warning"}
+BRAND_COLORS = dict(
+    primary="#7A2A35", secondary="#F2EBE1", accent="#E8A24A", dark="#1D1916", dark_page="#14100E",
+    positive="#7A2A35", negative="#7A2A35", info="#7A2A35", warning="#E8A24A",
+    night="#14100E", paper="#F2EBE1", bordo="#7A2A35", amber="#E8A24A",
+)
 
 failed_logins: dict[str, list[float]] = {}
 background: set[asyncio.Task] = set()
@@ -54,20 +62,82 @@ ui.add_head_html("""
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="DEEper">
-<meta name="theme-color" content="#3730a3">
+<meta name="theme-color" content="#14100E">
 <style>
-  .report { max-width: 860px; font-size: 16px; line-height: 1.65; }
-  .report h1 { font-size: 1.9rem; font-weight: 700; line-height: 1.25; margin: .3em 0 .7em; }
-  .report h2 { font-size: 1.4rem; font-weight: 650; margin: 1.6em 0 .5em; }
-  .report h3 { font-size: 1.15rem; font-weight: 600; margin: 1.2em 0 .4em; }
-  .report p, .report li { margin: .45em 0; }
+  @font-face { font-family: 'Onest'; src: url('/static/fonts/Onest.ttf') format('truetype'); font-weight: 100 900; font-display: swap; }
+  @font-face { font-family: 'Unbounded'; src: url('/static/fonts/Unbounded.ttf') format('truetype'); font-weight: 200 900; font-display: swap; }
+  @font-face { font-family: 'JetBrains Mono'; src: url('/static/fonts/JetBrainsMono.ttf') format('truetype'); font-weight: 100 800; font-display: swap; }
+  :root {
+    --night: #14100E; --night-2: #1D1916; --paper: #F2EBE1; --bordo: #7A2A35; --amber: #E8A24A;
+    --paper-80: rgba(242,235,225,.8); --paper-60: rgba(242,235,225,.6); --paper-40: rgba(242,235,225,.4);
+    --line: rgba(242,235,225,.1); --surface: rgba(242,235,225,.035); --surface-2: rgba(242,235,225,.06);
+  }
+  html, body { background: var(--night); }
+  body {
+    color: var(--paper); font-family: 'Onest', system-ui, sans-serif; -webkit-font-smoothing: antialiased;
+    background: radial-gradient(1100px 560px at 88% -12%, rgba(122,42,53,.32), transparent 62%) fixed, var(--night);
+  }
+  .q-layout, .q-page-container, .q-page, .nicegui-content { background: transparent !important; }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  .display { font-family: 'Unbounded', sans-serif; font-weight: 700; letter-spacing: -.01em; }
+  .brand-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .2em; text-transform: uppercase; color: var(--paper-40); }
+  .brand-label.amber { color: var(--amber); }
+  .muted { color: var(--paper-60) !important; }
+  .faint { color: var(--paper-40) !important; }
+  .amber-text { color: var(--amber) !important; }
+
+  .body--dark, .body--dark .q-item, .body--dark .q-tab, .body--dark .q-card,
+  .body--dark .q-field__native, .body--dark .q-field__input, .body--dark .q-btn { color: var(--paper); }
+  .body--dark .q-field__label, .body--dark textarea::placeholder, .body--dark input::placeholder { color: var(--paper-40) !important; }
+  .body--dark .q-field--outlined .q-field__control { background: var(--surface); border-radius: 12px; }
+  .body--dark .q-field--outlined .q-field__control:before { border-color: var(--line); }
+  .body--dark .q-field--outlined:hover .q-field__control:before { border-color: var(--paper-40); }
+  .body--dark .q-field--outlined.q-field--focused .q-field__control:after { border-color: var(--paper-40); border-width: 1px; }
+  .body--dark .q-card { background: var(--surface); border: 1px solid var(--line); box-shadow: none; border-radius: 14px; }
+  .body--dark .q-dialog .q-card { background: var(--night-2); }
+  .body--dark .q-drawer { background: var(--night); }
+  .body--dark .q-drawer--bordered { border-color: var(--line) !important; }
+  .body--dark .q-item { border-radius: 10px; }
+  .q-tab { color: var(--paper-60); text-transform: none; }
+  .q-tab--active { color: var(--paper); }
+  .q-tab__indicator { background: var(--amber); height: 2px; }
+  .q-tab__label { font-family: 'Onest'; font-weight: 500; }
+  .q-notification { color: var(--paper) !important; font-family: 'Onest'; }
+  .q-btn { text-transform: none; font-weight: 500; letter-spacing: 0; }
+  .q-btn-group .q-btn { border-radius: 999px !important; padding: 6px 16px; min-height: 36px; }
+  .q-tab .q-focus-helper, .q-tab .q-ripple { display: none !important; }
+  .q-expansion-item .q-item { color: var(--paper-60); }
+  ::selection { background: rgba(232,162,74,.35); }
+
+  .brand-chip { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--paper-60);
+                border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; white-space: nowrap; }
+  .score { font-family: 'JetBrains Mono', monospace; font-size: 11px; border-radius: 999px; padding: 1px 8px;
+           border: 1px solid var(--line); color: var(--paper-40); white-space: nowrap; }
+  .score-3 { background: var(--bordo); border-color: var(--bordo); color: var(--paper); }
+  .score-2 { border-color: var(--paper-40); color: var(--paper-80); }
+  .url { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--paper-40); }
+  a.plain { color: var(--paper); text-decoration: none; }
+  a.plain:hover { color: var(--amber); }
+
+  .report { max-width: 820px; font-size: 16.5px; line-height: 1.72; color: rgba(242,235,225,.92); }
+  .report h1 { font-weight: 700; font-size: 2rem; line-height: 1.22; margin: .2em 0 .8em; color: var(--paper); letter-spacing: -.01em; }
+  .report h2 { font-weight: 650; font-size: 1.4rem; line-height: 1.3; margin: 1.8em 0 .55em; color: var(--paper); }
+  .report h3 { font-weight: 600; font-size: 1.1rem; margin: 1.3em 0 .4em; color: var(--paper); }
+  .report p, .report li { margin: .5em 0; }
   .report ul { list-style: disc; padding-left: 1.4em; }
   .report ol { list-style: decimal; padding-left: 1.4em; }
-  .report table { border-collapse: collapse; margin: 1em 0; font-size: .92em; }
-  .report th, .report td { border: 1px solid rgba(127,127,127,.35); padding: 6px 10px; vertical-align: top; }
-  .report a { color: #6366f1; text-decoration: none; }
-  .report a:hover { text-decoration: underline; }
-  .report blockquote { border-left: 3px solid #6366f1; padding-left: 12px; opacity: .85; }
+  .report li::marker { color: var(--paper-40); }
+  .report strong { color: var(--paper); font-weight: 650; }
+  .report a { color: var(--paper); text-decoration: underline; text-decoration-color: var(--amber);
+              text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  .report a:hover { color: var(--amber); }
+  .report table { border-collapse: collapse; margin: 1.2em 0; font-size: .92em; }
+  .report th, .report td { border: 1px solid var(--line); padding: 7px 11px; vertical-align: top; }
+  .report th { background: var(--surface-2); font-weight: 600; }
+  .report blockquote { border-left: 3px solid var(--bordo); padding-left: 14px; color: var(--paper-80); }
+  .report code { font-family: 'JetBrains Mono', monospace; font-size: .88em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  .report hr { border: none; border-top: 1px solid var(--line); margin: 2em 0; }
+  .report.compact { font-size: 15.5px; }
 </style>
 <script>
   // External links open outside the app (in the Safari web app: in Safari).
@@ -100,46 +170,79 @@ def mmss(seconds: float) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def number(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+def plural(n: int, one: str, few: str, many: str) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+
+
 def domain(url: str) -> str:
     return (urlparse(url).hostname or url).removeprefix("www.")
+
+
+def label(text: str, amber: bool = False) -> None:
+    ui.label(text).classes("brand-label" + (" amber" if amber else ""))
+
+
+def chip(text: str) -> None:
+    ui.label(text).classes("brand-chip")
+
+
+def primary_button(text: str, on_click, icon: str | None = None):
+    return ui.button(text, icon=icon, on_click=on_click).props("unelevated no-caps color=bordo text-color=paper").classes("rounded-xl px-5")
 
 
 def frame(title: str = "DEEper") -> None:
     """Header and the history drawer shared by all pages."""
     ui.page_title(title)
-    ui.colors(primary="#4f46e5")
+    ui.colors(**BRAND_COLORS)
 
-    with ui.header().classes("items-center px-3 py-2 bg-indigo-800"):
-        ui.button(icon="menu", on_click=lambda: drawer.toggle()).props('flat round color=white aria-label="Меню"')
-        ui.link("DEEper", "/").classes("text-white text-lg font-semibold no-underline")
+    with ui.header().classes("items-center px-4 py-2 gap-2").style(
+            "background: rgba(20,16,14,.82); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line)"):
+        ui.button(icon="menu", on_click=lambda: drawer.toggle()).props('flat round dense color=paper aria-label="Меню"').classes("opacity-70")
+        with ui.link(target="/").classes("flex items-center gap-3 no-underline"):
+            ui.image("/static/aven-mark.svg").classes("w-7 h-7")
+            ui.label("DEEPER").classes("display text-[16px] tracking-wide").style("color: var(--paper)")
+            ui.label("made by aven").classes("mono text-[11px] faint mt-[3px] gt-xs")
         ui.space()
-        ui.button(icon="block", on_click=blocked_dialog).props('flat round color=white aria-label="Заблокированные источники"').tooltip("Заблокированные источники")
+        ui.button(icon="block", on_click=blocked_dialog).props('flat round dense color=paper aria-label="Заблокированные источники"') \
+            .classes("opacity-70").tooltip("Заблокированные источники")
         if AUTH:
-            ui.button(icon="logout", on_click=logout).props('flat round color=white aria-label="Выйти"').tooltip("Выйти")
+            ui.button(icon="logout", on_click=logout).props('flat round dense color=paper aria-label="Выйти"').classes("opacity-70").tooltip("Выйти")
 
-    with ui.left_drawer(value=True, bordered=True).classes("p-3 gap-2") as drawer:
-        ui.button("Новое исследование", icon="add", on_click=lambda: ui.navigate.to("/")).props("unelevated no-caps").classes("w-full")
-        search = ui.input(placeholder="Поиск по отчётам", on_change=lambda: history.refresh()).props("dense outlined clearable").classes("w-full")
+    # value=None: open on wide screens, closed on phones (Quasar breakpoint).
+    with ui.left_drawer(value=None, bordered=True).classes("p-4 gap-3") as drawer:
+        primary_button("Новое исследование", lambda: ui.navigate.to("/"), icon="add").classes("w-full")
+        search = ui.input(placeholder="Поиск по отчётам", on_change=lambda: history.refresh()) \
+            .props("dense outlined clearable dark").classes("w-full")
+        label("История")
 
         @ui.refreshable
         def history() -> None:
-            with ui.list().props("dense").classes("w-full"):
+            with ui.list().props("dense").classes("w-full gap-1"):
                 for job in jobs.active():
-                    with ui.item(on_click=lambda j=job: ui.navigate.to(f"/job/{j.id}")).classes("rounded-lg"):
-                        with ui.item_section().props("avatar"):
-                            ui.spinner(size="sm")
+                    with ui.item(on_click=lambda j=job: ui.navigate.to(f"/job/{j.id}")).classes("py-2"):
+                        with ui.item_section().props("avatar").classes("min-w-0 pr-2"):
+                            ui.spinner(size="xs", color="paper")
                         with ui.item_section():
-                            ui.item_label(job.query).props("lines=2")
-                            ui.item_label(f"{MODES[job.mode]} · {'идёт' if job.status == 'running' else 'в очереди'}").props("caption")
+                            ui.item_label(job.query).props("lines=2").classes("text-[14px]")
+                            ui.item_label(f"{MODES[job.mode].lower()} · {'идёт' if job.status == 'running' else 'в очереди'}") \
+                                .classes("mono text-[11px] faint")
                 library = Library()
                 entries = [e for e, _ in library.search(search.value)] if search.value else library.recent(50)
                 if not entries and search.value:
-                    ui.label("Ничего не нашлось").classes("text-sm text-gray-500 p-2")
+                    ui.label("Ничего не нашлось").classes("text-sm faint px-3 py-2")
                 for e in entries:
-                    with ui.item(on_click=lambda e=e: ui.navigate.to(f"/report/{e.id}")).classes("rounded-lg"):
+                    with ui.item(on_click=lambda e=e: ui.navigate.to(f"/report/{e.id}")).classes("py-2"):
                         with ui.item_section():
-                            ui.item_label(e.query).props("lines=2")
-                            ui.item_label(f"{e.created[:10]} · {MODES.get(e.mode, e.mode)} · {e.words} слов").props("caption")
+                            ui.item_label(e.query).props("lines=2").classes("text-[14px]").style("color: var(--paper-80)")
+                            ui.item_label(f"{datetime.fromisoformat(e.created):%d.%m} · {MODES.get(e.mode, e.mode).lower()} · "
+                                          f"{number(e.words)} {plural(e.words, 'слово', 'слова', 'слов')}") \
+                                .classes("mono text-[11px] faint")
 
         history()
 
@@ -169,17 +272,22 @@ def logout() -> None:
 
 
 def blocked_dialog() -> None:
-    with ui.dialog() as dialog, ui.card().classes("w-96"):
-        ui.label("Заблокированные источники").classes("text-lg font-semibold")
+    with ui.dialog() as dialog, ui.card().classes("w-[420px] gap-3 p-6"):
+        label("Источники")
+        ui.label("Заблокированные сайты").classes("text-lg font-semibold")
         ui.label("Соцсети, видео и магазины отсеиваются всегда, остальное оценивает модель. "
-                 "Сюда добавляйте сайты, которые не должны попадать в отчёты.").classes("text-sm text-gray-500")
+                 "Сюда — сайты, которые не должны попадать в отчёты.").classes("text-sm muted")
 
         @ui.refreshable
         def listing() -> None:
-            for d in sources.blocked_domains():
-                with ui.row().classes("items-center w-full"):
-                    ui.label(d).classes("flex-grow")
-                    ui.button(icon="close", on_click=lambda d=d: (sources.unblock(d), listing.refresh())).props(f'flat round dense aria-label="Разблокировать {d}"')
+            domains = sources.blocked_domains()
+            if not domains:
+                ui.label("Список пуст").classes("mono text-xs faint")
+            for d in domains:
+                with ui.row().classes("items-center w-full no-wrap"):
+                    ui.label(d).classes("mono text-sm flex-grow")
+                    ui.button(icon="close", on_click=lambda d=d: (sources.unblock(d), listing.refresh())) \
+                        .props(f'flat round dense size=sm color=paper aria-label="Разблокировать {d}"').classes("opacity-60")
 
         listing()
 
@@ -189,10 +297,10 @@ def blocked_dialog() -> None:
                 new.value = ""
                 listing.refresh()
 
-        with ui.row().classes("items-center w-full"):
-            new = ui.input(placeholder="example.com").props("dense outlined").classes("flex-grow").on("keydown.enter", add)
-            ui.button(icon="add", on_click=add).props('unelevated round dense aria-label="Добавить"')
-        ui.button("Закрыть", on_click=dialog.close).props("flat").classes("self-end")
+        with ui.row().classes("items-center w-full no-wrap gap-2"):
+            new = ui.input(placeholder="example.com").props("dense outlined dark").classes("flex-grow mono").on("keydown.enter", add)
+            ui.button(icon="add", on_click=add).props('unelevated round dense color=bordo text-color=paper aria-label="Добавить"')
+        ui.button("Закрыть", on_click=dialog.close).props("flat no-caps color=paper").classes("self-end opacity-70")
     dialog.open()
 
 
@@ -201,12 +309,13 @@ def login_page(redirect_to: str = "/") -> RedirectResponse | None:
     if not AUTH or app.storage.user.get("ok"):
         return RedirectResponse("/")
     ui.page_title("Вход — DEEper")
+    ui.colors(**BRAND_COLORS)
 
     def try_login() -> None:
         ip = ui.context.client.request.client.host if ui.context.client.request.client else "?"
         recent = [t for t in failed_logins.get(ip, []) if time.time() - t < 300]
         if len(recent) >= 5:
-            ui.notify("Слишком много попыток, подождите 5 минут", type="negative")
+            ui.notify("Слишком много попыток. Подождите 5 минут", type="warning")
             return
         if PASSWORD and secrets.compare_digest(password.value.encode(), PASSWORD.encode()):
             app.storage.user["ok"] = True
@@ -215,13 +324,16 @@ def login_page(redirect_to: str = "/") -> RedirectResponse | None:
             failed_logins[ip] = recent + [time.time()]
             ui.notify("Неверный пароль", type="negative")
 
-    with ui.card().classes("absolute-center w-80 items-stretch gap-3"):
-        ui.image("/static/icon-192.png").classes("w-16 h-16 self-center")
-        ui.label("DEEper").classes("text-xl font-semibold self-center")
+    with ui.column().classes("absolute-center items-center gap-6 w-80"):
+        ui.image("/static/aven-mark.svg").classes("w-16 h-16")
+        with ui.column().classes("items-center gap-1"):
+            ui.label("DEEPER").classes("display text-3xl")
+            ui.label("made by aven").classes("mono text-xs faint")
         if not PASSWORD:
-            ui.label("На сервере не задан APP_PASSWORD — задайте его в переменных окружения.").classes("text-sm text-red-600")
-        password = ui.input("Пароль", password=True, password_toggle_button=True).props("autofocus").on("keydown.enter", try_login)
-        ui.button("Войти", on_click=try_login).props("unelevated")
+            ui.label("На сервере не задан APP_PASSWORD — задайте его в переменных окружения.").classes("text-sm text-center muted")
+        password = ui.input("Пароль", password=True, password_toggle_button=True) \
+            .props("outlined dark autofocus").classes("w-full").on("keydown.enter", try_login)
+        primary_button("Войти", try_login).classes("w-full")
     return None
 
 
@@ -238,21 +350,23 @@ def index_page() -> None:
         ui.run_javascript("window.Notification && Notification.permission === 'default' && Notification.requestPermission()")
         ui.navigate.to(f"/job/{job.id}")
 
-    with ui.column().classes("w-full max-w-3xl mx-auto mt-12 gap-4 px-4"):
-        ui.label("Что исследуем?").classes("text-3xl font-semibold")
+    with ui.column().classes("w-full max-w-3xl mx-auto mt-16 gap-5 px-6"):
+        label("Новое исследование", amber=True)
+        ui.label("Что исследуем?").classes("display text-[38px] leading-tight")
         topic = ui.textarea(placeholder="Например: перспективы натрий-ионных аккумуляторов до 2030 года") \
-            .props("outlined autogrow autofocus").classes("w-full text-lg")
+            .props("outlined autogrow autofocus dark").classes("w-full text-[18px]")
         topic.on("keydown.meta.enter", start)
         topic.on("keydown.ctrl.enter", start)
         with ui.row().classes("items-center gap-3 w-full"):
-            mode = ui.toggle(MODES, value="detailed").props("no-caps rounded unelevated toggle-color=primary")
-            source = ui.toggle(SOURCE_LABELS, value=DEFAULT_SOURCES).props("no-caps rounded unelevated toggle-color=primary")
+            toggle_props = "no-caps rounded unelevated dense color=dark text-color=paper toggle-color=bordo toggle-text-color=paper"
+            mode = ui.toggle(MODES, value="detailed").props(toggle_props).classes("border border-[color:var(--line)] rounded-full")
+            source = ui.toggle(SOURCE_LABELS, value=DEFAULT_SOURCES).props(toggle_props) \
+                .classes("border border-[color:var(--line)] rounded-full")
             ui.space()
-            ui.button("Исследовать", icon="travel_explore", on_click=start).props("unelevated size=lg no-caps")
-        hint = ui.label(MODE_HINTS["detailed"]).classes("text-sm text-gray-500")
+            primary_button("Исследовать", start, icon="arrow_forward").props("size=lg")
+        hint = ui.label(MODE_HINTS["detailed"]).classes("mono text-[12px] muted")
         mode.on_value_change(lambda e: hint.set_text(MODE_HINTS[e.value]))
-        ui.label("Запросы к поиску формируются на английском, отчёт пишется на русском. ⌘+Enter — запуск.") \
-            .classes("text-xs text-gray-400")
+        ui.label("запросы к поиску — на английском · отчёт — на русском · ⌘ Enter — запуск").classes("mono text-[11px] faint")
 
 
 @ui.page("/job/{job_id}")
@@ -262,50 +376,53 @@ def job_page(job_id: str) -> RedirectResponse | None:
         return RedirectResponse(f"/report/{job.report_id}")
     frame("Исследование — DEEper")
     if not job:
-        with ui.column().classes("w-full max-w-3xl mx-auto mt-12 px-4"):
-            ui.label("Задача не найдена: возможно, сервер перезапускался. Готовые отчёты — в списке слева.")
+        with ui.column().classes("w-full max-w-3xl mx-auto mt-16 px-6"):
+            ui.label("Задача не найдена: возможно, сервер перезапускался. Готовые отчёты — в истории слева.").classes("muted")
         return None
 
-    with ui.column().classes("w-full max-w-3xl mx-auto mt-8 gap-4 px-4"):
-        ui.label(job.query).classes("text-2xl font-semibold")
+    with ui.column().classes("w-full max-w-3xl mx-auto mt-12 gap-4 px-6"):
+        label("Исследование")
+        ui.label(job.query).classes("text-[26px] font-semibold leading-snug")
         with ui.row().classes("gap-2"):
-            ui.chip(MODES[job.mode], icon="description").props("outline")
-            ui.chip(SOURCE_LABELS.get(job.sources, job.sources), icon="travel_explore").props("outline")
+            chip(MODES[job.mode].lower())
+            chip(f"источники: {SOURCE_LABELS.get(job.sources, job.sources).lower()}")
             if job.origin == "telegram":
-                ui.chip("из Telegram", icon="send").props("outline")
-        with ui.card().classes("w-full"):
-            with ui.row().classes("items-center gap-3 w-full"):
-                spinner = ui.spinner(size="md")
-                phase = ui.label().classes("text-base")
+                chip("из telegram")
+        with ui.card().classes("w-full px-5 py-4"):
+            with ui.row().classes("items-center gap-4 w-full no-wrap"):
+                spinner = ui.spinner(size="sm", color="paper").classes("opacity-70")
+                phase = ui.label().classes("text-[16px]")
                 ui.space()
-                clock = ui.label().classes("font-mono text-gray-500")
+                clock = ui.label().classes("mono text-[18px] amber-text")
         error_box = ui.column().classes("w-full")
-        ui.label("Поисковые запросы").classes("text-sm font-semibold text-gray-500 mt-2")
+        queries_title = ui.label().classes("brand-label mt-4")
         queries_box = ui.column().classes("gap-1")
-        sources_title = ui.label("Источники").classes("text-sm font-semibold text-gray-500 mt-2")
+        sources_title = ui.label().classes("brand-label mt-4")
         sources_box = ui.column().classes("gap-1 w-full")
-        with ui.expansion("Журнал", icon="list").classes("w-full"):
-            log = ui.log(max_lines=300).classes("w-full h-64 text-xs")
+        with ui.expansion("Журнал").classes("w-full mt-2").props("dense"):
+            log = ui.log(max_lines=300).classes("w-full h-64 mono text-[11px]").style(
+                "background: var(--surface); color: var(--paper-60); border: 1px solid var(--line); border-radius: 10px")
 
     shown = {"queries": 0, "urls": 0, "log": 0}
 
     def update() -> None:
-        phase.set_text("В очереди: дождусь окончания текущего исследования" if job.status == "queued" else job.phase)
+        phase.set_text("В очереди — дождусь окончания текущего исследования" if job.status == "queued" else job.phase)
         clock.set_text(mmss(job.elapsed))
+        queries_title.set_text(f"Поисковые запросы · {len(job.queries)}")
         with queries_box:
             for q in job.queries[shown["queries"]:]:
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("search", size="xs").classes("text-gray-400")
-                    ui.label(q).classes("text-sm")
+                with ui.row().classes("items-baseline gap-3 no-wrap"):
+                    ui.label("→").classes("mono faint")
+                    ui.label(q).classes("text-[15px]").style("color: var(--paper-80)")
         shown["queries"] = len(job.queries)
+        sources_title.set_text(f"Источники · {len(job.urls)}")
         with sources_box:
             for url, score in job.urls[shown["urls"]:]:
-                with ui.row().classes("items-center gap-2 w-full no-wrap"):
-                    ui.badge(score or "–", color=SCORE_COLORS.get(score, "grey")).props("rounded")
-                    ui.link(domain(url), url, new_tab=True).classes("text-sm font-medium")
-                    ui.label(url).classes("text-xs text-gray-400 truncate")
+                with ui.row().classes("items-center gap-3 w-full no-wrap"):
+                    ui.label(score or "–").classes(f"score score-{(score or '-')[0]}")
+                    ui.link(domain(url), url, new_tab=True).classes("plain text-[14px] font-medium whitespace-nowrap")
+                    ui.label(url).classes("url truncate")
         shown["urls"] = len(job.urls)
-        sources_title.set_text(f"Источники ({len(job.urls)})")
         new_lines = job.log_count - shown["log"]
         for line in list(job.log)[-min(new_lines, len(job.log)):] if new_lines > 0 else []:
             log.push(line)
@@ -317,10 +434,11 @@ def job_page(job_id: str) -> RedirectResponse | None:
         elif job.status == "error":
             timer.deactivate()
             spinner.set_visibility(False)
-            with error_box, ui.card().classes("w-full bg-red-50"):
-                ui.label(f"Ошибка: {job.error}").classes("text-red-700")
-                ui.button("Попробовать снова", icon="refresh", on_click=lambda: ui.navigate.to(
-                    f"/job/{jobs.submit(job.query, job.mode, job.sources).id}")).props("unelevated no-caps")
+            with error_box, ui.card().classes("w-full px-5 py-4").style(
+                    "background: rgba(122,42,53,.22) !important; border-color: var(--bordo) !important"):
+                ui.label(job.error or "Ошибка").classes("text-[15px]")
+                primary_button("Попробовать снова", lambda: ui.navigate.to(
+                    f"/job/{jobs.submit(job.query, job.mode, job.sources).id}"), icon="refresh").classes("mt-2 self-start")
 
     timer = ui.timer(1.0, update, immediate=False)
     update()
@@ -333,8 +451,8 @@ def report_page(report_id: int) -> None:
     library = Library()
     entry = library.get(report_id)
     if not entry or not entry.md_path.exists():
-        with ui.column().classes("w-full max-w-3xl mx-auto mt-12 px-4"):
-            ui.label("Отчёт не найден.")
+        with ui.column().classes("w-full max-w-3xl mx-auto mt-16 px-6"):
+            ui.label("Отчёт не найден.").classes("muted")
         return
     markdown = entry.md_path.read_text("utf-8")
     meta = json.loads(entry.base.with_suffix(".json").read_text("utf-8"))
@@ -345,36 +463,39 @@ def report_page(report_id: int) -> None:
         library.delete(entry.id)
         ui.navigate.to("/")
 
-    with ui.dialog() as confirm, ui.card():
-        ui.label(f"Удалить отчёт «{entry.query}» вместе с файлами?")
-        with ui.row().classes("self-end"):
-            ui.button("Отмена", on_click=confirm.close).props("flat")
-            ui.button("Удалить", on_click=delete).props("unelevated color=negative")
+    with ui.dialog() as confirm, ui.card().classes("p-6 gap-4 w-[420px]"):
+        ui.label("Удалить отчёт вместе с файлами?").classes("text-lg font-semibold")
+        ui.label(entry.query).classes("muted")
+        with ui.row().classes("self-end gap-2"):
+            ui.button("Отмена", on_click=confirm.close).props("flat no-caps color=paper").classes("opacity-70")
+            primary_button("Удалить", delete)
 
-    with ui.column().classes("w-full max-w-4xl mx-auto mt-6 gap-3 px-4 pb-16"):
+    with ui.column().classes("w-full max-w-4xl mx-auto mt-8 gap-3 px-6 pb-20"):
         with ui.row().classes("items-center w-full gap-2"):
-            created = datetime.fromisoformat(entry.created).strftime("%d.%m.%Y %H:%M")
-            for text, icon in ((created, "event"), (MODES.get(entry.mode, entry.mode), "description"),
-                               (f"{entry.words} слов", "notes"), (f"{entry.sources_count} источников", "link"),
-                               (mmss(entry.duration_sec), "timer")):
-                ui.chip(text, icon=icon).props("outline dense")
+            chip(f"{datetime.fromisoformat(entry.created):%d.%m.%Y %H:%M}")
+            chip(MODES.get(entry.mode, entry.mode).lower())
+            chip(f"{number(entry.words)} {plural(entry.words, 'слово', 'слова', 'слов')}")
+            chip(f"{entry.sources_count} {plural(entry.sources_count, 'источник', 'источника', 'источников')}")
+            chip(mmss(entry.duration_sec))
             ui.space()
-            for kind, icon in (("pdf", "picture_as_pdf"), ("docx", "description"), ("md", "article")):
+            for kind in ("pdf", "docx", "md"):
                 if entry.base.with_suffix(f".{kind}").exists():
-                    ui.button(kind.upper(), icon=icon, on_click=lambda k=kind: ui.download.from_url(f"/files/{entry.id}/{k}")) \
-                        .props("flat dense no-caps")
-            ui.button(icon="delete", on_click=confirm.open).props('flat round dense color=negative aria-label="Удалить отчёт"').tooltip("Удалить отчёт")
+                    ui.button(kind.upper(), on_click=lambda k=kind: ui.download.from_url(f"/files/{entry.id}/{k}")) \
+                        .props("flat dense no-caps color=paper").classes("mono text-[12px] opacity-80 px-2")
+            ui.button(icon="delete_outline", on_click=confirm.open) \
+                .props('flat round dense color=paper aria-label="Удалить отчёт"').classes("opacity-50").tooltip("Удалить отчёт")
 
-        with ui.tabs().props("no-caps").classes("w-full") as tabs:
-            ui.tab("report", label="Отчёт", icon="article")
-            ui.tab("sources", label=f"Источники ({len(meta['sources'])})", icon="link")
-            qa_tab = ui.tab("qa", label=f"Вопросы ({len(qa)})", icon="forum")
+        with ui.tabs().props("no-caps dense align=left").classes("w-full") as tabs:
+            ui.tab("report", label="Отчёт")
+            ui.tab("sources", label=f"Источники · {len(meta['sources'])}")
+            qa_tab = ui.tab("qa", label=f"Вопросы · {len(qa)}")
+        ui.element("div").classes("w-full").style("border-top: 1px solid var(--line); margin-top: -13px")
 
-        with ui.tab_panels(tabs, value="report").classes("w-full bg-transparent"):
-            with ui.tab_panel("report").classes("px-0"):
+        with ui.tab_panels(tabs, value="report").classes("w-full").style("background: transparent"):
+            with ui.tab_panel("report").classes("px-0 pt-6"):
                 ui.markdown(markdown).classes("report")
 
-            with ui.tab_panel("sources").classes("px-0"):
+            with ui.tab_panel("sources").classes("px-0 pt-4 gap-1"):
                 def block(d: str, button) -> None:
                     sources.block(d)
                     button.disable()
@@ -382,21 +503,23 @@ def report_page(report_id: int) -> None:
 
                 for url in meta["sources"]:
                     d = domain(url)
-                    with ui.row().classes("items-center w-full gap-2 no-wrap"):
-                        ui.link(d, url, new_tab=True).classes("text-sm font-medium")
-                        ui.label(url).classes("text-xs text-gray-400 truncate flex-grow")
-                        b = ui.button(icon="block").props(f'flat round dense size=sm aria-label="Не использовать {d}"').tooltip(f"Не использовать {d}")
+                    with ui.row().classes("items-center w-full gap-3 no-wrap py-1"):
+                        ui.link(d, url, new_tab=True).classes("plain text-[14px] font-medium whitespace-nowrap")
+                        ui.label(url).classes("url truncate flex-grow")
+                        b = ui.button(icon="block").props(f'flat round dense size=sm color=paper aria-label="Не использовать {d}"') \
+                            .classes("opacity-40").tooltip(f"Не использовать {d}")
                         b.on_click(lambda d=d, b=b: block(d, b))
                         if d in blocked:
                             b.disable()
 
-            with ui.tab_panel("qa").classes("px-0"):
+            with ui.tab_panel("qa").classes("px-0 pt-4"):
                 qa_box = ui.column().classes("w-full gap-4")
 
                 def show(q: str, a: str) -> None:
-                    with qa_box, ui.card().classes("w-full"):
-                        ui.label(q).classes("font-semibold")
-                        ui.markdown(a).classes("report")
+                    with qa_box, ui.card().classes("w-full px-6 py-5 gap-2"):
+                        label("Вопрос")
+                        ui.label(q).classes("text-[16px] font-semibold")
+                        ui.markdown(a).classes("report compact")
 
                 for item in qa:
                     show(item["q"], item["a"])
@@ -417,14 +540,15 @@ def report_page(report_id: int) -> None:
                         question.enable()
                     show(q, answer)
                     question.value = ""
-                    qa_tab.props(f'label="Вопросы ({len(load_qa(entry.md_path))})"')
+                    qa_tab.props(f'label="Вопросы · {len(load_qa(entry.md_path))}"')
 
-                with ui.row().classes("w-full items-end no-wrap gap-2"):
+                with ui.row().classes("w-full items-end no-wrap gap-3 mt-2"):
                     question = ui.textarea(placeholder="Вопрос по отчёту — ответ строится только по его тексту") \
-                        .props("outlined autogrow").classes("flex-grow")
+                        .props("outlined autogrow dark").classes("flex-grow")
                     question.on("keydown.meta.enter", submit)
                     question.on("keydown.ctrl.enter", submit)
-                    send = ui.button(icon="send", on_click=submit).props('unelevated round aria-label="Спросить"')
+                    send = ui.button(icon="arrow_upward", on_click=submit) \
+                        .props('unelevated round color=bordo text-color=paper aria-label="Спросить"')
 
 
 @app.get("/files/{report_id}/{kind}")
@@ -456,7 +580,7 @@ def main() -> None:
         port=port,
         title="DEEper",
         favicon=ROOT / "static" / "favicon.png",
-        dark=None,
+        dark=True,
         language="ru",
         storage_secret=storage_secret(),
         reload=False,

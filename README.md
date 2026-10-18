@@ -2,6 +2,8 @@
 
 Личный исследовательский поисковик: по теме он сам планирует запросы, ищет и читает десятки источников и пишет структурированный отчёт на русском — с оглавлением, разделами, заключением и списком источников. Отчёт сохраняется в PDF, DOCX и Markdown. Работает из командной строки и через Telegram-бота.
 
+Оформление — по брендбуку AVEN (made by aven): тёмная тема «ночь / бумага / бордо / янтарь», шрифты Unbounded, Onest и JetBrains Mono.
+
 Внутри: [GPT Researcher](https://github.com/assafelovic/gpt-researcher) (оркестрация исследования), [SearXNG](https://github.com/searxng/searxng) (бесплатный веб-поиск) или Tavily, научные базы arXiv и OpenAlex, модель DeepSeek.
 
 > Старая версия DEEper (Groq + Tavily) сохранена в ветке [`legacy`](https://github.com/MrBoomer1981/DEEper/tree/legacy).

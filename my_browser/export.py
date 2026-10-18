@@ -10,22 +10,31 @@ import mistune
 ROOT = Path(__file__).resolve().parent.parent
 HOMEBREW_LIB = "/opt/homebrew/lib"
 
-PDF_CSS = """
-@page {
+FONTS = ROOT / "static" / "fonts"
+
+# Print-friendly take on the AVEN brandbook: light page, night text, bordo links and rules,
+# an amber line under the title, Onest / Unbounded / JetBrains Mono.
+PDF_CSS = f"""
+@font-face {{ font-family: 'Onest'; src: url('{(FONTS / "Onest.ttf").as_uri()}'); }}
+@font-face {{ font-family: 'Unbounded'; src: url('{(FONTS / "Unbounded.ttf").as_uri()}'); }}
+@font-face {{ font-family: 'JetBrains Mono'; src: url('{(FONTS / "JetBrainsMono.ttf").as_uri()}'); }}
+@page {{
   size: A4;
   margin: 2cm 2cm 2.2cm;
-  @bottom-center { content: counter(page); font-size: 9pt; color: #888; }
-}
-body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #1a1a1a; }
-h1 { font-size: 20pt; margin: 0 0 12pt; }
-h2 { font-size: 15pt; margin: 18pt 0 8pt; padding-bottom: 3pt; border-bottom: 1px solid #ddd; }
-h3 { font-size: 12.5pt; margin: 14pt 0 6pt; }
-a { color: #1a5fb4; text-decoration: none; overflow-wrap: anywhere; }
-table { width: 100%; margin: 10pt 0; border-collapse: collapse; font-size: 9.5pt; }
-th, td { padding: 4pt 6pt; border: 1px solid #ccc; vertical-align: top; }
-th { background: #f3f3f3; }
-code { font-family: Menlo, monospace; font-size: 9.5pt; }
-blockquote { margin: 8pt 0; padding-left: 10pt; border-left: 3px solid #ccc; color: #555; }
+  @bottom-left {{ content: "DEEPER · made by aven"; font-family: 'JetBrains Mono'; font-size: 8pt; color: #9a918a; }}
+  @bottom-right {{ content: counter(page); font-family: 'JetBrains Mono'; font-size: 8pt; color: #9a918a; }}
+}}
+body {{ font-family: 'Onest', sans-serif; font-size: 10.5pt; line-height: 1.55; color: #14100E; }}
+h1 {{ font-size: 20pt; font-weight: 700; line-height: 1.2; margin: 0 0 14pt; padding-bottom: 10pt; border-bottom: 2.5pt solid #E8A24A; }}
+h2 {{ font-size: 14pt; font-weight: 600; margin: 20pt 0 6pt; }}
+h3 {{ font-size: 11.5pt; font-weight: 600; margin: 14pt 0 4pt; }}
+a {{ color: #7A2A35; text-decoration: none; overflow-wrap: anywhere; }}
+strong {{ font-weight: 700; }}
+table {{ width: 100%; margin: 10pt 0; border-collapse: collapse; font-size: 9pt; }}
+th, td {{ padding: 4pt 6pt; border: 0.6pt solid #d9d0c4; vertical-align: top; }}
+th {{ background: #F2EBE1; font-weight: 600; }}
+code {{ font-family: 'JetBrains Mono'; font-size: 8.5pt; }}
+blockquote {{ margin: 8pt 0; padding-left: 10pt; border-left: 2pt solid #7A2A35; color: #4a403a; }}
 """
 
 _markdown = mistune.create_markdown(plugins=["table", "strikethrough", "url"])
@@ -62,9 +71,13 @@ def write_pdf(md_path: Path, pdf_path: Path) -> None:
 
 def _render_pdf(md_path: Path, pdf_path: Path) -> None:
     from weasyprint import CSS, HTML
+    from weasyprint.text.fonts import FontConfiguration  # @font-face is ignored without it
 
     html = f'<!doctype html><html><head><meta charset="utf-8"></head><body>{md_to_html(md_path.read_text("utf-8"))}</body></html>'
-    HTML(string=html, base_url=str(md_path.parent)).write_pdf(pdf_path, stylesheets=[CSS(string=PDF_CSS)])
+    fonts = FontConfiguration()
+    HTML(string=html, base_url=str(md_path.parent)).write_pdf(
+        pdf_path, stylesheets=[CSS(string=PDF_CSS, font_config=fonts)], font_config=fonts
+    )
 
 
 if __name__ == "__main__":

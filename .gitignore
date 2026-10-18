@@ -5,3 +5,6 @@ reports/
 outputs/
 logs/
 *.log
+
+# Local brand reference (positioning, launch plan): not for the public repo
+aven-brandbook.pdf
