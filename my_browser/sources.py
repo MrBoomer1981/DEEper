@@ -33,6 +33,7 @@ from gpt_researcher.skills.researcher import ResearchConductor
 from gpt_researcher.utils.llm import create_chat_completion
 
 from my_browser.pipeline import REPORTS_DIR
+from my_browser.reader import stats as read_stats
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,9 @@ async def rank(urls: list[str], query: str, cfg, domain_counts: Counter | None =
             scores[u] = static[u] or 1
         elif rated[u] > 0:  # authority raises a relevant result, never rescues an off-topic one
             scores[u] = max(rated[u], static[u] or 0)
+    for u in scores:  # a domain that stays unreadable even through reader's fallbacks loses a point
+        if scores[u] > 1 and read_stats.unreadable(u):
+            scores[u] -= 1
     good = sorted(((u, s) for u, s in scores.items() if s >= 2), key=lambda item: item[1], reverse=True)
     pool = good or [(u, s) for u, s in scores.items() if s == 1][:WEAK_FALLBACK]
 

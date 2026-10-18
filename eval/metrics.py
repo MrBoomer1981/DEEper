@@ -13,6 +13,8 @@ CYRILLIC = re.compile("[а-яё]", re.I)
 RUSSIAN_TLDS = (".ru", ".su", ".рф", ".xn--p1ai", ".by", ".kz")
 ADDED = re.compile(r"Added source url to research(?: \(([^)]*)\))?: (\S+)")
 FAILED = re.compile(r"for (\S+), treating as fetch failure|PyMuPDFScraper retry also failed for (\S+)|Error processing (\S+?): ")
+RESCUED = re.compile(r"Read via (\S+): (\S+)")  # my_browser.reader
+LOST = re.compile(r"Unreadable after fallbacks: (\S+)")
 SENTENCE_END = re.compile(r"(?<=[.!?…])\s+(?=[«\"(\[A-ZА-ЯЁ0-9])")
 LIST_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s")
 NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
@@ -73,16 +75,22 @@ def citations(urls: list[str], markdown: str) -> dict:
 
 
 def scrape_log(lines: list[str]) -> dict:
-    """Sources the filter accepted (with their score) and the ones the scraper could not read."""
+    """Sources the filter accepted (with their score), the ones read only through reader's fallbacks,
+    and the ones nothing could read."""
     added = {}
     for line in lines:
         if match := ADDED.search(line):
             added[match.group(2)] = (match.group(1) or "").split("/")[0]
-    failed = {next(filter(None, match.groups())) for line in lines if (match := FAILED.search(line))}
+    direct_failed = {next(filter(None, match.groups())) for line in lines if (match := FAILED.search(line))}
+    rescued = {match.group(2): match.group(1) for line in lines if (match := RESCUED.search(line))}
+    lost = {match.group(1) for line in lines if (match := LOST.search(line))}
+    failed = ((direct_failed - set(rescued)) | lost) & set(added)
     return {
         "attempted": len(added),
         "score3": share(sum(score == "3" for score in added.values()), len(added)),
-        "failed": share(len(failed & set(added)), len(added)),
+        "failed": share(len(failed), len(added)),
+        "rescued": share(len(set(rescued) & set(added)), len(added)),
+        "rescued_via": dict(Counter(via for url, via in rescued.items() if url in added)),
     }
 
 

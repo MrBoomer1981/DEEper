@@ -142,7 +142,7 @@ def preflight() -> None:
 async def research(query: str, mode: str, on_progress: Callable[[str], None] = print) -> tuple[str, list[str]]:
     from gpt_researcher import GPTResearcher
 
-    from my_browser import costs, prompts, sources, stemming  # noqa: F401  patch gpt-researcher (see each module)
+    from my_browser import costs, prompts, reader, sources, stemming  # noqa: F401  patch gpt-researcher (see each module)
     from my_browser.detailed import DetailedReport
 
     if mode == "detailed":

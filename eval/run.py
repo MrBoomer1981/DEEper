@@ -66,7 +66,7 @@ COLUMNS = [
     ("words", "Слов", "int"), ("seconds", "Время", "mmss"), ("rub", "₽", "rub"),
     ("sources", "Источн.", "int"), ("domains", "Доменов", "int"), ("english", "Англ.", "pct"),
     ("authoritative", "Автор.", "pct"), ("score3", "3/3", "pct"), ("in_report", "В отчёте", "pct"),
-    ("linked_paragraphs", "Абзацы со ссылкой", "pct"), ("failed", "Не скачалось", "pct"),
+    ("linked_paragraphs", "Абзацы со ссылкой", "pct"), ("failed", "Не скачалось", "pct"), ("rescued", "Спасено", "pct"),
     ("off_topic", "Не по теме", "pct"), ("citation_accuracy", "Точность цитат", "pct"), ("checked", "Проверено", "int"),
 ]
 
@@ -76,7 +76,8 @@ METHOD = """Как считается:
 - 3/3 — доля источников, которым отбор поставил высшую оценку.
 - В отчёте — источники, ссылка на которые есть в тексте или в списке источников.
 - Абзацы со ссылкой — абзацы и пункты списков от 25 слов хотя бы с одной ссылкой.
-- Не скачалось — страницы, которые скрейпер не смог прочитать.
+- Не скачалось — страницы, которые не удалось прочитать ни напрямую, ни в обход.
+- Спасено — страницы, прочитанные только в обход (`my_browser/reader.py`): Europe PMC, открытая копия через OpenAlex, Jina Reader или аннотация OpenAlex.
 - В подробном режиме список источников отчёта — это процитированные ссылки, поэтому «В отчёте» там всегда 100%, а «Источн.», «Англ.» и «Автор.» считаются только по ним.
 - Не по теме — оценка Flash по адресу и фрагменту из поисковика (заголовков SearXNG не отдаёт). Ссылкам arXiv и doi.org без описания судья часто ставит «не по теме», поэтому цифра завышена и годится только для сравнения замеров между собой.
 - Точность цитат — до {pairs} случайных пар «утверждение → ссылка» на отчёт. Страница скачивается заново, \
@@ -96,8 +97,9 @@ class LogLines(logging.Handler):
 
 
 LOG = LogLines()
-for _name in ("scraper", "gpt_researcher.scraper.scraper"):
+for _name in ("scraper", "gpt_researcher.scraper.scraper", "my_browser.reader"):
     logging.getLogger(_name).addHandler(LOG)
+logging.getLogger("my_browser.reader").setLevel(logging.INFO)  # its outcome lines are INFO
 
 
 def load_topics() -> list[str]:
@@ -224,7 +226,9 @@ def git_version() -> str:
 
 def write_results(rows: list[dict], judging: costs.Meter, args: argparse.Namespace, started: datetime) -> Path:
     RESULTS_DIR.mkdir(exist_ok=True)
-    previous = sorted(RESULTS_DIR.glob("*.json"))
+    same_setup = {"mode": args.mode, "writer": args.writer, "sources": SOURCES[args.sources]}
+    previous = [p for p in sorted(RESULTS_DIR.glob("*.json"))  # the last run made the same way
+                if all(json.loads(p.read_text("utf-8"))["run"].get(k) == v for k, v in same_setup.items())]
     name = f"{started:%Y-%m-%d_%H%M}" + (f"_{args.label}" if args.label else "")
     avg = averages(rows)
     header = "| # | Тема | " + " | ".join(h for _, h, _ in COLUMNS) + " |"
