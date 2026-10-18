@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Personal deep-research engine (GPT Researcher + SearXNG + DeepSeek)"
 requires-python = ">=3.12"
 dependencies = [
+    "aiogram>=3.31.0",
     "gpt-researcher>=0.16.1",
     "langchain-mcp-adapters>=0.3.2",
 ]
