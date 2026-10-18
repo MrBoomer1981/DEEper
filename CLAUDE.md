@@ -11,11 +11,12 @@ docker compose up -d                       # start local SearXNG on 127.0.0.1:80
 uv run research.py "тема"                  # detailed report (default mode) -> reports/
 uv run research.py "тема" --mode deep --sources all --words 2500
 uv run research.py --help
-uv run bot.py                              # Telegram bot (TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS in .env)
+uv run app.py                              # web UI at 127.0.0.1:8501 (+ the bot if a token is set); 8080 is SearXNG
+uv run bot.py                              # Telegram bot only (TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS in .env)
 uv add <pkg>                               # dependencies are managed by uv (Python 3.12)
 ```
 
-Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` holds query, mode, duration, word count and source URLs. `reports/library.sqlite` numbers the reports and indexes them for search. There are no tests yet. For free end-to-end checks, point all three LLMs at a local OpenAI-compatible mock (`FAST_LLM=openai:mock`, etc., plus `OPENAI_BASE_URL`); the mock must support SSE streaming and `/embeddings`.
+Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` holds query, mode, duration, word count and source URLs. `reports/library.sqlite` numbers the reports and indexes them for search. There are no tests yet. Web UI E2E: `uv run --with playwright` driving the installed Chrome (`channel="chrome"`, headless) against `uv run app.py`. For free end-to-end checks, point all three LLMs at a local OpenAI-compatible mock (`FAST_LLM=openai:mock`, etc., plus `OPENAI_BASE_URL`); the mock must support SSE streaming and `/embeddings`.
 
 ## Architecture
 
@@ -24,6 +25,17 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
   - `research()` runs one of three modes.
   - `save()` writes the files and adds the report to the library.
 - Configuration precedence in gpt-researcher: **env vars > `config.json` > library defaults**. Per-run options (`RETRIEVER`, `TOTAL_WORDS`, `LANGUAGE`) are applied through `env_overrides()`, which mutates the process environment and restores it afterwards. Two researches must therefore never run concurrently in one process; the bot serializes them with a lock. Any key in `config.json` can be overridden from `.env`.
+- `my_browser/jobs.py` is the research queue shared by the web app and the bot.
+  - Each job runs in its own thread under `RESEARCH_LOCK` (env overrides are process-wide).
+  - Progress comes from pipeline phases plus a handler on gpt-researcher's `scraper` logger, which parses the planned queries and the `Added source url (score)` lines.
+  - `JOBS` lives in memory, so it is lost on restart; reports persist.
+- `app.py` (NiceGUI 3) is the web UI.
+  - Pages: `/` (new research), `/job/{id}` (live progress, polled by `ui.timer`), `/report/{id}` (tabs for report, sources with block buttons, and Q&A), `/login`. `/files/{id}/{pdf|docx|md}` serves downloads.
+  - Auth: `AuthMiddleware` is active when it listens publicly (`PORT` is set, as on Railway) or when `APP_PASSWORD` is set.
+  - `NICEGUI_STORAGE_PATH` and the storage secret live in `reports/` (the volume), so logins survive redeploys.
+  - On startup it runs `bot.start(handle_signals=False)` when a Telegram token exists. Railway runs `app.py`: one process, one library.
+  - Icon-only buttons carry `aria-label`s. The PWA manifest and icons are in `static/`, which is what Safari "Add to Dock" uses.
+- Q&A history is stored next to each report as `<name>.qa.json` (`my_browser/ask.py`); `Library.sync()` skips these files.
 - `my_browser/library.py`: SQLite with an FTS5 table. Report files are the source of truth. `sync()` re-indexes `reports/*.json`, so the DB can be deleted and rebuilt. Search uses per-word prefix matching so that Russian word forms match.
 - `bot.py` (aiogram 3):
   - Access is limited to `TELEGRAM_ALLOWED_USERS` through an outer middleware; anyone else is only told their ID.

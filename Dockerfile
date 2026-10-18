@@ -1,4 +1,4 @@
-# Image for running the Telegram bot on Railway (or any Docker host).
+# Image for the web app + Telegram bot on Railway (or any Docker host).
 FROM python:3.12-slim
 
 # WeasyPrint (PDF) needs pango/harfbuzz; DejaVu covers Cyrillic; libmagic for document loaders.
@@ -16,4 +16,4 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY . .
 
-CMD ["uv", "run", "--no-sync", "bot.py"]
+CMD ["uv", "run", "--no-sync", "app.py"]

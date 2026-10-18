@@ -123,9 +123,13 @@ def preflight() -> None:
     if "searx" in retrievers.split(","):
         url = os.environ.get("SEARX_URL", "")
         try:
-            requests.get(f"{url}/search", params={"q": "test", "format": "json"}, timeout=10).raise_for_status()
-        except requests.RequestException as e:
-            raise PreflightError(f"SearXNG не отвечает по {url!r} ({e}). Запустите: docker compose up -d") from e
+            r = requests.get(f"{url}/search", params={"q": "test", "format": "json"}, timeout=10, allow_redirects=False)
+            r.raise_for_status()
+            if "results" not in r.json():
+                raise ValueError("no results field")
+        except (requests.RequestException, ValueError) as e:
+            # ValueError also covers a non-JSON answer: something else is listening on that port.
+            raise PreflightError(f"SearXNG не отвечает по {url!r} ({e}). Запустите Docker и: docker compose up -d") from e
 
 
 async def research(query: str, mode: str, on_progress: Callable[[str], None] = print) -> tuple[str, list[str]]:

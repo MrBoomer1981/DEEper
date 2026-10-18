@@ -67,7 +67,8 @@ class Library:
     def sync(self) -> None:
         """Index reports made before the library existed (or by an older version)."""
         for json_path in sorted(REPORTS_DIR.glob("*.json")):
-            self.add(json_path)
+            if not json_path.name.endswith(".qa.json"):
+                self.add(json_path)
 
     def get(self, report_id: int) -> Entry | None:
         row = self.db.execute(f"SELECT {_COLUMNS} FROM reports WHERE id = ?", (report_id,)).fetchone()
@@ -100,7 +101,7 @@ class Library:
         with self.db:
             self.db.execute("DELETE FROM reports WHERE id = ?", (report_id,))
             self.db.execute("DELETE FROM reports_fts WHERE rowid = ?", (report_id,))
-        for suffix in (".md", ".json", ".docx", ".pdf"):
+        for suffix in (".md", ".json", ".docx", ".pdf", ".qa.json"):
             entry.base.with_suffix(suffix).unlink(missing_ok=True)
         return entry
 

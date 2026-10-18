@@ -1,0 +1,15 @@
+{
+  "name": "DEEper",
+  "short_name": "DEEper",
+  "description": "Глубокие исследования с длинными отчётами",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3730a3",
+  "lang": "ru",
+  "icons": [
+    {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "/static/icon-1024.png", "sizes": "1024x1024", "type": "image/png", "purpose": "any"}
+  ]
+}

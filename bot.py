@@ -27,10 +27,10 @@ from aiogram.types import (
     Message,
 )
 
-from my_browser import sources
+from my_browser import jobs, sources
 from my_browser.ask import ask
 from my_browser.library import Entry, Library
-from my_browser.pipeline import DEFAULT_SOURCES, PreflightError, Report, env_overrides, overrides, preflight, research, save
+from my_browser.pipeline import DEFAULT_SOURCES
 
 MODE_BUTTONS = {"detailed": "📄 Подробный", "deep": "🔬 Глубокий", "quick": "⚡ Быстрый"}
 SOURCE_BUTTONS = {"web": "🌐 Веб", "academic": "🎓 Наука", "all": "🌐+🎓 Всё"}
@@ -56,7 +56,6 @@ HELP = """<b>Глубокие исследования</b>
 
 dp = Dispatcher()
 library = Library()
-research_lock = asyncio.Lock()  # one research at a time: env overrides are process-wide
 pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the user's message
 background: set[asyncio.Task] = set()
 
@@ -81,26 +80,23 @@ class AllowedUsers(BaseMiddleware):
 
 
 class Status:
-    """The status message of one research run, refreshed by a ticker task."""
+    """The status message of one research run, re-rendered from the job's state."""
 
     def __init__(self, message: Message, header: str):
         self.message = message
         self.header = header
-        self.text = "Проверяю DeepSeek и поиск..."
-        self.started = time.monotonic()
         self._shown = ""
         self._shown_at = 0.0
 
-    def set(self, text: str) -> None:
-        # Called from the research worker thread; rendering happens in tick().
-        self.text = text
-
-    async def tick(self) -> None:
-        while True:
+    async def follow(self, job: jobs.Job) -> None:
+        while job.active:
             await asyncio.sleep(TICK_SEC)
-            if self.text != self._shown or time.monotonic() - self._shown_at >= 15:
-                await self.render(f"⏳ {html.escape(self.text)}\n⏱ {_mmss(time.monotonic() - self.started)}")
-                self._shown, self._shown_at = self.text, time.monotonic()
+            if not job.active:  # finished while we slept; the caller renders the result
+                break
+            text = "В очереди: дождусь окончания текущего исследования..." if job.status == "queued" else job.phase
+            if text != self._shown or time.monotonic() - self._shown_at >= 15:
+                await self.render(f"⏳ {html.escape(text)}\n⏱ {_mmss(job.elapsed)}")
+                self._shown, self._shown_at = text, time.monotonic()
 
     async def render(self, body: str) -> None:
         with suppress(TelegramBadRequest):
@@ -161,37 +157,17 @@ async def send_report(message: Message, entry: Entry) -> None:
     await message.answer(f"Ответьте на сообщение с «#{entry.id}», чтобы задать вопрос по этому отчёту.")
 
 
-def _run_blocking(query: str, mode: str, sources: str, status: Status) -> Report:
-    """Runs in a worker thread with its own event loop so the bot stays responsive."""
-    with env_overrides(overrides(sources)):
-        preflight()
-        started = time.monotonic()
-        markdown, urls = asyncio.run(research(query, mode, on_progress=status.set))
-        status.set("Собираю PDF и DOCX...")
-        return save(query, mode, markdown, urls, time.monotonic() - started)
-
-
 async def run_research(status: Status, query: str, mode: str, sources: str) -> None:
-    if research_lock.locked():
+    if jobs.busy():
         await status.render("⏳ В очереди: дождусь окончания текущего исследования...")
-    async with research_lock:
-        status.started = time.monotonic()
-        ticker = asyncio.create_task(status.tick())
-        try:
-            report = await asyncio.to_thread(_run_blocking, query, mode, sources, status)
-        except PreflightError as e:
-            await status.render(f"❌ {html.escape(str(e))}")
-            return
-        except Exception as e:
-            logging.exception("Research failed: %s", query)
-            await status.render(f"❌ Ошибка: {html.escape(str(e)[:300])}")
-            return
-        finally:
-            ticker.cancel()
-        await status.render(
-            f"✅ Готово за {_mmss(report.seconds)}: {report.words} слов, {len(report.sources)} источников"
-        )
-        await send_report(status.message, library.get(report.id))
+    job = jobs.submit(query, mode, sources, origin="telegram")
+    await status.follow(job)
+    if job.status == "error":
+        await status.render(f"❌ {html.escape(job.error or 'Ошибка')}")
+        return
+    entry = library.get(job.report_id)
+    await status.render(f"✅ Готово за {_mmss(job.elapsed)}: {entry.words} слов, {entry.sources_count} источников")
+    await send_report(status.message, entry)
 
 
 async def answer_question(message: Message, report_id: int, question: str) -> None:
@@ -371,12 +347,13 @@ async def on_mode(callback: CallbackQuery) -> None:
     task.add_done_callback(background.discard)
 
 
-async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+def token() -> str | None:
     # TELEGRAM_TOKEN is the name DEEper v1 used, still set on the Railway service.
-    token = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
-    if not token:
-        sys.exit("Нет TELEGRAM_BOT_TOKEN (в .env или в переменных окружения). Создайте бота у @BotFather и впишите токен.")
+    return os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
+
+
+async def start(handle_signals: bool = True) -> None:
+    """Run the bot; app.py also starts it inside the web app's event loop."""
     allowed = {int(x) for x in re.findall(r"\d+", os.environ.get("TELEGRAM_ALLOWED_USERS", ""))}
     if not allowed:
         logging.warning("TELEGRAM_ALLOWED_USERS пуст: бот только сообщит каждому его Telegram ID")
@@ -384,7 +361,7 @@ async def main() -> None:
     dp.callback_query.outer_middleware(AllowedUsers(allowed))
     library.sync()
 
-    bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = Bot(token(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await bot.set_my_commands([
         BotCommand(command="history", description="Последние отчёты"),
         BotCommand(command="search", description="Поиск по отчётам"),
@@ -397,8 +374,11 @@ async def main() -> None:
     ])
     me = await bot.get_me()
     logging.info("Бот @%s запущен, доступ: %s", me.username, sorted(allowed) or "никому")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, handle_signals=handle_signals)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if not token():
+        sys.exit("Нет TELEGRAM_BOT_TOKEN (в .env или в переменных окружения). Создайте бота у @BotFather и впишите токен.")
+    asyncio.run(start())

@@ -29,8 +29,21 @@ cp .env.example .env          # впишите DEEPSEEK_API_KEY и SEARXNG_SECRE
 docker compose up -d          # локальный SearXNG на 127.0.0.1:8080
 uv run research.py "тема"     # отчёт появится в reports/
 uv run research.py "тема" --mode deep --sources all --words 2500
-uv run bot.py                 # Telegram-бот
+uv run bot.py                 # только Telegram-бот
+uv run app.py                 # приложение (и бот, если задан токен)
 ```
+
+## Приложение (Mac, браузер, телефон)
+
+Веб-интерфейс в стиле Perplexity: тема → режим и источники → ход исследования в реальном времени (поисковые запросы и найденные источники с оценкой качества) → отчёт с вкладками «Отчёт», «Источники» (с блокировкой доменов) и «Вопросы» (диалог по отчёту), скачивание PDF/DOCX/MD, история и поиск по всем отчётам.
+
+```bash
+uv run app.py                 # http://127.0.0.1:8501 (порт 8080 занят локальным SearXNG)
+```
+
+На Railway приложение работает в том же сервисе, что и бот (общая история отчётов), и закрыто паролем `APP_PASSWORD`.
+
+**Установить на Mac без App Store:** откройте адрес приложения в Safari → «Файл» → «Добавить в Dock». Появится отдельное приложение DEEper со своей иконкой (Dock, Launchpad, Spotlight, Cmd+Tab). На iPhone: Safari → «Поделиться» → «На экран Домой».
 
 ## Telegram-бот
 
@@ -58,6 +71,7 @@ uv run bot.py                 # Telegram-бот
 | `DEEPSEEK_API_KEY` | ключ DeepSeek |
 | `TELEGRAM_BOT_TOKEN` | токен от @BotFather (старое имя `TELEGRAM_TOKEN` тоже подходит) |
 | `TELEGRAM_ALLOWED_USERS` | ваш Telegram ID (несколько — через запятую) |
+| `APP_PASSWORD` | пароль входа в веб-приложение |
 | `TAVILY_API_KEY` | ключ [Tavily](https://app.tavily.com) |
 
 Чтобы отчёты и история переживали передеплой, подключите к сервису Volume с путём монтирования `/app/reports`.
