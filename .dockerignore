@@ -6,3 +6,4 @@ outputs/
 logs/
 __pycache__/
 *.log
+eval/

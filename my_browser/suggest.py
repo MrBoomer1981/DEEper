@@ -69,7 +69,8 @@ GAPS = re.compile(
 )
 
 
-async def _fast(prompt: str, max_tokens: int, temperature: float = 0.4) -> str:
+async def fast(prompt: str, max_tokens: int, temperature: float = 0.4) -> str:
+    """One cheap FAST_LLM call (eval/run.py uses it for its judges too)."""
     from gpt_researcher.config import Config
     from gpt_researcher.utils.llm import create_chat_completion
 
@@ -84,7 +85,7 @@ async def _fast(prompt: str, max_tokens: int, temperature: float = 0.4) -> str:
     )
 
 
-def _json_list(text: str) -> list:
+def json_list(text: str) -> list:
     """The JSON array in a model answer, repaired if needed ({"topics": [...]} also works)."""
     match = re.search(r"\[.*\]", text, re.S)
     data = json_repair.loads(match.group(0) if match else text)
@@ -139,7 +140,7 @@ async def followups(query: str, markdown: str) -> list[dict]:
     outline, excerpt = _excerpt(markdown)
     prompt = FOLLOWUPS_PROMPT.format(query=query, today=date.today().isoformat(), outline=outline or "—", excerpt=excerpt)
     try:
-        items = _json_list(await _fast(prompt, max_tokens=1500))
+        items = json_list(await fast(prompt, max_tokens=1500))
     except Exception as e:
         logger.warning("Follow-up topics failed: %s", e)
         return []
@@ -172,9 +173,9 @@ async def followups_for(json_path: Path) -> list[dict]:
 async def questions(query: str) -> tuple[list[dict], float]:
     """Up to 3 clarifying questions with ready answers, and their cost in rubles."""
     with costs.metered() as meter:
-        answer = await _fast(CLARIFY_PROMPT.format(query=query, today=date.today().isoformat()), max_tokens=800)
+        answer = await fast(CLARIFY_PROMPT.format(query=query, today=date.today().isoformat()), max_tokens=800)
     result = []
-    for item in _json_list(answer):
+    for item in json_list(answer):
         if not isinstance(item, dict) or not str(item.get("q") or "").strip() or not isinstance(item.get("options"), list):
             continue
         options = [str(o).strip() for o in item["options"] if str(o).strip() and str(o).strip().lower() != ANY_ANSWER]
@@ -187,6 +188,6 @@ async def refine(query: str, answers: list[tuple[str, str]]) -> tuple[str, float
     """The topic rewritten with the chosen answers, and the cost in rubles."""
     lines = "\n".join(f"- {question} — {answer}" for question, answer in answers)
     with costs.metered() as meter:
-        text = await _fast(REFINE_PROMPT.format(query=query, answers=lines), max_tokens=200, temperature=0.2)
+        text = await fast(REFINE_PROMPT.format(query=query, answers=lines), max_tokens=200, temperature=0.2)
     refined = text.strip().strip("«»\"").strip().rstrip(".")
     return (refined if 8 <= len(refined) <= 400 else query), meter.rub()

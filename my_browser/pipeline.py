@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
-REPORTS_DIR = ROOT / "reports"
+REPORTS_DIR = Path(os.environ.get("REPORTS_DIR") or ROOT / "reports")  # tests and eval set their own
 
 load_dotenv(ROOT / ".env")
 

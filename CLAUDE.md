@@ -14,9 +14,11 @@ uv run research.py --help
 uv run app.py                              # web UI at 127.0.0.1:8501 (+ the bot if a token is set); 8080 is SearXNG
 uv run bot.py                              # Telegram bot only (TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS in .env)
 uv add <pkg>                               # dependencies are managed by uv (Python 3.12)
+uv run eval/run.py                         # quality measurement on eval/topics.txt -> eval/results/ (≈10 ₽: quick reports, Flash)
+uv run eval/run.py --topics 1,4 --label exa   # a subset, named; --mode/--writer/--sources/--pairs as in research.py
 ```
 
-Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` holds query, mode, duration, word count and source URLs. `reports/library.sqlite` numbers the reports and indexes them for search. There are no tests yet. Web UI E2E: `uv run --with playwright` driving the installed Chrome (`channel="chrome"`, headless) against `uv run app.py`. For free end-to-end checks, point all three LLMs at a local OpenAI-compatible mock (`FAST_LLM=openai:mock`, etc., plus `OPENAI_BASE_URL`); the mock must support SSE streaming and `/embeddings`.
+Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` holds query, mode, duration, word count and source URLs. `reports/library.sqlite` numbers the reports and indexes them for search. The `REPORTS_DIR` env var moves all of that elsewhere; it is read when `my_browser.pipeline` is imported. There is deliberately no test suite while the project is in active development (the user's call): verify with throwaway runs, and measure search changes with `eval/run.py`. Web UI E2E: `uv run --with playwright` driving the installed Chrome (`channel="chrome"`, headless) against `uv run app.py`. For free end-to-end checks, point all three LLMs at a local OpenAI-compatible mock (`FAST_LLM=openai:mock`, etc., plus `OPENAI_BASE_URL`); the mock must support SSE streaming and `/embeddings`.
 
 ## Architecture
 
@@ -66,6 +68,11 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
 - URLs are made readable (`sources.readable_url`): percent-encoded Cyrillic is decoded, ASCII escapes are kept. Encoded slugs cost 3–4 tokens per letter and made long reports hit the output cap mid-reference (16k back then, now 32k).
 - `my_browser/stemming.py` swaps gpt-researcher's BM25 tokenizer (`context/lexical.py`) for one with the Snowball Russian stemmer (from nltk) and Russian stopwords; Latin tokens go through upstream's stemmer unchanged.
 - In the detailed report, the `## Источники` list is built from the links cited inline, not from every visited URL. If fewer than 3 links are cited (APA author-date style), it falls back to all visited URLs.
+- `eval/` measures quality.
+  - `run.py` runs each topic of `topics.txt` through `research()` with `REPORTS_DIR=eval/reports`, a library of its own, and copies the app's blocklist there.
+  - `metrics.py` computes source and citation stats from the saved report and from the captured log lines of the `scraper` and `gpt_researcher.scraper.scraper` loggers (accepted sources with scores, fetch failures).
+  - Two FAST_LLM judges, billed apart from the reports: off-topic sources by URL and title (SearXNG results carry no titles, so the snippet stands in), and FACT-style citation accuracy. For the latter, statement→link pairs are sampled with a per-topic seed, the page is re-fetched with gpt-researcher's `Scraper`, and the 4 chunks sharing the most numbers, Latin names and stems are judged.
+  - Results go to `eval/results/<date>_<label>.md|json`, each with the previous run's averages for comparison. In detailed mode the report's source list is its cited links (`DetailedReport.source_urls()`), so `in_report` is 100% there by construction.
 - `my_browser/export.py`: DOCX is rendered in-process (mistune → htmldocx). The PDF is rendered by WeasyPrint **in a child process** with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`, because WeasyPrint needs Homebrew's pango (`brew install pango`) and dyld reads that variable only at process start.
 
 ## Design (AVEN brandbook)
