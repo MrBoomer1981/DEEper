@@ -37,7 +37,8 @@ Outputs land in `reports/` as `<date>_<slug>.{md,docx,pdf,json}`; the `.json` ho
 
 - GitHub: public repo `MrBoomer1981/DEEper`. The pre-2026-10 DEEper code (aiogram + Groq + Tavily) lives in the `legacy` branch. Old history contains a leaked `.env`.
 - Railway deploys `main` with the `Dockerfile` (`railway.json`, a single replica, because two Telegram pollers conflict).
-- There is no SearXNG on Railway: set `WEB_RETRIEVER=tavily` + `TAVILY_API_KEY`. `SOURCES["web"]` reads `WEB_RETRIEVER`, which defaults to `searx`.
+- There is no SearXNG on Railway. `SOURCES["web"]` becomes `tavily` automatically when `TAVILY_API_KEY` is set and `SEARX_URL` is not; `WEB_RETRIEVER` overrides this.
+- The bot also accepts `TELEGRAM_TOKEN` (the DEEper v1 name) as a fallback for `TELEGRAM_BOT_TOKEN`.
 - Reports persist only if a volume is mounted at `/app/reports`.
 - The container runs in UTC, and on Linux WeasyPrint finds pango without the DYLD workaround.
 - Build the image locally with `docker build -t my-browser-bot .` (about 6 min, ~1.9 GB). To test it against the host's SearXNG and mock LLM, use `host.docker.internal`.
