@@ -340,3 +340,16 @@ body:not(.graffiti-off) .report.main h2:first-of-type { padding-bottom: 12px; ba
 .li.quote { align-items: flex-start; }
 .li.quote .icon-btn { margin: -8px -10px 0 0; color: var(--muted); }
 .quote-text { font-size: 16px; line-height: 1.55; color: var(--paper); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; }
+
+/* «Фокус» (DESIGN_HANDOFF.md §4.6) */
+.li.disabled { cursor: default; }
+.li.disabled .li-title { color: var(--muted); }
+.li.choice .li-check { color: var(--amber); font-size: 22px; flex: none; }
+.li.choice.on .li-title { color: var(--paper); font-weight: 600; }
+.profile-card { background: var(--bordo); border-radius: var(--radius-card); padding: 22px 20px; display: flex; flex-direction: column; gap: 10px;
+                cursor: pointer; margin-top: 12px; }
+.profile-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #E5C9C2; }
+.profile-text { font-size: 16px; line-height: 1.5; color: #E5C9C2; }
+.profile-name { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #E5C9C2; }
+.field.q-textarea, .field.q-input { margin: 0; }
+.field textarea { font-size: 16px !important; color: var(--paper) !important; padding: 12px 0 !important; }

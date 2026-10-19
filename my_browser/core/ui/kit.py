@@ -48,7 +48,7 @@ NAV = [  # (section, route, Material icon, label for screen readers)
 DEFAULT_PREFS = {
     "mode": "detailed", "sources": DEFAULT_SOURCES, "writer": DEFAULT_WRITER,
     "factcheck": None,  # None: as the mode has it (common.settings.FACTCHECK_MODES)
-    "graffiti": True, "preset": "mine", "profile": "",
+    "graffiti": True, "preset": "mine", "profile": "", "name": "",
 }
 
 
@@ -141,6 +141,30 @@ def sheet(title: str | None = None) -> tuple[ui.dialog, ui.element]:
         with body:
             ui.label(title).classes("sheet-title")
     return dialog, body
+
+
+def choice_sheet(title: str, options: dict, value, on_select, hints: dict | None = None, text: str = "") -> None:
+    """A bottom sheet to pick one of `options` ({value: label}); the chosen one is ticked."""
+    dialog, body = sheet(title)
+
+    def pick(key) -> None:
+        dialog.close()
+        on_select(key)
+
+    with body:
+        if text:
+            ui.label(text).classes("sub-text")
+        with ui.element("div").classes("list"):
+            for key, label in options.items():
+                with ui.element("div").classes("li choice" + (" on" if key == value else "")).props('role="button" tabindex="0"') as item:
+                    with ui.element("div").classes("li-text"):
+                        ui.label(label).classes("li-title")
+                        if hints and hints.get(key):
+                            ui.label(hints[key]).classes("li-sub")
+                    if key == value:
+                        ui.icon("check").classes("li-check")
+                item.on("click", lambda key=key: pick(key))
+    dialog.open()
 
 
 def row(title: str, sub: str = "", *, target: str | None = None, on_click=None, value: str = "",
