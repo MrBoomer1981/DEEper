@@ -30,13 +30,14 @@ from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
 from my_browser.common.report import FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body  # noqa: E402
 from my_browser.common.text import plural, rub_text  # noqa: E402
-from my_browser.core import blocklist, queue, service  # noqa: E402
+from my_browser.core import blocklist, service  # noqa: E402
 from my_browser.core.api import router  # noqa: E402
 from my_browser.core.library import Library  # noqa: E402
 from my_browser.core.qa import load_qa  # noqa: E402
 from my_browser.core.ui import kit  # noqa: E402
 # each screen module registers its page
 from my_browser.core.ui import focus as _focus, library as _library, login as _login, radar as _radar, search as _search  # noqa: E402,F401
+from my_browser.core.ui import job as _job  # noqa: E402,F401
 
 OPEN_PATHS = ("/login", "/static/", "/_nicegui", "/favicon", "/api/")  # /api checks the service token itself
 
@@ -133,99 +134,6 @@ def follow_up_url(topic: str, mode: str, parent: int) -> str:
 
 def primary_button(text: str, on_click, icon: str | None = None):
     return ui.button(text, icon=icon, on_click=on_click).props("unelevated no-caps color=bordo text-color=paper").classes("rounded-xl px-5")
-
-
-@ui.page("/job/{job_id}")
-def job_page(job_id: str) -> RedirectResponse | None:
-    job = queue.get(job_id)
-    if job and job["status"] == "done":
-        return RedirectResponse(f"/report/{job['report_id']}")
-    kit.shell("Исследование")
-    if not job:
-        with ui.column().classes("w-full max-w-3xl mx-auto mt-16 px-6"):
-            ui.label("Задача не найдена. Готовые отчёты — в истории слева.").classes("muted")
-        return None
-
-    with ui.column().classes("w-full max-w-3xl mx-auto mt-12 gap-4 px-6"):
-        label("Исследование")
-        ui.label(job["query"]).classes("text-[26px] font-semibold leading-snug")
-        with ui.row().classes("gap-2"):
-            chip(MODES[job["mode"]].lower())
-            chip(f"источники: {SOURCE_LABELS.get(job['sources'], job['sources']).lower()}")
-            chip(f"текст: {job['writer']}")
-            if job["parent"] and (origin := Library().by_name(job["parent"])):
-                chip(f"продолжение #{origin.id}")
-            if job["origin"] == "telegram":
-                chip("из telegram")
-            if job["factcheck"]:
-                chip("проверка фактов")
-        with ui.card().classes("w-full px-5 py-4"):
-            with ui.row().classes("items-center gap-4 w-full no-wrap"):
-                spinner = ui.spinner(size="sm", color="paper").classes("opacity-70")
-                phase = ui.label().classes("text-[16px]")
-                ui.space()
-                spent = ui.label().classes("mono text-[13px] muted").tooltip("Расход на DeepSeek по реальным токенам")
-                clock = ui.label().classes("mono text-[18px] amber-text")
-        error_box = ui.column().classes("w-full")
-        queries_title = ui.label().classes("brand-label mt-4")
-        queries_box = ui.column().classes("gap-1")
-        sources_title = ui.label().classes("brand-label mt-4")
-        sources_box = ui.column().classes("gap-1 w-full")
-        with ui.expansion("Журнал").classes("w-full mt-2").props("dense"):
-            log = ui.log(max_lines=300).classes("w-full h-64 mono text-[11px]").style(
-                "background: var(--surface); color: var(--paper-60); border: 1px solid var(--line); border-radius: 10px")
-
-    shown = {"queries": 0, "urls": 0, "log": None}
-
-    def again() -> None:
-        queue.restart(job_id)
-        ui.navigate.to(f"/job/{job_id}")
-
-    def update() -> None:
-        current = queue.get(job_id)
-        if current is None:
-            timer.deactivate()
-            return
-        phase.set_text("В очереди — дождусь окончания текущего исследования" if current["status"] == "queued" else current["phase"] or "")
-        clock.set_text(mmss(current["elapsed"]))
-        spent.set_text(rub_text(current["cost_rub"]) if current["cost_rub"] else "")
-        queries_title.set_text(f"Поисковые запросы · {len(current['queries'])}")
-        with queries_box:
-            for q in current["queries"][shown["queries"]:]:
-                with ui.row().classes("items-baseline gap-3 no-wrap"):
-                    ui.label("→").classes("mono faint")
-                    ui.label(q).classes("text-[15px]").style("color: var(--paper-80)")
-        shown["queries"] = len(current["queries"])
-        sources_title.set_text(f"Источники · {len(current['urls'])}")
-        with sources_box:
-            for url, score in current["urls"][shown["urls"]:]:
-                with ui.row().classes("items-center gap-3 w-full no-wrap"):
-                    ui.label(score or "–").classes(f"score score-{(score or '-')[0]}")
-                    ui.link(domain(url), url, new_tab=True).classes("plain text-[14px] font-medium whitespace-nowrap")
-                    ui.label(url).classes("url truncate")
-        shown["urls"] = len(current["urls"])
-        if current["log"] != shown["log"]:  # the worker sends the last 200 lines
-            log.clear()
-            for line in current["log"]:
-                log.push(line)
-            shown["log"] = current["log"]
-
-        if current["status"] == "done":
-            timer.deactivate()
-            ui.navigate.to(f"/report/{current['report_id']}")
-        elif current["status"] in ("error", "interrupted"):
-            timer.deactivate()
-            spinner.set_visibility(False)
-            interrupted = current["status"] == "interrupted"
-            with error_box, ui.card().classes("w-full px-5 py-4").style(
-                    "background: rgba(122,42,53,.22) !important; border-color: var(--bordo) !important"):
-                ui.label("Исследование прервано: сервер перезапускался." if interrupted else current["error"] or "Ошибка") \
-                    .classes("text-[15px]")
-                primary_button("Перезапустить" if interrupted else "Попробовать снова", again, icon="refresh").classes("mt-2 self-start")
-
-    timer = ui.timer(1.0, update, immediate=False)
-    update()
-    return None
 
 
 @ui.page("/report/{report_id}")

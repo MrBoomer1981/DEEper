@@ -265,3 +265,32 @@ body.kb-open .pill { bottom: calc(var(--kb, 0px) + 10px); }
 .continue.linked { gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
 .continue.linked a { color: var(--muted); text-decoration: none; }
 .continue.linked .icon-btn { width: 36px; height: 36px; color: var(--muted); }
+
+/* «Исследование идёт» (DESIGN_HANDOFF.md §4.2) */
+.screen.job { min-height: 100vh; min-height: 100dvh; gap: 12px; }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; margin: 0 -10px; }
+.job-topic { font-size: 15px; line-height: 1.45; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.job-main { display: flex; flex-direction: column; gap: 10px; }
+.job-stage { display: flex; align-items: flex-start; gap: 0; margin-top: 18px; }
+.job-marker { margin: 22px 0 0 -6px; }
+.job-error { font-size: 16px; line-height: 1.5; color: var(--paper); }
+.pct-row { display: flex; align-items: baseline; gap: 4px; margin-top: 6px; }
+.pct { font-family: 'Unbounded', sans-serif; font-weight: 900; font-size: 72px; line-height: 1; color: var(--paper); letter-spacing: -.02em; }
+.pct-sign { font-family: 'Unbounded', sans-serif; font-weight: 900; font-size: 34px; color: var(--muted); }
+.job-status { font-size: 16px; color: var(--paper); margin-top: 4px; }
+.job-sub { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--muted); min-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar { height: 2px; background: #2A2420; border-radius: 1px; overflow: hidden; margin-top: 4px; }
+.bar > div { height: 100%; width: 0; background: var(--amber); transition: width .6s ease; }
+.recent { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; font-family: 'JetBrains Mono', monospace; font-size: 13px; min-height: 64px; }
+.recent > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent .r0 { color: var(--paper); } .recent .r1 { color: var(--muted); } .recent .r2 { color: #5E564F; }
+.more-link { align-self: flex-start; background: none; border: 0; padding: 10px 0; cursor: pointer; color: var(--muted); font: 14px 'Onest', sans-serif;
+             text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
+.job-bottom { margin-top: auto; padding-top: 28px; display: flex; flex-direction: column; gap: 10px; }
+.job-caption { text-align: center; font-size: 12px; color: var(--muted); }
+.plain-list { display: flex; flex-direction: column; gap: 8px; font-size: 15px; color: var(--paper-80); }
+.li.source { gap: 12px; }
+.li .url { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.job-log { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; word-break: break-word;
+           background: var(--night); border-radius: 14px; padding: 12px 14px; max-height: 40vh; overflow-y: auto; }
+.plain-link { color: var(--paper); text-decoration: underline; text-decoration-color: var(--amber); text-underline-offset: 4px; }
