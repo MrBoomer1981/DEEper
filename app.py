@@ -10,8 +10,8 @@ import asyncio
 import logging
 import threading
 
-from nicegui import app
-
+# NiceGUI comes only through core.web: it must first point NiceGUI's storage (logins) at the reports
+# volume, and NiceGUI reads that path when it is imported.
 from my_browser.bot import telegram
 from my_browser.core import web
 from my_browser.worker import runner
@@ -27,7 +27,7 @@ async def start_parts() -> None:
         task.add_done_callback(lambda t: t.cancelled() or not t.exception() or logging.error("Bot stopped: %r", t.exception()))
 
 
-app.on_startup(start_parts)
+web.app.on_startup(start_parts)
 
 if __name__ in {"__main__", "__mp_main__"}:
     web.main()
