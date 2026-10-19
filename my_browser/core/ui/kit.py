@@ -144,8 +144,9 @@ def sheet(title: str | None = None) -> tuple[ui.dialog, ui.element]:
 
 
 def row(title: str, sub: str = "", *, target: str | None = None, on_click=None, value: str = "",
-        chevron: bool = False, accent: bool = False, lines: int = 2) -> ui.element:
-    """One line of a list: title, a small caption (amber when `accent`) and an optional value at the right."""
+        chevron: bool = False, accent: bool = False, lines: int = 2, note: str = "") -> ui.element:
+    """One line of a list: title, a small caption (amber when `accent`), an optional `note` in text type
+    (a search snippet) and an optional value at the right."""
     if target is not None:
         element = ui.link(target=target).classes("li")
     else:
@@ -157,6 +158,8 @@ def row(title: str, sub: str = "", *, target: str | None = None, on_click=None, 
             ui.label(title).classes(f"li-title lines-{lines}")
             if sub:
                 ui.label(sub).classes("li-sub" + (" accent" if accent else ""))
+            if note:
+                ui.label(note).classes("li-note")
         if value:
             ui.label(value).classes("li-value")
         if chevron:

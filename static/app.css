@@ -331,3 +331,12 @@ body:not(.graffiti-off) .report.main h2:first-of-type { padding-bottom: 12px; ba
 .sel-bar.docked { left: 50%; transform: translateX(-50%); top: auto; bottom: calc(env(safe-area-inset-bottom) + 84px); }
 .sel-bar button { border: 0; background: none; color: var(--night); font: 600 14px 'Onest', sans-serif; padding: 10px 14px; border-radius: 999px; cursor: pointer; min-height: 40px; }
 .sel-bar button:hover { background: rgba(20,16,14,.08); }
+
+/* «Библиотека» (DESIGN_HANDOFF.md §4.5) */
+.title-row.spread { justify-content: space-between; }
+.title-row.spread .icon-btn { margin-right: -10px; }
+.pill.search-pill { margin: 0; padding-left: 18px; background: var(--night-2); min-height: 52px; align-items: center; }
+.li-note { font-size: 13px; line-height: 1.45; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.li.quote { align-items: flex-start; }
+.li.quote .icon-btn { margin: -8px -10px 0 0; color: var(--muted); }
+.quote-text { font-size: 16px; line-height: 1.55; color: var(--paper); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; }
