@@ -1,14 +1,10 @@
-"""Core's web app: a Perplexity-like UI for DEEper, styled per the AVEN brandbook, plus core's API.
+"""Core's web app: DEEper's screens (my_browser/core/ui/, mobile first per DESIGN_HANDOFF.md) plus core's API.
 
     uv run app.py                    -> everything in one process at http://127.0.0.1:8501
     uv run python -m my_browser.core -> core alone (web app + API); the worker and bot run elsewhere
 
 On Railway (PORT is set) it listens publicly and requires APP_PASSWORD; /api/* takes the service
-token instead. Install on a Mac: open the URL in Safari -> File -> Add to Dock.
-
-Brand (aven-brandbook.pdf): night #14100E background, paper #F2EBE1 text (never pure white),
-bordo #7A2A35 fills only (never text on dark), amber #E8A24A as the single accent per screen;
-Unbounded for 2-4 word headings, Onest for text, JetBrains Mono for labels and numbers.
+token instead. Install: Safari -> «На экран Домой» on an iPhone, File -> Add to Dock on a Mac.
 """
 
 import hashlib
@@ -18,7 +14,6 @@ import logging
 import os
 import re
 import secrets
-import time
 from datetime import datetime
 from urllib.parse import urlencode, urlparse
 
@@ -40,10 +35,10 @@ from my_browser.core import blocklist, queue, service  # noqa: E402
 from my_browser.core.api import router  # noqa: E402
 from my_browser.core.library import Library  # noqa: E402
 from my_browser.core.qa import load_qa  # noqa: E402
+from my_browser.core.ui import kit  # noqa: E402
+# each screen module registers its page
+from my_browser.core.ui import focus as _focus, library as _library, login as _login, radar as _radar  # noqa: E402,F401
 
-PUBLIC = "PORT" in os.environ  # Railway sets PORT; locally we bind to 127.0.0.1
-PASSWORD = os.environ.get("APP_PASSWORD", "")
-AUTH = PUBLIC or bool(PASSWORD)
 OPEN_PATHS = ("/login", "/static/", "/_nicegui", "/favicon", "/api/")  # /api checks the service token itself
 
 MODES = {"detailed": "Подробный", "deep": "Глубокий", "quick": "Быстрый"}
@@ -57,14 +52,6 @@ WRITER_LABELS = {"pro": "Pro", "flash": "Flash"}
 WRITER_HINTS = {"pro": "текст пишет DeepSeek V4 Pro — сильнее, дороже ≈ 3×", "flash": "текст пишет DeepSeek Flash — быстрее и дешевле"}
 WRITER_OF_MODEL = {"deepseek-v4-pro": "pro", "deepseek-flash": "flash"}
 FACTCHECK_HINT = "сверить утверждения со ссылками с источниками и исправить расхождения · +1–2 мин"
-BRAND_COLORS = dict(
-    primary="#7A2A35", secondary="#F2EBE1", accent="#E8A24A", dark="#1D1916", dark_page="#14100E",
-    positive="#7A2A35", negative="#7A2A35", info="#7A2A35", warning="#E8A24A",
-    night="#14100E", paper="#F2EBE1", bordo="#7A2A35", amber="#E8A24A",
-)
-
-failed_logins: dict[str, list[float]] = {}
-
 def asset_version() -> str:
     """Changes with app.css/app.js, so a deploy is not hidden behind the browser cache."""
     digest = hashlib.sha1()
@@ -94,7 +81,7 @@ app.include_router(router)
 @app.add_middleware
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if not AUTH or request.url.path.startswith(OPEN_PATHS) or app.storage.user.get("ok"):
+        if not kit.AUTH or request.url.path.startswith(OPEN_PATHS) or app.storage.user.get("ok"):
             return await call_next(request)
         return RedirectResponse(f"/login?redirect_to={request.url.path}")
 
@@ -149,151 +136,10 @@ def primary_button(text: str, on_click, icon: str | None = None):
     return ui.button(text, icon=icon, on_click=on_click).props("unelevated no-caps color=bordo text-color=paper").classes("rounded-xl px-5")
 
 
-def frame(title: str = "DEEper") -> None:
-    """Header and the history drawer shared by all pages."""
-    ui.page_title(title)
-    ui.colors(**BRAND_COLORS)
-
-    with ui.header().classes("items-center px-4 py-2 gap-2").style(
-            "background: rgba(20,16,14,.82); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line)"):
-        ui.button(icon="menu", on_click=lambda: drawer.toggle()).props('flat round dense color=paper aria-label="Меню"').classes("opacity-70")
-        with ui.link(target="/").classes("flex items-center gap-3 no-underline"):
-            ui.image("/static/aven-mark.svg").classes("w-7 h-7")
-            ui.label("DEEPER").classes("display text-[16px] tracking-wide").style("color: var(--paper)")
-            ui.label("made by aven").classes("mono text-[11px] faint mt-[3px] gt-xs")
-        ui.space()
-        ui.button(icon="block", on_click=blocked_dialog).props('flat round dense color=paper aria-label="Заблокированные источники"') \
-            .classes("opacity-70").tooltip("Заблокированные источники")
-        if AUTH:
-            ui.button(icon="logout", on_click=logout).props('flat round dense color=paper aria-label="Выйти"').classes("opacity-70").tooltip("Выйти")
-
-    # value=None: open on wide screens, closed on phones (Quasar breakpoint).
-    with ui.left_drawer(value=None, bordered=True).classes("p-4 gap-3") as drawer:
-        primary_button("Новое исследование", lambda: ui.navigate.to("/"), icon="add").classes("w-full")
-        search = ui.input(placeholder="Поиск по отчётам", on_change=lambda: history.refresh()) \
-            .props("dense outlined clearable dark").classes("w-full")
-        label("История")
-
-        @ui.refreshable
-        def history() -> None:
-            with ui.list().props("dense").classes("w-full gap-1"):
-                for job in queue.active():
-                    with ui.item(on_click=lambda j=job: ui.navigate.to(f"/job/{j['id']}")).classes("py-2"):
-                        with ui.item_section().props("avatar").classes("min-w-0 pr-2"):
-                            ui.spinner(size="xs", color="paper")
-                        with ui.item_section():
-                            ui.item_label(job["query"]).props("lines=2").classes("text-[14px]")
-                            ui.item_label(f"{MODES[job['mode']].lower()} · {'идёт' if job['status'] == 'running' else 'в очереди'}") \
-                                .classes("mono text-[11px] faint")
-                library = Library()
-                entries = [e for e, _ in library.search(search.value)] if search.value else library.recent(50)
-                if not entries and search.value:
-                    ui.label("Ничего не нашлось").classes("text-sm faint px-3 py-2")
-                for e in entries:
-                    with ui.item(on_click=lambda e=e: ui.navigate.to(f"/report/{e.id}")).classes("py-2"):
-                        with ui.item_section():
-                            ui.item_label(e.query).props("lines=2").classes("text-[14px]").style("color: var(--paper-80)")
-                            ui.item_label(f"{datetime.fromisoformat(e.created):%d.%m} · {MODES.get(e.mode, e.mode).lower()} · "
-                                          f"{number(e.words)} {plural(e.words, 'слово', 'слова', 'слов')}") \
-                                .classes("mono text-[11px] faint")
-
-        history()
-
-    # Refresh the list when jobs start, move from the queue to work, or finish; announce finished ones.
-    seen = {"active": {j["id"]: j["status"] for j in queue.active()}}
-
-    def watch() -> None:
-        now_active = {j["id"]: j["status"] for j in queue.active()}
-        for job_id in seen["active"].keys() - now_active.keys():
-            job = queue.get(job_id)
-            if job and job["status"] == "done":
-                ui.notify(f"Отчёт готов: {job['query']}", type="positive", position="top-right")
-                ui.run_javascript(
-                    "if (window.Notification && Notification.permission === 'granted') "
-                    f"new Notification('DEEper: отчёт готов', {{body: {json.dumps(job['query'])}}})"
-                )
-        if now_active != seen["active"]:
-            seen["active"] = now_active
-            history.refresh()
-
-    ui.timer(2.0, watch)
-
-
-def logout() -> None:
-    app.storage.user.clear()
-    ui.navigate.to("/login")
-
-
-def blocked_dialog() -> None:
-    with ui.dialog() as dialog, ui.card().classes("w-[420px] gap-3 p-6"):
-        label("Источники")
-        ui.label("Заблокированные сайты").classes("text-lg font-semibold")
-        ui.label("Соцсети, видео и магазины отсеиваются всегда, остальное оценивает модель. "
-                 "Сюда — сайты, которые не должны попадать в отчёты.").classes("text-sm muted")
-
-        @ui.refreshable
-        def listing() -> None:
-            domains = blocklist.blocked_domains()
-            if not domains:
-                ui.label("Список пуст").classes("mono text-xs faint")
-            for d in domains:
-                with ui.row().classes("items-center w-full no-wrap"):
-                    ui.label(d).classes("mono text-sm flex-grow")
-                    ui.button(icon="close", on_click=lambda d=d: (blocklist.unblock(d), listing.refresh())) \
-                        .props(f'flat round dense size=sm color=paper aria-label="Разблокировать {d}"').classes("opacity-60")
-
-        listing()
-
-        def add() -> None:
-            if new.value.strip():
-                blocklist.block(new.value.strip())
-                new.value = ""
-                listing.refresh()
-
-        with ui.row().classes("items-center w-full no-wrap gap-2"):
-            new = ui.input(placeholder="example.com").props("dense outlined dark").classes("flex-grow mono").on("keydown.enter", add)
-            ui.button(icon="add", on_click=add).props('unelevated round dense color=bordo text-color=paper aria-label="Добавить"')
-        ui.button("Закрыть", on_click=dialog.close).props("flat no-caps color=paper").classes("self-end opacity-70")
-    dialog.open()
-
-
-@ui.page("/login")
-def login_page(redirect_to: str = "/") -> RedirectResponse | None:
-    if not AUTH or app.storage.user.get("ok"):
-        return RedirectResponse("/")
-    ui.page_title("Вход — DEEper")
-    ui.colors(**BRAND_COLORS)
-
-    def try_login() -> None:
-        ip = ui.context.client.request.client.host if ui.context.client.request.client else "?"
-        recent = [t for t in failed_logins.get(ip, []) if time.time() - t < 300]
-        if len(recent) >= 5:
-            ui.notify("Слишком много попыток. Подождите 5 минут", type="warning")
-            return
-        if PASSWORD and secrets.compare_digest(password.value.encode(), PASSWORD.encode()):
-            app.storage.user["ok"] = True
-            ui.navigate.to(redirect_to if redirect_to.startswith("/") else "/")
-        else:
-            failed_logins[ip] = recent + [time.time()]
-            ui.notify("Неверный пароль", type="negative")
-
-    with ui.column().classes("absolute-center items-center gap-6 w-80"):
-        ui.image("/static/aven-mark.svg").classes("w-16 h-16")
-        with ui.column().classes("items-center gap-1"):
-            ui.label("DEEPER").classes("display text-3xl")
-            ui.label("made by aven").classes("mono text-xs faint")
-        if not PASSWORD:
-            ui.label("На сервере не задан APP_PASSWORD — задайте его в переменных окружения.").classes("text-sm text-center muted")
-        password = ui.input("Пароль", password=True, password_toggle_button=True) \
-            .props("outlined dark autofocus").classes("w-full").on("keydown.enter", try_login)
-        primary_button("Войти", try_login).classes("w-full")
-    return None
-
-
 @ui.page("/")
 def index_page(topic: str = "", mode: str = "detailed", parent: int | None = None) -> None:
     """New research. Follow-up links pre-fill the topic and mode, and `parent` is the report it continues."""
-    frame()
+    kit.shell("DEEper", active="search")
     origin = Library().get(parent) if parent else None
     toggle_props = "no-caps rounded unelevated dense color=dark text-color=paper toggle-color=bordo toggle-text-color=paper"
 
@@ -412,7 +258,7 @@ def job_page(job_id: str) -> RedirectResponse | None:
     job = queue.get(job_id)
     if job and job["status"] == "done":
         return RedirectResponse(f"/report/{job['report_id']}")
-    frame("Исследование — DEEper")
+    kit.shell("Исследование")
     if not job:
         with ui.column().classes("w-full max-w-3xl mx-auto mt-16 px-6"):
             ui.label("Задача не найдена. Готовые отчёты — в истории слева.").classes("muted")
@@ -502,7 +348,7 @@ def job_page(job_id: str) -> RedirectResponse | None:
 
 @ui.page("/report/{report_id}")
 def report_page(report_id: int) -> None:
-    frame("Отчёт — DEEper")
+    kit.shell("Отчёт")
     library = Library()
     entry = library.get(report_id)
     if not entry or not entry.md_path.exists():
@@ -696,8 +542,9 @@ app.on_startup(on_startup)
 
 def main() -> None:
     configure_logging()
-    host, port = ("0.0.0.0" if PUBLIC else "127.0.0.1"), PORT
-    logging.info("Веб-интерфейс: http://%s:%s, пароль %s", host, port, "задан" if PASSWORD else ("НЕ задан" if PUBLIC else "не нужен"))
+    host, port = ("0.0.0.0" if kit.PUBLIC else "127.0.0.1"), PORT
+    logging.info("Веб-интерфейс: http://%s:%s, пароль %s", host, port,
+                 "задан" if kit.PASSWORD else ("НЕ задан" if kit.PUBLIC else "не нужен"))
     ui.run(
         host=host,
         port=port,
@@ -709,7 +556,7 @@ def main() -> None:
         viewport="width=device-width, initial-scale=1, viewport-fit=cover",  # safe areas of an installed iPhone app
         reload=False,
         show=False,
-        show_welcome_message=not PUBLIC,
+        show_welcome_message=not kit.PUBLIC,
     )
 
 
