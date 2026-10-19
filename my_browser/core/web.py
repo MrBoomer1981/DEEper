@@ -11,6 +11,7 @@ bordo #7A2A35 fills only (never text on dark), amber #E8A24A as the single accen
 Unbounded for 2-4 word headings, Onest for text, JetBrains Mono for labels and numbers.
 """
 
+import hashlib
 import html
 import json
 import logging
@@ -64,102 +65,27 @@ BRAND_COLORS = dict(
 
 failed_logins: dict[str, list[float]] = {}
 
-ui.add_head_html("""
+def asset_version() -> str:
+    """Changes with app.css/app.js, so a deploy is not hidden behind the browser cache."""
+    digest = hashlib.sha1()
+    for name in ("app.css", "app.js"):
+        digest.update((ROOT / "static" / name).read_bytes())
+    return digest.hexdigest()[:10]
+
+
+VERSION = asset_version()
+ui.add_head_html(f"""
 <link rel="manifest" href="/static/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="DEEper">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#14100E">
-<style>
-  @font-face { font-family: 'Onest'; src: url('/static/fonts/Onest.ttf') format('truetype'); font-weight: 100 900; font-display: swap; }
-  @font-face { font-family: 'Unbounded'; src: url('/static/fonts/Unbounded.ttf') format('truetype'); font-weight: 200 900; font-display: swap; }
-  @font-face { font-family: 'JetBrains Mono'; src: url('/static/fonts/JetBrainsMono.ttf') format('truetype'); font-weight: 100 800; font-display: swap; }
-  :root {
-    --night: #14100E; --night-2: #1D1916; --paper: #F2EBE1; --bordo: #7A2A35; --amber: #E8A24A;
-    --paper-80: rgba(242,235,225,.8); --paper-60: rgba(242,235,225,.6); --paper-40: rgba(242,235,225,.4);
-    --line: rgba(242,235,225,.1); --surface: rgba(242,235,225,.035); --surface-2: rgba(242,235,225,.06);
-  }
-  html, body { background: var(--night); }
-  body {
-    color: var(--paper); font-family: 'Onest', system-ui, sans-serif; -webkit-font-smoothing: antialiased;
-    background: radial-gradient(1100px 560px at 88% -12%, rgba(122,42,53,.32), transparent 62%) fixed, var(--night);
-  }
-  .q-layout, .q-page-container, .q-page, .nicegui-content { background: transparent !important; }
-  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
-  .display { font-family: 'Unbounded', sans-serif; font-weight: 700; letter-spacing: -.01em; }
-  .brand-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .2em; text-transform: uppercase; color: var(--paper-40); }
-  .brand-label.amber { color: var(--amber); }
-  .muted { color: var(--paper-60) !important; }
-  .faint { color: var(--paper-40) !important; }
-  .amber-text { color: var(--amber) !important; }
-
-  .body--dark, .body--dark .q-item, .body--dark .q-tab, .body--dark .q-card,
-  .body--dark .q-field__native, .body--dark .q-field__input, .body--dark .q-btn { color: var(--paper); }
-  .body--dark .q-field__label, .body--dark textarea::placeholder, .body--dark input::placeholder { color: var(--paper-40) !important; }
-  .body--dark .q-field--outlined .q-field__control { background: var(--surface); border-radius: 12px; }
-  .body--dark .q-field--outlined .q-field__control:before { border-color: var(--line); }
-  .body--dark .q-field--outlined:hover .q-field__control:before { border-color: var(--paper-40); }
-  .body--dark .q-field--outlined.q-field--focused .q-field__control:after { border-color: var(--paper-40); border-width: 1px; }
-  .body--dark .q-card { background: var(--surface); border: 1px solid var(--line); box-shadow: none; border-radius: 14px; }
-  .body--dark .q-dialog .q-card { background: var(--night-2); }
-  .body--dark .q-drawer { background: var(--night); }
-  .body--dark .q-drawer--bordered { border-color: var(--line) !important; }
-  .body--dark .q-item { border-radius: 10px; }
-  .q-tab { color: var(--paper-60); text-transform: none; }
-  .q-tab--active { color: var(--paper); }
-  .q-tab__indicator { background: var(--amber); height: 2px; }
-  .q-tab__label { font-family: 'Onest'; font-weight: 500; }
-  .q-notification { color: var(--paper) !important; font-family: 'Onest'; }
-  .q-btn { text-transform: none; font-weight: 500; letter-spacing: 0; }
-  .q-btn-group .q-btn { border-radius: 999px !important; padding: 6px 16px; min-height: 36px; }
-  .q-tab .q-focus-helper, .q-tab .q-ripple { display: none !important; }
-  .q-expansion-item .q-item { color: var(--paper-60); }
-  ::selection { background: rgba(232,162,74,.35); }
-
-  .brand-chip { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--paper-60);
-                border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; white-space: nowrap; }
-  .score { font-family: 'JetBrains Mono', monospace; font-size: 11px; border-radius: 999px; padding: 1px 8px;
-           border: 1px solid var(--line); color: var(--paper-40); white-space: nowrap; }
-  .score-3 { background: var(--bordo); border-color: var(--bordo); color: var(--paper); }
-  .score-2 { border-color: var(--paper-40); color: var(--paper-80); }
-  .url { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--paper-40); }
-  a.plain { color: var(--paper); text-decoration: none; }
-  a.plain:hover { color: var(--amber); }
-  a.next { display: block; color: var(--paper); text-decoration: none; background: var(--surface);
-           border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; transition: border-color .15s; }
-  a.next:hover { border-color: var(--paper-40); }
-  .kind { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--paper-40); }
-
-  .report { max-width: 820px; font-size: 16.5px; line-height: 1.72; color: rgba(242,235,225,.92); }
-  .report h1 { font-weight: 700; font-size: 2rem; line-height: 1.22; margin: .2em 0 .8em; color: var(--paper); letter-spacing: -.01em; }
-  .report h2 { font-weight: 650; font-size: 1.4rem; line-height: 1.3; margin: 1.8em 0 .55em; color: var(--paper); }
-  .report h3 { font-weight: 600; font-size: 1.1rem; margin: 1.3em 0 .4em; color: var(--paper); }
-  .report p, .report li { margin: .5em 0; }
-  .report ul { list-style: disc; padding-left: 1.4em; }
-  .report ol { list-style: decimal; padding-left: 1.4em; }
-  .report li::marker { color: var(--paper-40); }
-  .report strong { color: var(--paper); font-weight: 650; }
-  .report a { color: var(--paper); text-decoration: underline; text-decoration-color: var(--amber);
-              text-decoration-thickness: 1px; text-underline-offset: 3px; }
-  .report a:hover { color: var(--amber); }
-  .report table { border-collapse: collapse; margin: 1.2em 0; font-size: .92em; }
-  .report th, .report td { border: 1px solid var(--line); padding: 7px 11px; vertical-align: top; }
-  .report th { background: var(--surface-2); font-weight: 600; }
-  .report blockquote { border-left: 3px solid var(--bordo); padding-left: 14px; color: var(--paper-80); }
-  .report code { font-family: 'JetBrains Mono', monospace; font-size: .88em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
-  .report hr { border: none; border-top: 1px solid var(--line); margin: 2em 0; }
-  .report.compact { font-size: 15.5px; }
-  .report sup.fc-mark a { background: var(--bordo); color: var(--paper); text-decoration: none; border-radius: 999px;
-                          font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 1px 6px; margin-left: 3px; }
-  .q-toggle__label { color: var(--paper-80); }
-</style>
-<script>
-  // External links open outside the app (in the Safari web app: in Safari).
-  document.addEventListener('click', e => {
-    const a = e.target.closest && e.target.closest('a[href^="http"]');
-    if (a && a.host !== location.host) { a.target = '_blank'; a.rel = 'noopener'; }
-  }, true);
-</script>
+<link rel="preload" href="/static/fonts/Onest.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/Unbounded.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css?v={VERSION}">
+<script defer src="/static/app.js?v={VERSION}"></script>
 """, shared=True)
 app.add_static_files("/static", ROOT / "static")
 app.include_router(router)
@@ -780,6 +706,7 @@ def main() -> None:
         dark=True,
         language="ru",
         storage_secret=storage_secret(),
+        viewport="width=device-width, initial-scale=1, viewport-fit=cover",  # safe areas of an installed iPhone app
         reload=False,
         show=False,
         show_welcome_message=not PUBLIC,
