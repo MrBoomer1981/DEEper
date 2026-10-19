@@ -129,10 +129,12 @@ def units(text: str) -> list[str]:
 
 
 def _citation_only(sentence: str) -> bool:
-    """Links with no words of their own but «Источники:» and the like: «([IEA](…)).», «Источники: [A](…), [B](…).».
+    """Links with next to no words of their own: «([IEA](…)).», «Источники: [A](…), [B](…).», «Данные из: [A](…); [B](…).».
     An anchor long enough to be a claim itself («[Toyota начнёт выпуск в 2027 году](…)») is not one."""
+    links = list(LINK.finditer(sentence))
     words = re.findall(r"[^\W\d_]{2,}", LINK.sub("", sentence).lower())
-    return all(w in CITATION_WORDS for w in words) and all(len(m.group(1)) <= 40 for m in LINK.finditer(sentence))
+    bare = all(w in CITATION_WORDS for w in words) or (len(links) > 1 and len(words) <= 4)
+    return bare and all(len(m.group(1)) <= 40 for m in links)
 
 
 def claims(markdown: str) -> list[Claim]:

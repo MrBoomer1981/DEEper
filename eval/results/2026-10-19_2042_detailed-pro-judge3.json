@@ -1,0 +1,62 @@
+{
+  "run": {
+    "started": "2026-10-19T20:42:39+03:00",
+    "commit": "6ae4431 + незакоммиченные правки",
+    "mode": "detailed",
+    "writer": "pro",
+    "sources": "searx,arxiv,openalex",
+    "factcheck": false,
+    "judge": 3,
+    "pairs": 20,
+    "judging_rub": 0.37,
+    "rejudged": "2026-10-18_2217_detailed-pro"
+  },
+  "averages": {
+    "words": 7325.0,
+    "seconds": 1056.0,
+    "rub": 12.03,
+    "sources": 39.0,
+    "domains": 33.0,
+    "english": 0.41,
+    "authoritative": 0.051,
+    "score3": 0.491,
+    "in_report": 1.0,
+    "linked_paragraphs": 0.949,
+    "failed": 0.351,
+    "rescued": null,
+    "off_topic": 0.128,
+    "citation_accuracy": 0.816,
+    "checked": 19.0
+  },
+  "rows": [
+    {
+      "n": 1,
+      "topic": "твердотельные аккумуляторы: состояние в 2026 году",
+      "report": "2026-10-18_223454_твердотельные-аккумуляторы-состояние-в-2026-году.md",
+      "words": 7325,
+      "seconds": 1056,
+      "rub": 12.03,
+      "truncated": 0,
+      "sources": 39,
+      "domains": 33,
+      "top_domain": "bonnenbatteries.com",
+      "top_domain_share": 0.077,
+      "english": 0.41,
+      "authoritative": 0.051,
+      "in_report": 1.0,
+      "linked_paragraphs": 0.949,
+      "attempted": 114,
+      "score3": 0.491,
+      "failed": 0.351,
+      "off_topic": 0.128,
+      "linked_statements": 99,
+      "checked": 19,
+      "citation_accuracy": 0.816,
+      "verdicts": {
+        "SUPPORTED": 12,
+        "PARTIAL": 7,
+        "NO_TEXT": 1
+      }
+    }
+  ]
+}

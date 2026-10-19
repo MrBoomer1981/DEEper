@@ -44,7 +44,9 @@ RESULTS_DIR = EVAL_DIR / "results"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
 VERDICTS = ("SUPPORTED", "PARTIAL", "UNSUPPORTED", "NO_TEXT")
 # 2 (19.10.2026): excerpts found also by the statement's English translation; the sentence before it given.
-# 3 (19.10.2026): pairs keep URLs with parentheses whole and skip bare lists of sources (factcheck.claims()).
+# 3 (19.10.2026): pairs keep URLs with parentheses whole and skip bare lists of sources (factcheck.claims());
+# later the same day lists with a few words of their own («Данные скомпилированы из: …») were skipped too,
+# which changed one sentence in the reports of the judge-3 baselines.
 JUDGE = 3
 
 OFF_TOPIC_PROMPT = """Research topic: "{query}".
