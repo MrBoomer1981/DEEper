@@ -10,3 +10,15 @@ document.addEventListener('click', e => {
   const back = e.target.closest && e.target.closest('.js-back');
   if (back && document.referrer.startsWith(location.origin) && history.length > 1) { e.preventDefault(); history.back(); }
 });
+
+// iOS keeps fixed elements under the on-screen keyboard: track its height as --kb and raise the pill.
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const update = () => {
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    document.documentElement.style.setProperty('--kb', kb + 'px');
+    document.body.classList.toggle('kb-open', kb > 80);
+  };
+  vv.addEventListener('resize', update);
+  vv.addEventListener('scroll', update);
+}

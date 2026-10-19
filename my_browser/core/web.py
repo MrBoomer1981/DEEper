@@ -17,8 +17,7 @@ import secrets
 from datetime import datetime
 from urllib.parse import urlencode, urlparse
 
-from my_browser.common.settings import (DEFAULT_SOURCES, DEFAULT_WRITER, FACTCHECK_MODES, PORT, REPORTS_DIR, ROOT,
-                                        configure_logging)
+from my_browser.common.settings import PORT, REPORTS_DIR, ROOT, configure_logging
 
 REPORTS_DIR.mkdir(exist_ok=True)
 # Read by NiceGUI at import: keep login sessions on the Railway volume across redeploys.
@@ -29,7 +28,7 @@ from fastapi.responses import FileResponse, RedirectResponse  # noqa: E402
 from nicegui import app, ui  # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
-from my_browser.common.report import ANY_ANSWER, FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body  # noqa: E402
+from my_browser.common.report import FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body  # noqa: E402
 from my_browser.common.text import plural, rub_text  # noqa: E402
 from my_browser.core import blocklist, queue, service  # noqa: E402
 from my_browser.core.api import router  # noqa: E402
@@ -37,7 +36,7 @@ from my_browser.core.library import Library  # noqa: E402
 from my_browser.core.qa import load_qa  # noqa: E402
 from my_browser.core.ui import kit  # noqa: E402
 # each screen module registers its page
-from my_browser.core.ui import focus as _focus, library as _library, login as _login, radar as _radar  # noqa: E402,F401
+from my_browser.core.ui import focus as _focus, library as _library, login as _login, radar as _radar, search as _search  # noqa: E402,F401
 
 OPEN_PATHS = ("/login", "/static/", "/_nicegui", "/favicon", "/api/")  # /api checks the service token itself
 
@@ -134,123 +133,6 @@ def follow_up_url(topic: str, mode: str, parent: int) -> str:
 
 def primary_button(text: str, on_click, icon: str | None = None):
     return ui.button(text, icon=icon, on_click=on_click).props("unelevated no-caps color=bordo text-color=paper").classes("rounded-xl px-5")
-
-
-@ui.page("/")
-def index_page(topic: str = "", mode: str = "detailed", parent: int | None = None) -> None:
-    """New research. Follow-up links pre-fill the topic and mode, and `parent` is the report it continues."""
-    kit.shell("DEEper", active="search")
-    origin = Library().get(parent) if parent else None
-    toggle_props = "no-caps rounded unelevated dense color=dark text-color=paper toggle-color=bordo toggle-text-color=paper"
-
-    def start() -> None:
-        query = (topic_field.value or "").strip()
-        if not query:
-            ui.notify("Напишите тему исследования", type="warning")
-            return
-        parent_id = origin.id if origin and link_row.visible else None
-        job = service.submit(query, mode_toggle.value, source.value, writer.value, parent_id=parent_id, factcheck=check.value)
-        ui.run_javascript("window.Notification && Notification.permission === 'default' && Notification.requestPermission()")
-        ui.navigate.to(f"/job/{job['id']}")
-
-    async def clarify() -> None:
-        query = (topic_field.value or "").strip()
-        if not query:
-            ui.notify("Напишите тему исследования", type="warning")
-            return
-        clarify_button.props("loading")
-        try:
-            result = await service.clarify(query)
-            questions, rub = result["questions"], result["cost_rub"]
-        except Exception as e:
-            ui.notify(f"Не получилось: {e}", type="negative")
-            return
-        finally:
-            clarify_button.props(remove="loading")
-        if not questions:
-            ui.notify("Уточнять нечего: тема и так конкретная", type="info")
-            return
-        answers = []
-
-        async def apply() -> None:
-            chosen = [(question, toggle.value) for question, toggle in answers if toggle.value != ANY_ANSWER]
-            if chosen:
-                apply_button.props("loading")
-                try:
-                    result = await service.refine(query, chosen)
-                    refined, extra = result["topic"], result["cost_rub"]
-                except Exception as e:
-                    ui.notify(f"Не получилось: {e}", type="negative")
-                    return
-                finally:
-                    apply_button.props(remove="loading")
-                topic_field.value = refined
-                ui.notify(f"Тема уточнена · {rub_text(rub + extra)}", type="positive")
-            clarify_box.clear()
-
-        clarify_box.clear()
-        with clarify_box, ui.card().classes("w-full px-5 py-4 gap-3"):
-            label("Уточнение")
-            for item in questions:
-                ui.label(item["q"]).classes("text-[15px] font-medium")
-                toggle = ui.toggle([*item["options"], ANY_ANSWER], value=ANY_ANSWER) \
-                    .props(toggle_props).style("flex-wrap: wrap; gap: 6px")
-                answers.append((item["q"], toggle))
-            with ui.row().classes("items-center gap-2 w-full mt-1"):
-                ui.label(f"вопросы: {rub_text(rub)}").classes("mono text-[11px] faint")
-                ui.space()
-                ui.button("Отмена", on_click=clarify_box.clear).props("flat no-caps color=paper").classes("opacity-70")
-                apply_button = primary_button("Применить", apply)
-
-    with ui.column().classes("w-full max-w-3xl mx-auto mt-16 gap-5 px-6"):
-        label("Новое исследование", amber=True)
-        ui.label("Что исследуем?").classes("display text-[38px] leading-tight")
-        if origin:
-            with ui.row().classes("items-center gap-2 no-wrap w-full -mt-2") as link_row:
-                ui.icon("subdirectory_arrow_right").classes("faint")
-                ui.link(f"продолжение отчёта #{origin.id}: {origin.query}", f"/report/{origin.id}") \
-                    .classes("plain mono text-[12px] muted truncate")
-                ui.button(icon="close", on_click=lambda: link_row.set_visibility(False)) \
-                    .props('flat round dense size=sm color=paper aria-label="Не связывать с отчётом"').classes("opacity-50")
-        topic_field = ui.textarea(value=topic, placeholder="Например: перспективы натрий-ионных аккумуляторов до 2030 года") \
-            .props("outlined autogrow autofocus dark").classes("w-full text-[18px]")
-        topic_field.on("keydown.meta.enter", start)
-        topic_field.on("keydown.ctrl.enter", start)
-        with ui.row().classes("items-center gap-3 w-full"):
-            mode_toggle = ui.toggle(MODES, value=mode if mode in MODES else "detailed").props(toggle_props) \
-                .classes("border border-[color:var(--line)] rounded-full")
-            source = ui.toggle(SOURCE_LABELS, value=DEFAULT_SOURCES).props(toggle_props) \
-                .classes("border border-[color:var(--line)] rounded-full")
-            writer = ui.toggle(WRITER_LABELS, value=DEFAULT_WRITER).props(toggle_props) \
-                .classes("border border-[color:var(--line)] rounded-full")
-            ui.space()
-            clarify_button = ui.button("Уточнить", icon="tune", on_click=clarify).props("flat no-caps color=paper") \
-                .classes("opacity-80").tooltip("2–3 вопроса с вариантами, чтобы точнее сформулировать тему")
-            primary_button("Исследовать", start, icon="arrow_forward").props("size=lg")
-        clarify_box = ui.column().classes("w-full")
-        hint = ui.label(MODE_HINTS[mode_toggle.value]).classes("mono text-[12px] muted")
-        writer_hint = ui.label(WRITER_HINTS[DEFAULT_WRITER]).classes("mono text-[12px] muted -mt-3")
-        writer.on_value_change(lambda e: writer_hint.set_text(WRITER_HINTS[e.value]))
-        choice = {"own": False, "setting": False}  # the user's own switch position beats the mode's default
-
-        def flipped() -> None:
-            if not choice["setting"]:
-                choice["own"] = True
-
-        with ui.row().classes("items-center gap-3 no-wrap -mt-1"):
-            check = ui.switch("Проверка фактов", value=mode_toggle.value in FACTCHECK_MODES, on_change=flipped) \
-                .props("dense color=bordo keep-color").classes("whitespace-nowrap shrink-0")
-            ui.label(FACTCHECK_HINT).classes("mono text-[12px] muted")
-
-        def mode_changed(e) -> None:
-            hint.set_text(MODE_HINTS[e.value])
-            if not choice["own"]:
-                choice["setting"] = True
-                check.value = e.value in FACTCHECK_MODES
-                choice["setting"] = False
-
-        mode_toggle.on_value_change(mode_changed)
-        ui.label("запросы к поиску — на английском · отчёт — на русском · ⌘ Enter — запуск").classes("mono text-[11px] faint")
 
 
 @ui.page("/job/{job_id}")
