@@ -3,6 +3,8 @@
     uv run eval/run.py                            # every topic: quick report, Flash writes the text
     uv run eval/run.py --topics 1,4 --label exa   # a subset, with a name for the results file
     uv run eval/run.py --topics 1 --mode detailed --writer pro
+    uv run eval/run.py --factcheck                # with the fact-check: each report judged before and after its fixes
+    uv run eval/run.py --rejudge 2026-10-18_2327_3.1-reader   # that run's reports judged again by the current judge
 
 Every topic runs through the same pipeline as the app. Reports go to eval/reports, a library of their
 own, not the app's. The table goes to eval/results/<date>[_label].md (plus .json), next to the
@@ -34,13 +36,16 @@ import metrics  # noqa: E402
 from my_browser.common import costs  # noqa: E402
 from my_browser.common.settings import MODES, ROOT, SOURCES, WRITERS  # noqa: E402
 from my_browser.core.library import Library  # noqa: E402
-from my_browser.worker import hooks, suggest  # noqa: E402
+from my_browser.worker import factcheck, hooks, suggest  # noqa: E402
 from my_browser.worker.hooks import SEARCH_META  # noqa: E402
 from my_browser.worker.pipeline import PreflightError, config_file, preflight, render, research, run_settings  # noqa: E402
 
 RESULTS_DIR = EVAL_DIR / "results"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
 VERDICTS = ("SUPPORTED", "PARTIAL", "UNSUPPORTED", "NO_TEXT")
+# 2 (19.10.2026): excerpts found also by the statement's English translation; the sentence before it given.
+# 3 (19.10.2026): pairs keep URLs with parentheses whole and skip bare lists of sources (factcheck.claims()).
+JUDGE = 3
 
 OFF_TOPIC_PROMPT = """Research topic: "{query}".
 For each source below answer 1 if it is off-topic (about something else, even if some words match) and 0 if it is on-topic.
@@ -50,6 +55,8 @@ For each source below answer 1 if it is off-topic (about something else, even if
 Return ONLY a JSON array of {count} integers (0 or 1) in the same order."""
 
 CITATION_PROMPT = """You check one citation from a research report. The statement may be in Russian while the source is in English.
+
+The sentence before it in the report, only so that words like «их» make sense (not checked): {context}
 
 Statement: {statement}
 
@@ -70,6 +77,10 @@ COLUMNS = [
     ("linked_paragraphs", "Абзацы со ссылкой", "pct"), ("failed", "Не скачалось", "pct"), ("rescued", "Спасено", "pct"),
     ("off_topic", "Не по теме", "pct"), ("citation_accuracy", "Точность цитат", "pct"), ("checked", "Проверено", "int"),
 ]
+FACTCHECK_COLUMNS = [
+    ("citation_accuracy_before", "Точность до проверки", "pct"), ("fc_fixed", "Исправлено", "int"),
+    ("fc_doubtful", "Сомнит.", "int"),
+]
 
 METHOD = """Как считается:
 - Англ. — источники без кириллицы в адресе, заголовке и фрагменте и не на российских доменах.
@@ -82,8 +93,15 @@ METHOD = """Как считается:
 - В подробном режиме список источников отчёта — это процитированные ссылки, поэтому «В отчёте» там всегда 100%, а «Источн.», «Англ.» и «Автор.» считаются только по ним.
 - Не по теме — оценка Flash по адресу и фрагменту из поисковика (заголовков SearXNG не отдаёт). Ссылкам arXiv и doi.org без описания судья часто ставит «не по теме», поэтому цифра завышена и годится только для сравнения замеров между собой.
 - Точность цитат — до {pairs} случайных пар «утверждение → ссылка» на отчёт. Страница скачивается заново, \
-Flash сравнивает утверждение с 4 самыми похожими фрагментами: подтверждено = 1, частично = 0,5. \
+Flash сравнивает утверждение с 4 фрагментами страницы, самыми похожими на него и на его английский перевод \
+(BM25 по словам и совпадающие числа; до 19.10.2026 фрагменты искались без перевода, и русские утверждения \
+на английских страницах часто получали не те фрагменты). Подтверждено = 1, частично = 0,5. \
 Пары, где текст страницы недоступен, не считаются; «Проверено» — сколько пар осталось."""
+
+FACTCHECK_METHOD = """- С проверкой фактов (`--factcheck`): «Точность до проверки» — та же оценка текста до исправлений, \
+«Исправлено» — утверждения, у которых проверка заменила ссылку или переписала предложение, \
+«Сомнит.» — утверждения, которые остались неподтверждёнными. Судья замера независим от проверки \
+только отчасти: он похож на неё по устройству, хотя страницы скачивает заново и выбирает пары случайно."""
 
 
 class LogLines(logging.Handler):
@@ -132,23 +150,28 @@ async def fetch_pages(urls: set[str]) -> dict[str, str]:
     return {r["url"]: r["raw_content"] for r in results if r.get("raw_content")}
 
 
-async def citation_accuracy(query: str, markdown: str, pairs: int) -> dict:
-    found = metrics.citation_pairs(markdown)
-    sample = random.Random(zlib.crc32(query.encode())).sample(found, min(pairs, len(found)))
-    pages = await fetch_pages({url for _, url in sample})
+async def citation_accuracy(query: str, markdown: str, args: argparse.Namespace) -> dict:
+    from gpt_researcher.config import Config
+
+    found = factcheck.claims(markdown)
+    sample = random.Random(zlib.crc32(query.encode())).sample(found, min(args.pairs, len(found)))
+    passages = factcheck.Passages(await fetch_pages({claim.url for claim in sample}))
+    translations = await factcheck.translate([claim.statement for claim in sample], Config(str(args.config_path)))
     limit = asyncio.Semaphore(5)
 
-    async def judge(statement: str, url: str) -> str:
-        if not pages.get(url):
+    async def judge(claim: factcheck.Claim, translation: str) -> str:
+        page = passages.find(claim.url)
+        if not page:
             return "NO_TEXT"
-        excerpts = "\n\n".join(f"[{i}] {chunk}" for i, chunk in enumerate(metrics.excerpts(statement, pages[url]), 1))
+        chunks = passages.excerpts(page, passages.query(claim.statement, translation))
+        excerpts = "\n\n".join(f"[{i}] {chunk}" for i, chunk in enumerate(chunks, 1))
         async with limit:
-            answer = await suggest.fast(CITATION_PROMPT.format(statement=statement, url=url, excerpts=excerpts),
-                                        max_tokens=10, temperature=0)
+            answer = await suggest.fast(CITATION_PROMPT.format(statement=claim.statement, context=claim.context or "—",
+                                                               url=claim.url, excerpts=excerpts), max_tokens=10, temperature=0)
         word = (answer.split() or ["?"])[0].strip(".:,*").upper()
         return word if word in VERDICTS else "NO_TEXT"
 
-    verdicts = Counter(await asyncio.gather(*(judge(s, u) for s, u in sample)))
+    verdicts = Counter(await asyncio.gather(*(judge(c, t) for c, t in zip(sample, translations))))
     checked = verdicts["SUPPORTED"] + verdicts["PARTIAL"] + verdicts["UNSUPPORTED"]
     return {
         "linked_statements": len(found),
@@ -162,15 +185,18 @@ async def measure(query: str, args: argparse.Namespace, judging: costs.Meter) ->
     LOG.lines.clear()
     meter = costs.Meter()
     token = costs.current.set(meter)
-    started = time.monotonic()
+    started, check = time.monotonic(), None
     try:
-        markdown, urls = await research(query, args.mode, args.config_path, on_progress=lambda text: None)
+        result = await research(query, args.mode, args.config_path, on_progress=lambda text: None)
+        markdown, urls = result.markdown, result.sources
+        if args.factcheck:
+            markdown, check = await factcheck.run(markdown, result.pages, args.config_path)
     finally:
         costs.current.reset(token)
     seconds = time.monotonic() - started
     library = Library()
     report = library.get(library.store(render(query, args.mode, markdown, urls, seconds, args.settings,
-                                              cost=meter.summary(), pdf=False)))
+                                              cost=meter.summary(), factcheck=check, pdf=False)))
     row = {
         "topic": query, "report": report.md_path.name, "words": report.words, "seconds": round(seconds),
         "rub": round(meter.rub(), 2), "truncated": meter.truncated_calls,
@@ -178,10 +204,16 @@ async def measure(query: str, args: argparse.Namespace, judging: costs.Meter) ->
         **metrics.citations(urls, markdown),
         **metrics.scrape_log(LOG.lines),
     }
+    if check:
+        row.update(fc_fixed=check.get("relinked", 0) + check.get("rewritten", 0), fc_doubtful=len(check.get("doubtful", [])),
+                   fc_claims=check.get("claims"), fc_accuracy=check.get("accuracy"), fc_rub=check.get("cost_rub"),
+                   fc_seconds=check.get("seconds"), fc_error=check.get("error"))
     token = costs.current.set(judging)
     try:
         row["off_topic"] = await off_topic_share(query, urls)
-        row.update(await citation_accuracy(query, markdown, args.pairs))
+        row.update(await citation_accuracy(query, markdown, args))
+        if check:
+            row["citation_accuracy_before"] = (await citation_accuracy(query, result.markdown, args))["citation_accuracy"]
     finally:
         costs.current.reset(token)
     return row
@@ -213,9 +245,13 @@ def cell(value, kind: str) -> str:
     return f"{value:.0f}" if isinstance(value, float) else str(value)
 
 
-def averages(rows: list[dict]) -> dict:
+def columns(args: argparse.Namespace) -> list[tuple[str, str, str]]:
+    return COLUMNS + (FACTCHECK_COLUMNS if args.factcheck else [])
+
+
+def averages(rows: list[dict], cols: list[tuple[str, str, str]]) -> dict:
     result = {}
-    for key, _, _ in COLUMNS:
+    for key, _, _ in cols:
         values = [r[key] for r in rows if isinstance(r.get(key), (int, float))]
         result[key] = round(sum(values) / len(values), 3) if values else None
     return result
@@ -229,36 +265,45 @@ def git_version() -> str:
 
 def write_results(rows: list[dict], judging: costs.Meter, args: argparse.Namespace, started: datetime) -> Path:
     RESULTS_DIR.mkdir(exist_ok=True)
-    same_setup = {"mode": args.mode, "writer": args.writer, "sources": SOURCES[args.sources]}
+    cols = columns(args)
+    same_setup = {"mode": args.mode, "writer": args.writer, "sources": SOURCES[args.sources], "factcheck": args.factcheck, "judge": JUDGE}
+    defaults = {"factcheck": False, "judge": 1}  # runs made before these settings existed
     previous = [p for p in sorted(RESULTS_DIR.glob("*.json"))  # the last run made the same way
-                if all(json.loads(p.read_text("utf-8"))["run"].get(k) == v for k, v in same_setup.items())]
+                if all(json.loads(p.read_text("utf-8"))["run"].get(k, defaults.get(k)) == v for k, v in same_setup.items())]
     name = f"{started:%Y-%m-%d_%H%M}" + (f"_{args.label}" if args.label else "")
-    avg = averages(rows)
-    header = "| # | Тема | " + " | ".join(h for _, h, _ in COLUMNS) + " |"
+    avg = averages(rows, cols)
+    checking = sum(r.get("fc_rub") or 0 for r in rows)
+    header = "| # | Тема | " + " | ".join(h for _, h, _ in cols) + " |"
     lines = [
         f"# Замер {started:%d.%m.%Y %H:%M}" + (f" · {args.label}" if args.label else ""),
         "",
         f"- Коммит: {git_version()}",
-        f"- Режим: {args.mode} · текст пишет {args.writer} · источники: {args.sources} ({SOURCES[args.sources]})",
+        f"- Режим: {args.mode} · текст пишет {args.writer} · источники: {args.sources} ({SOURCES[args.sources]})"
+        + (" · с проверкой фактов" if args.factcheck else ""),
         f"- Тарифы DeepSeek: {'пик' if costs.is_peak(started.astimezone(timezone.utc)) else 'вне пика'}",
-        f"- Стоимость: отчёты {cell(sum(r.get('rub') or 0 for r in rows), 'rub')} ₽, оценка {cell(judging.rub(), 'rub')} ₽",
-        "",
-        header,
-        "|" + "---|" * (len(COLUMNS) + 2),
+        f"- Стоимость: отчёты {cell(sum(r.get('rub') or 0 for r in rows), 'rub')} ₽"
+        + (f" (из них проверка фактов {cell(checking, 'rub')} ₽)" if args.factcheck else "")
+        + f", оценка {cell(judging.rub(), 'rub')} ₽",
     ]
+    if getattr(args, "rejudged", None):
+        lines.append(f"- Перепроверка отчётов замера {args.rejudged}: отчёты и метрики поиска оттуда, точность цитат — заново")
+    lines += ["", header, "|" + "---|" * (len(cols) + 2)]
     for r in rows:
         topic = r["topic"] if len(r["topic"]) <= 42 else r["topic"][:41] + "…"
-        cells = [f"ошибка: {r['error'][:80]}"] if r.get("error") else [cell(r.get(k), kind) for k, _, kind in COLUMNS]
+        cells = [f"ошибка: {r['error'][:80]}"] if r.get("error") else [cell(r.get(k), kind) for k, _, kind in cols]
         lines.append(f"| {r['n']} | {topic} | " + " | ".join(cells) + " |")
-    lines.append("| | **Среднее** | " + " | ".join(cell(avg[k], kind) for k, _, kind in COLUMNS) + " |")
+    lines.append("| | **Среднее** | " + " | ".join(cell(avg[k], kind) for k, _, kind in cols) + " |")
     if previous:
         before = json.loads(previous[-1].read_text("utf-8"))
         lines.append(f"| | Прошлый замер ({previous[-1].stem}) | "
-                     + " | ".join(cell(before["averages"].get(k), kind) for k, _, kind in COLUMNS) + " |")
-    lines += ["", METHOD.format(pairs=args.pairs), ""]
+                     + " | ".join(cell(before["averages"].get(k), kind) for k, _, kind in cols) + " |")
+    lines += ["", METHOD.format(pairs=args.pairs)] + ([FACTCHECK_METHOD] if args.factcheck else []) + [""]
     (RESULTS_DIR / f"{name}.md").write_text("\n".join(lines), "utf-8")
     run = {"started": started.isoformat(timespec="seconds"), "commit": git_version(), "mode": args.mode,
-           "writer": args.writer, "sources": SOURCES[args.sources], "pairs": args.pairs, "judging_rub": round(judging.rub(), 2)}
+           "writer": args.writer, "sources": SOURCES[args.sources], "factcheck": args.factcheck, "judge": JUDGE,
+           "pairs": args.pairs, "judging_rub": round(judging.rub(), 2)}
+    if getattr(args, "rejudged", None):
+        run["rejudged"] = args.rejudged
     (RESULTS_DIR / f"{name}.json").write_text(
         json.dumps({"run": run, "averages": avg, "rows": rows}, ensure_ascii=False, indent=2), "utf-8")
     return RESULTS_DIR / f"{name}.md"
@@ -272,7 +317,13 @@ def main() -> None:
     parser.add_argument("--sources", choices=SOURCES, default="all")
     parser.add_argument("--pairs", type=int, default=20, help="сколько пар «утверждение → ссылка» проверять в отчёте")
     parser.add_argument("--label", default="", help="приписка к имени файла с результатами")
+    parser.add_argument("--factcheck", action="store_true", help="проверять факты и оценивать отчёт до и после исправлений")
+    parser.add_argument("--rejudge", metavar="ЗАМЕР", help="заново оценить точность цитат в отчётах прошлого замера "
+                                                          "(имя файла из eval/results без расширения), ничего не исследуя")
     args = parser.parse_args()
+    if args.rejudge:
+        rejudge(args)
+        return
 
     topics = list(enumerate(load_topics(), 1))
     if args.topics:
@@ -293,6 +344,41 @@ def main() -> None:
         rows, judging = asyncio.run(run_all(topics, args))
     path = write_results(rows, judging, args, started)
     print("\n" + path.read_text("utf-8"))
+
+
+def rejudge(args: argparse.Namespace) -> None:
+    """Judge the citations of a past run's reports again, e.g. after the judge changed; nothing is researched."""
+    source = json.loads((RESULTS_DIR / f"{args.rejudge}.json").read_text("utf-8"))
+    run = source["run"]
+    args.mode, args.writer, args.pairs = run["mode"], run["writer"], run.get("pairs", args.pairs)
+    args.sources = next((key for key, value in SOURCES.items() if value == run["sources"]), args.sources)
+    args.factcheck, args.rejudged = run.get("factcheck", False), args.rejudge
+    args.label = args.label or f"{args.rejudge.split('_', 2)[-1]}-rejudged"
+    args.settings = run_settings(args.sources, writer=args.writer)
+    try:
+        preflight(args.settings)
+    except PreflightError as e:
+        sys.exit(str(e))
+
+    async def judge_all() -> tuple[list[dict], costs.Meter]:
+        judging, rows = costs.Meter(), []
+        token = costs.current.set(judging)
+        try:
+            for row in source["rows"]:
+                if not row.get("error"):
+                    markdown = (EVAL_DIR / "reports" / row["report"]).read_text("utf-8")
+                    row = {**row, **await citation_accuracy(row["topic"], markdown, args)}
+                    print(f"[{row['n']}] {row['citation_accuracy']} {row['verdicts']}", flush=True)
+                rows.append(row)
+        finally:
+            costs.current.reset(token)
+        return rows, judging
+
+    started = datetime.now().astimezone()
+    with config_file(args.settings) as path:
+        args.config_path = path
+        rows, judging = asyncio.run(judge_all())
+    print("\n" + write_results(rows, judging, args, started).read_text("utf-8"))
 
 
 if __name__ == "__main__":

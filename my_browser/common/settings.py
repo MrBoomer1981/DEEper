@@ -45,6 +45,8 @@ MODES = {
     "deep": "глубокое исследование: рекурсивный поиск вширь и вглубь, затем один отчёт",
     "quick": "обычный отчёт за один проход (быстрее и дешевле)",
 }
+# Modes whose reports are fact-checked unless the user switches it off (worker/factcheck.py).
+FACTCHECK_MODES = ("detailed", "deep")
 
 PORT = int(os.environ.get("PORT", 8501))  # 8080 is the local SearXNG
 CORE_URL = os.environ.get("CORE_URL") or f"http://127.0.0.1:{PORT}"

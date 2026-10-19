@@ -11,15 +11,18 @@ bordo #7A2A35 fills only (never text on dark), amber #E8A24A as the single accen
 Unbounded for 2-4 word headings, Onest for text, JetBrains Mono for labels and numbers.
 """
 
+import html
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime
 from urllib.parse import urlencode, urlparse
 
-from my_browser.common.settings import DEFAULT_SOURCES, DEFAULT_WRITER, PORT, REPORTS_DIR, ROOT, configure_logging
+from my_browser.common.settings import (DEFAULT_SOURCES, DEFAULT_WRITER, FACTCHECK_MODES, PORT, REPORTS_DIR, ROOT,
+                                        configure_logging)
 
 REPORTS_DIR.mkdir(exist_ok=True)
 # Read by NiceGUI at import: keep login sessions on the Railway volume across redeploys.
@@ -30,8 +33,8 @@ from fastapi.responses import FileResponse, RedirectResponse  # noqa: E402
 from nicegui import app, ui  # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
-from my_browser.common.report import ANY_ANSWER, KINDS, body  # noqa: E402
-from my_browser.common.text import rub_text  # noqa: E402
+from my_browser.common.report import ANY_ANSWER, FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body  # noqa: E402
+from my_browser.common.text import plural, rub_text  # noqa: E402
 from my_browser.core import blocklist, queue, service  # noqa: E402
 from my_browser.core.api import router  # noqa: E402
 from my_browser.core.library import Library  # noqa: E402
@@ -52,6 +55,7 @@ SOURCE_LABELS = {"all": "Всё", "web": "Веб", "academic": "Наука"}
 WRITER_LABELS = {"pro": "Pro", "flash": "Flash"}
 WRITER_HINTS = {"pro": "текст пишет DeepSeek V4 Pro — сильнее, дороже ≈ 3×", "flash": "текст пишет DeepSeek Flash — быстрее и дешевле"}
 WRITER_OF_MODEL = {"deepseek-v4-pro": "pro", "deepseek-flash": "flash"}
+FACTCHECK_HINT = "сверить утверждения со ссылками с источниками и исправить расхождения · +1–2 мин"
 BRAND_COLORS = dict(
     primary="#7A2A35", secondary="#F2EBE1", accent="#E8A24A", dark="#1D1916", dark_page="#14100E",
     positive="#7A2A35", negative="#7A2A35", info="#7A2A35", warning="#E8A24A",
@@ -145,6 +149,9 @@ ui.add_head_html("""
   .report code { font-family: 'JetBrains Mono', monospace; font-size: .88em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
   .report hr { border: none; border-top: 1px solid var(--line); margin: 2em 0; }
   .report.compact { font-size: 15.5px; }
+  .report sup.fc-mark a { background: var(--bordo); color: var(--paper); text-decoration: none; border-radius: 999px;
+                          font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 1px 6px; margin-left: 3px; }
+  .q-toggle__label { color: var(--paper-80); }
 </style>
 <script>
   // External links open outside the app (in the Safari web app: in Safari).
@@ -182,12 +189,6 @@ def number(n: int) -> str:
     return f"{n:,}".replace(",", " ")
 
 
-def plural(n: int, one: str, few: str, many: str) -> str:
-    if n % 10 == 1 and n % 100 != 11:
-        return one
-    return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
-
-
 def domain(url: str) -> str:
     return (urlparse(url).hostname or url).removeprefix("www.")
 
@@ -196,8 +197,21 @@ def label(text: str, amber: bool = False) -> None:
     ui.label(text).classes("brand-label" + (" amber" if amber else ""))
 
 
-def chip(text: str) -> None:
-    ui.label(text).classes("brand-chip")
+def chip(text: str) -> ui.label:
+    return ui.label(text).classes("brand-chip")
+
+
+def mark_doubtful(markdown: str, doubtful: list[dict]) -> str:
+    """A bordo «?» after each sentence the fact-check could not confirm; it shows the verdict and leads to the list."""
+    for item in doubtful:
+        if not item.get("raw"):
+            continue
+        tip = html.escape(f"{VERDICT_TEXT.get(item['verdict'], item['verdict'])}: {item['note']}" if item["note"]
+                          else VERDICT_TEXT.get(item["verdict"], item["verdict"]), quote=True)
+        mark = f' <sup class="fc-mark" title="{tip}"><a href="#factcheck">?</a></sup>'
+        pattern = r"\s+".join(map(re.escape, item["raw"].split()))
+        markdown = re.sub(f"({pattern})(?! <sup class=\"fc-mark\")", lambda m: m.group(1) + mark, markdown, count=1)
+    return markdown
 
 
 def follow_up_url(topic: str, mode: str, parent: int) -> str:
@@ -363,7 +377,7 @@ def index_page(topic: str = "", mode: str = "detailed", parent: int | None = Non
             ui.notify("Напишите тему исследования", type="warning")
             return
         parent_id = origin.id if origin and link_row.visible else None
-        job = service.submit(query, mode_toggle.value, source.value, writer.value, parent_id=parent_id)
+        job = service.submit(query, mode_toggle.value, source.value, writer.value, parent_id=parent_id, factcheck=check.value)
         ui.run_javascript("window.Notification && Notification.permission === 'default' && Notification.requestPermission()")
         ui.navigate.to(f"/job/{job['id']}")
 
@@ -443,9 +457,27 @@ def index_page(topic: str = "", mode: str = "detailed", parent: int | None = Non
             primary_button("Исследовать", start, icon="arrow_forward").props("size=lg")
         clarify_box = ui.column().classes("w-full")
         hint = ui.label(MODE_HINTS[mode_toggle.value]).classes("mono text-[12px] muted")
-        mode_toggle.on_value_change(lambda e: hint.set_text(MODE_HINTS[e.value]))
         writer_hint = ui.label(WRITER_HINTS[DEFAULT_WRITER]).classes("mono text-[12px] muted -mt-3")
         writer.on_value_change(lambda e: writer_hint.set_text(WRITER_HINTS[e.value]))
+        choice = {"own": False, "setting": False}  # the user's own switch position beats the mode's default
+
+        def flipped() -> None:
+            if not choice["setting"]:
+                choice["own"] = True
+
+        with ui.row().classes("items-center gap-3 no-wrap -mt-1"):
+            check = ui.switch("Проверка фактов", value=mode_toggle.value in FACTCHECK_MODES, on_change=flipped) \
+                .props("dense color=bordo keep-color").classes("whitespace-nowrap shrink-0")
+            ui.label(FACTCHECK_HINT).classes("mono text-[12px] muted")
+
+        def mode_changed(e) -> None:
+            hint.set_text(MODE_HINTS[e.value])
+            if not choice["own"]:
+                choice["setting"] = True
+                check.value = e.value in FACTCHECK_MODES
+                choice["setting"] = False
+
+        mode_toggle.on_value_change(mode_changed)
         ui.label("запросы к поиску — на английском · отчёт — на русском · ⌘ Enter — запуск").classes("mono text-[11px] faint")
 
 
@@ -471,6 +503,8 @@ def job_page(job_id: str) -> RedirectResponse | None:
                 chip(f"продолжение #{origin.id}")
             if job["origin"] == "telegram":
                 chip("из telegram")
+            if job["factcheck"]:
+                chip("проверка фактов")
         with ui.card().classes("w-full px-5 py-4"):
             with ui.row().classes("items-center gap-4 w-full no-wrap"):
                 spinner = ui.spinner(size="sm", color="paper").classes("opacity-70")
@@ -576,6 +610,10 @@ def report_page(report_id: int) -> None:
                 chip(f"текст: {WRITER_OF_MODEL.get(meta['writer'], meta['writer'])}")
             if meta.get("cost"):
                 chip(rub_text(meta["cost"].get("rub")))
+            if checked := (meta.get("factcheck") or {}).get("checked"):
+                doubtful = len(meta["factcheck"].get("doubtful") or [])
+                chip(f"факты: {checked - doubtful} из {checked}") \
+                    .tooltip("утверждения со ссылками, которые подтверждает источник (после исправлений)")
             ui.space()
             for kind in ("pdf", "docx", "md"):
                 if entry.base.with_suffix(f".{kind}").exists():
@@ -643,7 +681,13 @@ def report_page(report_id: int) -> None:
 
         with ui.tab_panels(tabs, value="report").classes("w-full").style("background: transparent"):
             with ui.tab_panel("report").classes("px-0 pt-6"):
-                ui.markdown(body(markdown)).classes("report")
+                ui.markdown(mark_doubtful(body(markdown), (meta.get("factcheck") or {}).get("doubtful") or [])) \
+                    .classes("report")
+                if checks := appended(markdown, FACTCHECK_TITLE):
+                    with ui.column().classes("w-full max-w-[820px] gap-2 mt-12 pt-8").style("border-top: 1px solid var(--line)"):
+                        ui.html('<a id="factcheck"></a>', sanitize=False)
+                        label("Проверка фактов")
+                        ui.markdown(checks).classes("report compact")
                 next_steps()
 
             with ui.tab_panel("sources").classes("px-0 pt-4 gap-1"):

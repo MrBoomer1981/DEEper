@@ -11,7 +11,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import requests
 
@@ -21,6 +21,12 @@ from my_browser.common.settings import CONFIG_PATH, SOURCES, WRITERS
 
 class PreflightError(Exception):
     pass
+
+
+class Research(NamedTuple):
+    markdown: str
+    sources: list[str]
+    pages: dict[str, dict]  # url -> {"text", "title"} of every page read, for the fact-check
 
 
 def run_settings(sources: str | None = None, writer: str | None = None, words: int | None = None,
@@ -97,17 +103,18 @@ def preflight(settings: dict) -> None:
             raise PreflightError(f"SearXNG не отвечает по {url!r} ({e}). Запустите Docker и: docker compose up -d") from e
 
 
-async def research(query: str, mode: str, config_path: Path,
-                   on_progress: Callable[[str], None] = print) -> tuple[str, list[str]]:
+async def research(query: str, mode: str, config_path: Path, on_progress: Callable[[str], None] = print) -> Research:
     from gpt_researcher import GPTResearcher
 
     from my_browser.common import costs  # noqa: F401  patch gpt-researcher (see each module)
     from my_browser.worker import hooks, prompts, stemming  # noqa: F401
     from my_browser.worker.detailed import DetailedReport
 
+    pages: dict[str, dict] = {}
+    hooks.read_pages.set(pages)  # the tasks gpt-researcher starts from here share this dict
     if mode == "detailed":
         report = DetailedReport(query, config_path=str(config_path), on_progress=on_progress)
-        return await report.run(), report.source_urls()
+        return Research(await report.run(), report.source_urls(), pages)
 
     report_type = "deep" if mode == "deep" else "research_report"
     researcher = GPTResearcher(query=query, report_type=report_type, config_path=str(config_path))
@@ -119,20 +126,22 @@ async def research(query: str, mode: str, config_path: Path,
     else:
         await researcher.conduct_research()
     on_progress("Пишу отчёт...")
-    return await researcher.write_report(), researcher.get_source_urls()
+    return Research(await researcher.write_report(), researcher.get_source_urls(), pages)
 
 
 def render(query: str, mode: str, markdown: str, sources: list[str], seconds: float, settings: dict,
            cost: dict | None = None, followups: list[dict] | None = None, parent: str | None = None,
-           pdf: bool = True) -> dict[str, bytes]:
+           factcheck: dict | None = None, pdf: bool = True) -> dict[str, bytes]:
     """The report's files keyed by suffix (.md, .json, .docx, .pdf); core stores them.
 
-    The follow-up topics go into the JSON and, as the last section, into the documents.
-    parent is the file name (without suffix) of the report this research continues.
+    The fact-check's summary and the follow-up topics go into the JSON and, as the last two
+    sections, into the documents. parent is the file name (without suffix) of the report this
+    research continues.
     """
+    from my_browser.worker import factcheck as checks
     from my_browser.worker.export import write_docx, write_pdf
 
-    full = markdown + section(followups or [])
+    full = markdown + checks.section(factcheck) + section(followups or [])
     meta = {
         "query": query,
         "mode": mode,
@@ -146,6 +155,8 @@ def render(query: str, mode: str, markdown: str, sources: list[str], seconds: fl
         "followups": followups or [],
         "parent": parent,
     }
+    if factcheck is not None:
+        meta["factcheck"] = factcheck
     files = {".md": full.encode(), ".json": json.dumps(meta, ensure_ascii=False, indent=2).encode()}
     with tempfile.TemporaryDirectory() as tmp:
         md_path = Path(tmp) / "report.md"

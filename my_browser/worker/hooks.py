@@ -6,7 +6,7 @@ Importing this module patches gpt-researcher in the worker process:
 - ResearchConductor._get_new_urls (where search results become research sources, and later the
   references) asks the search part which candidates to take (POST /select);
 - Scraper.extract_data_from_url reads every page through the search part (POST /read), which adds
-  free fallbacks to the plain fetch.
+  free fallbacks to the plain fetch, and keeps what it read in read_pages for the fact-check.
 The search engines themselves still run here, inside gpt-researcher.
 """
 
@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 SEARCH_META: dict[str, dict] = {}  # url -> title/snippet from the last searches that returned it
 blocked: contextvars.ContextVar[list[str]] = contextvars.ContextVar("blocked_domains", default=[])  # the user's blocklist, per research
+# url -> {"text", "title"} of every page read, per research; pipeline.research() sets a fresh dict
+read_pages: contextvars.ContextVar[dict | None] = contextvars.ContextVar("read_pages", default=None)
 
 
 def _remember(results) -> None:
@@ -104,10 +106,13 @@ async def _get_new_urls_filtered(self, url_set_input):
 async def _read_via_search(self, link, session):
     try:
         response = await call("search", "POST", "/read", json={"url": link}, timeout=180)
-        return response.json()
     except Exception as e:  # an unreachable search part costs this page, not the research
         logger.warning("Search part could not read %s: %s", link, e)
         return {"url": link, "raw_content": None, "image_urls": [], "title": ""}
+    page = response.json()
+    if page.get("raw_content") and (pages := read_pages.get()) is not None:
+        pages[link] = {"text": page["raw_content"], "title": page.get("title") or ""}
+    return page
 
 
 _patch_retrievers()

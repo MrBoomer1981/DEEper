@@ -9,7 +9,7 @@ Guidance for changing `my_browser/common/`. This is code shared by the parts, so
   - `.env` is loaded, but real environment variables win;
   - `REPORTS_DIR`: eval sets its own before importing anything from `my_browser`;
   - `WEB_RETRIEVER`, `PORT`, `CORE_URL` (derived from `PORT`), `WORKER_URL`, `SEARCH_URL`.
-- The keys of `SOURCES`, `WRITERS` and `MODES` are repeated as labels in `core/web.py` and the bot.
+- The keys of `SOURCES`, `WRITERS` and `MODES` are repeated as labels in `core/web.py` and the bot. `FACTCHECK_MODES` (modes checked by default) is read by core's service, the web switch, the bot and `research.py`.
 - Each entry point calls `configure_logging()`.
 
 **`clients.py`**: used by core (to reach the worker), the worker (core, search) and the bot (core).
@@ -31,10 +31,12 @@ Guidance for changing `my_browser/common/`. This is code shared by the parts, so
 - `host()` (core's blocklist, search, the worker's hooks, eval) is the domain key everywhere: blocklist entries, per-domain caps and tiers, `read_stats.json`, eval's metrics. Changing its normalization, for example keeping `www.`, makes existing blocklist entries and stats silently stop matching.
 - `readable_url()` (the worker's hooks) produces the keys of `SEARCH_META` and `visited_urls`.
 - `slugify()` (core's library) names new report files only; old names stay valid.
-- `rub_text()` is used by the web UI, the bot and `research.py`.
+- `rub_text()` is used by the web UI, the bot and `research.py`; `plural()` by the web UI and the worker's fact-check section.
+- `MARKDOWN_LINK` finds `[anchor](url)` with URLs that hold parentheses («…_(рынок_России)»). The fact-check's claims (and so eval's citation pairs) and the detailed report's reference list use it; changing it changes eval's sampled pairs, so bump `JUDGE` in `eval/run.py`.
 
-**`report.py`**: used by the worker (`section`, `KINDS`, `ANY_ANSWER`, `body`), the web UI (`body`, `KINDS`, `ANY_ANSWER`), the bot (`KINDS`, `ANY_ANSWER`) and eval (`body`).
-- `SECTION_TITLE` is in every saved report, so `body()` must keep recognizing the titles of reports already on the volume.
+**`report.py`**: used by the worker (`section`, `KINDS`, `ANY_ANSWER`, `body`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the web UI (`body`, `appended`, `KINDS`, `ANY_ANSWER`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the bot (`KINDS`, `ANY_ANSWER`) and eval (`body`, through the fact-check's helpers).
+- `FOLLOWUPS_TITLE` and `FACTCHECK_TITLE` are in saved reports, so `body()` and `appended()` must keep recognizing the titles of reports already on the volume. The fact-check section always comes before the follow-ups.
+- `VERDICT_TEXT` keys are the lower-case verdicts the worker writes into `factcheck.doubtful`.
 - The `KINDS` keys are the `kind` values the follow-ups prompt asks for and `suggest.followups()` accepts.
 - `ANY_ANSWER` is dropped from the model's options and added back by both UIs.
 

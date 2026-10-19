@@ -33,6 +33,7 @@ class JobRequest(BaseModel):
     parent_id: int | None = None  # the report this research continues
     origin: str = "telegram"
     origin_ref: dict | None = None
+    factcheck: bool | None = None  # None: as the mode has it
 
 
 class WorkerRequest(BaseModel):

@@ -19,15 +19,16 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
   - `cost`: `Meter.summary()`, whose `rub` core and both UIs show;
   - `sources`: a list of URLs, whose length is the library's source count; the sources tab lists them;
   - `followups`: `[{kind, query, why, mode}]`;
+  - `factcheck` (only when the job had it): `factcheck.summary()`, i.e. counts by verdict, `accuracy`, `relinked`, `rewritten`, `fixed`, and `doubtful` items `{statement, url, verdict, note, raw}`, where `raw` is the sentence as it stands in the report and core puts its «?» after it; plus `cost_rub` and `seconds`, or `error` when the check failed;
   - `parent`: the parent report's file name without suffix.
   - Readers: `core/library.py`, `core/service.py`, `core/web.py`, the bot (through core) and `eval/`.
-- The Markdown ends with `common.report.section(followups)`. The bot's `_conclusion()` looks for a level-2 «Заключение», «Выводы» or «Conclusion» heading. `suggest._excerpt()` looks for conclusion, limitation and reference headings.
+- The Markdown ends with `factcheck.section()` («Проверка фактов», only when checked) and then `common.report.section(followups)`; `common.report.body()` strips both by their titles. The bot's `_conclusion()` looks for a level-2 «Заключение», «Выводы» or «Conclusion» heading. `suggest._excerpt()` looks for conclusion, limitation and reference headings.
 - Progress: `Progress.snapshot()` matches core's `ProgressRequest`; the job page shows `urls` as `[url, score]` pairs.
 
 **In-process users** (no API):
-- `research.py` and `eval/run.py` use `pipeline` (`run_settings`, `config_file`, `preflight`, `research`, `render`) and `hooks.blocked`.
+- `research.py` and `eval/run.py` use `pipeline` (`run_settings`, `config_file`, `preflight`, `research` and its `Research(markdown, sources, pages)`, `render`), `factcheck.run` and `hooks.blocked`.
   - `research.py` also uses `suggest.followups`.
-  - eval also uses `hooks.SEARCH_META` (titles for its off-topic judge), `suggest.fast` and `suggest.json_list` (its judges), and `stemming.tokenize` (citation passage matching, in `eval/metrics.py`).
+  - eval also uses `hooks.SEARCH_META` (titles for its off-topic judge), `suggest.fast` and `suggest.json_list` (its judges), and for its citation judge `factcheck.claims`, `Passages`, `translate`, plus `LINK`, `text_and_references` and `units` in `eval/metrics.py`. A change there changes eval's «Точность цитат»: bump `JUDGE` in `eval/run.py` and rejudge the last run (`--rejudge`) so the numbers stay comparable.
 - Two log lines are parsed:
   - `Added source url to research (s/3): url`, written by `hooks.py` through gpt-researcher's `stream_output`, is parsed by `runner.SOURCE_LINE` and `eval/metrics.ADDED`;
   - upstream's `based on the following queries: [...]` is parsed by `runner.QUERIES_LINE`.
@@ -39,6 +40,7 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
 - **Search** (`hooks.py`; shapes in `search/CLAUDE.md`):
   - `/select` is called once per batch of search results, with a 120 s timeout. Its `usage` is merged into the job's meter.
   - `/read` is called for every page, with a 180 s timeout.
+  - Every page `/read` returns with text is also kept in `hooks.read_pages` for the fact-check: a fresh dict per `research()` call, shared by the tasks gpt-researcher starts from it.
   - When search fails, a `/read` error costs only that page (an empty result). A `/select` error costs that sub-query's sources: gpt-researcher logs `Error processing sub-query` and goes on.
   - `preflight()` does not check the search part. With `SEARCH_URL` set and search down, the report gets written without sources.
 - **gpt-researcher 0.16.1** (locked in `uv.lock`; `pyproject.toml` allows newer versions): the worker patches its internals at import. After an upgrade, re-check:
@@ -56,8 +58,9 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
     - the `scraper` logger, whose console handler `gpt_researcher.actions` creates; it is imported first;
     - the wording of the `based on the following queries:` message in `skills/researcher.py`.
   - `detailed.py` is a port of upstream's `backend/report_type/detailed_report`.
-    - It uses `GPTResearcher`'s `conduct_research`, `get_subtopics`, `write_introduction`, `write_report_conclusion`, `extract_headers`, `extract_sections`, `table_of_contents`, `context`, `visited_urls`, `agent`, `role` and `cfg`.
+    - It uses `GPTResearcher`'s `conduct_research`, `get_subtopics`, `write_introduction`, `write_report_conclusion`, `get_draft_section_titles`, `get_similar_written_contents_by_draft_section_titles`, `write_report`, `extract_headers`, `extract_sections`, `table_of_contents`, `context`, `visited_urls`, `agent`, `role` and `cfg`, and the constructor's `report_type="subtopic_report"`, `parent_query`, `visited_urls`, `agent` and `role`.
     - Compare it with upstream's current version when upgrading.
+- **The fact-check** (`factcheck.py`) runs after `research()` with the run's config file: FAST_LLM judges, the run's `SMART_LLM` (the writer) corrects. It needs `config_path` still alive, so callers run it inside `config_file()`. It changes only sentences it can back with a page the research read; the prompts' wording («a conclusion drawn from what the page says counts», «correct only what differs») is what keeps it from cutting the report's reasoning, which an earlier version did.
 - **Configuration**:
   - `run_settings()` reads `config.json` per research and adds the run's choices.
   - Environment variables beat it inside gpt-researcher, so an env `SMART_LLM` overrides the writer toggle (that is how the mock works).
@@ -85,7 +88,9 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
 | a field of the report JSON | `core/library.py` (`add`), `core/service.py`, `core/web.py`, the bot, `eval/metrics.py` and `eval/run.py`; reports already on the volume keep the old shape |
 | the shape or kinds of follow-up topics | `common/report.py` (`KINDS`, `section`), the cards in `core/web.py`, the bot's buttons |
 | the `Added source url to research` line | `runner.SOURCE_LINE`, `eval/metrics.ADDED` |
-| report headings (conclusion, limitations, references) | the bot's `_conclusion()`, the patterns in `suggest.py`, `eval/metrics.REFERENCES` |
+| report headings (conclusion, limitations, references) | the bot's `_conclusion()`, the patterns in `suggest.py`, `factcheck.REFERENCES` (eval uses it too) |
+| the fact-check's summary or section | `core/web.py` (the «факты» chip, `mark_doubtful()`, the block), the bot's `_factcheck_line()`, `common/report.VERDICT_TEXT`, eval's `fc_*` columns |
+| how `factcheck.claims()` cuts sentences | `raw` must still match the report text for core's marks; eval's sampled pairs change, so bump `JUDGE` |
 | a request or response of `api.py` | `core/service.py`, and `core/qa.py` for `/ask` |
 | the progress payload | `ProgressRequest` in `core/api.py`, `core/queue.progress`, the job page in `core/web.py` |
 | a mode, source or writer | the table in `core/CLAUDE.md` |

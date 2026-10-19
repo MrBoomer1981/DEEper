@@ -3,7 +3,8 @@
 One research at a time, in a plain thread (the all-in-one process starts it next to core; on its own
 the worker starts it next to its API). Progress (phase, planned queries, accepted sources with
 scores, log tail, cost) comes from pipeline phases and gpt-researcher's "scraper" log, goes to core
-every few seconds and doubles as the heartbeat core uses to spot interrupted jobs.
+every few seconds and doubles as the heartbeat core uses to spot interrupted jobs. A job with
+"factcheck" has its report checked against the pages it read before the files are rendered.
 """
 
 import ast
@@ -20,7 +21,7 @@ import gpt_researcher.actions  # noqa: F401  creates the "scraper" logger's cons
 
 from my_browser.common import costs
 from my_browser.common.clients import call_core
-from my_browser.worker import hooks, suggest
+from my_browser.worker import factcheck, hooks, suggest
 from my_browser.worker.pipeline import PreflightError, config_file, preflight, render, research, run_settings
 
 logger = logging.getLogger(__name__)
@@ -105,15 +106,18 @@ def execute(job: dict) -> None:
     try:
         settings = run_settings(job["sources"], writer=job["writer"])
         preflight(settings)
-        started = time.monotonic()
+        started, check = time.monotonic(), None
         with config_file(settings) as path:
-            markdown, urls = asyncio.run(research(job["query"], job["mode"], path, on_progress=progress.set_phase))
+            result = asyncio.run(research(job["query"], job["mode"], path, on_progress=progress.set_phase))
+            markdown = result.markdown
+            if job.get("factcheck"):
+                markdown, check = asyncio.run(factcheck.run(markdown, result.pages, path, on_progress=progress.set_phase))
         seconds = time.monotonic() - started
         progress.set_phase("Подбираю, что исследовать дальше...")
         followups = asyncio.run(suggest.followups(job["query"], markdown))
         progress.set_phase("Собираю PDF и DOCX...")
-        files = render(job["query"], job["mode"], markdown, urls, seconds, settings, cost=meter.summary(),
-                       followups=followups, parent=job.get("parent"))
+        files = render(job["query"], job["mode"], markdown, result.sources, seconds, settings, cost=meter.summary(),
+                       followups=followups, parent=job.get("parent"), factcheck=check)
         _hand_in(job["id"], files)
     except PreflightError as e:
         _fail(job["id"], str(e))

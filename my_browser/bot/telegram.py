@@ -31,11 +31,12 @@ from aiogram.types import (
 
 from my_browser.common.clients import call
 from my_browser.common.report import ANY_ANSWER, KINDS
-from my_browser.common.settings import DEFAULT_SOURCES
+from my_browser.common.settings import DEFAULT_SOURCES, FACTCHECK_MODES
 from my_browser.common.text import rub_text
 
 MODE_BUTTONS = {"detailed": "📄 Подробный", "deep": "🔬 Глубокий", "quick": "⚡ Быстрый"}
 SOURCE_BUTTONS = {"web": "🌐 Веб", "academic": "🎓 Наука", "all": "🌐+🎓 Всё"}
+FACTCHECK_BUTTONS = {None: "🔎 Проверка фактов: как в режиме", True: "🔎 Проверка фактов: да", False: "🔎 Проверка фактов: нет"}
 TG_LIMIT = 4000
 TICK_SEC = 5  # status refresh; also proves the bot is alive during long runs
 NOTIFY_SEC = 60  # how often to look for researches interrupted by a restart
@@ -47,6 +48,7 @@ HELP = """<b>Глубокие исследования</b>
 🔬 Глубокий — рекурсивный поиск вширь и вглубь (дольше всех)
 ⚡ Быстрый — один проход (~1–4 мин)
 ❓ Уточнить тему — 2–3 вопроса с вариантами, если тема широкая
+🔎 Проверка фактов — сверить утверждения со ссылками с источниками и исправить расхождения (+1–2 мин); «как в режиме» — в подробном и глубоком да, в быстром нет
 
 Отчёт придёт файлами PDF, DOCX и Markdown, а заключение — сообщением.
 Следом — темы «что исследовать дальше»: нажмите номер, чтобы запустить.
@@ -144,12 +146,22 @@ def _conclusion(markdown: str) -> str | None:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(1)).strip() or None
 
 
+def _factcheck_line(check: dict | None) -> str | None:
+    if not check or not check.get("checked"):
+        return None
+    fixed, doubtful = check["relinked"] + check["rewritten"], len(check["doubtful"])
+    return (f"🔎 Проверка фактов: источники подтверждают {check['checked'] - doubtful} из {check['checked']} утверждений со ссылками"
+            + (f" (исправлено {fixed})" if fixed else "")
+            + (f"; без подтверждения {doubtful} — список в конце отчёта" if doubtful else "") + ".")
+
+
 def _cost(meta: dict) -> str:
     return rub_text((meta.get("cost") or {}).get("rub")) if meta.get("cost") else "—"
 
 
 def _header(job: dict) -> str:
-    return f"🔎 <b>{html.escape(job['query'])}</b>\n{MODE_BUTTONS[job['mode']]} · {SOURCE_BUTTONS.get(job['sources'], job['sources'])}"
+    return (f"🔎 <b>{html.escape(job['query'])}</b>\n{MODE_BUTTONS[job['mode']]} · {SOURCE_BUTTONS.get(job['sources'], job['sources'])}"
+            + (" · проверка фактов" if job.get("factcheck") else ""))
 
 
 def _restart_keyboard(job_id: str) -> InlineKeyboardMarkup:
@@ -164,7 +176,7 @@ def _topic_text(item: dict, note: str = "") -> str:
         lines.append(f"рекомендую: {MODE_BUTTONS[item['recommended']]}")
     if note:
         lines.append(f"<i>{html.escape(note)}</i>")
-    return "\n".join(lines) + "\n\nВыберите режим. Второй ряд — источники."
+    return "\n".join(lines) + "\n\nВыберите режим. Второй ряд — источники, третий — проверка фактов."
 
 
 def _topic_keyboard(key: str) -> InlineKeyboardMarkup:
@@ -177,7 +189,7 @@ def _topic_keyboard(key: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text=("✓ " if src == item["sources"] else "") + label, callback_data=f"s:{key}:{src}")
         for src, label in SOURCE_BUTTONS.items()
     ]
-    rows = [modes, srcs]
+    rows = [modes, srcs, [InlineKeyboardButton(text=FACTCHECK_BUTTONS[item.get("factcheck")], callback_data=f"k:{key}")]]
     if not item.get("clarified"):
         rows.append([InlineKeyboardButton(text="❓ Уточнить тему", callback_data=f"c:{key}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -185,7 +197,8 @@ def _topic_keyboard(key: str) -> InlineKeyboardMarkup:
 
 async def _offer(send, key: str, query: str, parent_id: int | None = None, recommended: str | None = None) -> None:
     """Ask for the mode and sources of a new research; `send` is message.reply or message.answer."""
-    pending[key] = {"query": query, "sources": DEFAULT_SOURCES, "recommended": recommended, "parent_id": parent_id}
+    pending[key] = {"query": query, "sources": DEFAULT_SOURCES, "recommended": recommended, "parent_id": parent_id,
+                    "factcheck": None}  # None: as the mode has it
     await send(_topic_text(pending[key]), reply_markup=_topic_keyboard(key))
 
 
@@ -214,6 +227,8 @@ async def send_report(message: Message, view: dict) -> None:
     if conclusion:
         for part in _chunks(f"📌 Отчёт #{entry['id']} — заключение\n\n{conclusion}"):
             await message.answer(part, parse_mode=None)
+    if line := _factcheck_line(meta.get("factcheck")):
+        await message.answer(line)
     await message.answer(f"Ответьте на сообщение с «#{entry['id']}», чтобы задать вопрос по этому отчёту.")
 
     topics = meta.get("followups") or []
@@ -247,6 +262,7 @@ async def run_research(status: Status, item: dict, mode: str) -> None:
     job = await core("POST", "/api/jobs", json={
         "query": item["query"], "mode": mode, "sources": item["sources"], "parent_id": item.get("parent_id"),
         "origin": "telegram", "origin_ref": {"chat": status.message.chat.id, "message": status.message.message_id},
+        "factcheck": item.get("factcheck"),
     })
     await finish(status, await status.follow(job["id"]))
 
@@ -507,6 +523,19 @@ async def on_sources(callback: CallbackQuery) -> None:
         await callback.message.edit_reply_markup(reply_markup=_topic_keyboard(key))
 
 
+@dp.callback_query(F.data.startswith("k:"))
+async def on_factcheck(callback: CallbackQuery) -> None:
+    key = callback.data.split(":", 1)[1]
+    if key not in pending:
+        await callback.answer("Тема устарела, пришлите её ещё раз", show_alert=True)
+        return
+    states = list(FACTCHECK_BUTTONS)  # as the mode has it -> yes -> no -> ...
+    pending[key]["factcheck"] = states[(states.index(pending[key].get("factcheck")) + 1) % len(states)]
+    await callback.answer()
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_reply_markup(reply_markup=_topic_keyboard(key))
+
+
 @dp.callback_query(F.data.startswith("m:"))
 async def on_mode(callback: CallbackQuery) -> None:
     _, key, mode = callback.data.split(":")
@@ -515,7 +544,9 @@ async def on_mode(callback: CallbackQuery) -> None:
         await callback.answer("Тема устарела, пришлите её ещё раз", show_alert=True)
         return
     await callback.answer()
-    header = f"🔎 <b>{html.escape(item['query'])}</b>\n{MODE_BUTTONS[mode]} · {SOURCE_BUTTONS[item['sources']]}"
+    checked = mode in FACTCHECK_MODES if item.get("factcheck") is None else item["factcheck"]
+    header = (f"🔎 <b>{html.escape(item['query'])}</b>\n{MODE_BUTTONS[mode]} · {SOURCE_BUTTONS[item['sources']]}"
+              + (" · проверка фактов" if checked else ""))
     if item.get("parent_id"):
         header += f"\n↳ продолжение отчёта #{item['parent_id']}"
     status = Status(callback.message, header)

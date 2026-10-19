@@ -21,6 +21,7 @@ HEARTBEAT_TIMEOUT = 300
 KEEP_FINISHED = 50
 FIRST_PHASE = "Проверяю DeepSeek и поиск..."
 JSON_FIELDS = {"queries": [], "urls": [], "log": [], "origin_ref": None}
+ADDED_COLUMNS = {"factcheck": "INTEGER DEFAULT 0"}  # columns newer than the table in an older library.sqlite
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY, query TEXT NOT NULL, mode TEXT, sources TEXT, writer TEXT,
@@ -29,10 +30,12 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS jobs (
     origin_ref TEXT,  -- for telegram: {"chat": ..., "message": ...} of the status message
     status TEXT, phase TEXT, created REAL, started REAL, finished REAL, heartbeat REAL, worker TEXT,
     queries TEXT, urls TEXT, log TEXT, cost_rub REAL, report_id INTEGER, error TEXT,
-    notified INTEGER DEFAULT 0  -- the bot has told about the interruption
+    notified INTEGER DEFAULT 0,  -- the bot has told about the interruption
+    factcheck INTEGER DEFAULT 0  -- check the report against its sources (worker/factcheck.py)
 )"""
 
 _write = threading.Lock()  # the web app, the API and the bot write from different threads
+_migrated = False
 
 
 @contextmanager
@@ -41,10 +44,21 @@ def _db():
     db.row_factory = sqlite3.Row
     try:
         db.execute(SCHEMA)
+        _migrate(db)
         yield db
         db.commit()
     finally:
         db.close()
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    global _migrated
+    if not _migrated:
+        present = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
+        for column, kind in ADDED_COLUMNS.items():
+            if column not in present:
+                db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {kind}")
+        _migrated = True
 
 
 def _job(row: sqlite3.Row | None) -> dict | None:
@@ -55,6 +69,7 @@ def _job(row: sqlite3.Row | None) -> dict | None:
         job[key] = json.loads(job[key]) if job[key] else empty
     job["elapsed"] = ((job["finished"] or time.time()) - job["started"]) if job["started"] else 0.0
     job["active"] = job["status"] in ("queued", "running")
+    job["factcheck"] = bool(job["factcheck"])
     return job
 
 
@@ -65,12 +80,13 @@ def _expire(db: sqlite3.Connection) -> None:
 
 
 def submit(query: str, mode: str, sources: str, writer: str, parent: str | None = None,
-           origin: str = "web", origin_ref: dict | None = None) -> dict:
+           origin: str = "web", origin_ref: dict | None = None, factcheck: bool = False) -> dict:
     job_id = uuid.uuid4().hex[:10]
     with _write, _db() as db:
-        db.execute("INSERT INTO jobs (id, query, mode, sources, writer, parent, origin, origin_ref, status, phase, created) "
-                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'В очереди', ?)",
-                   (job_id, query, mode, sources, writer, parent, origin, json.dumps(origin_ref) if origin_ref else None, time.time()))
+        db.execute("INSERT INTO jobs (id, query, mode, sources, writer, parent, origin, origin_ref, factcheck, status, phase, created) "
+                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'В очереди', ?)",
+                   (job_id, query, mode, sources, writer, parent, origin, json.dumps(origin_ref) if origin_ref else None,
+                    int(factcheck), time.time()))
         stale = db.execute("SELECT id FROM jobs WHERE status IN ('done', 'error', 'interrupted') "
                            "ORDER BY created DESC LIMIT -1 OFFSET ?", (KEEP_FINISHED,)).fetchall()
         db.executemany("DELETE FROM jobs WHERE id = ?", [(r["id"],) for r in stale])

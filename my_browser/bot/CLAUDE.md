@@ -7,17 +7,19 @@ Guidance for changing `my_browser/bot/`: what the bot expects from core, from Te
 - **Core's API only**: `call("core", ...)` at `CORE_URL` with the service token.
   - `core/CLAUDE.md` lists the fields the bot reads and the order core keeps for follow-ups and Q&A.
   - The bot imports no module of core, the worker or search, so it can run alone with the `bot` group (aiogram, httpx, python-dotenv). Keep it that way.
-- **`common`**: `clients.call`, `report.KINDS` and `ANY_ANSWER`, `settings.DEFAULT_SOURCES`, `text.rub_text`.
+- **`common`**: `clients.call`, `report.KINDS` and `ANY_ANSWER`, `settings.DEFAULT_SOURCES` and `FACTCHECK_MODES`, `text.rub_text`.
   - It must not import `common.costs`, `common.gptr` or `common.auth`: they pull in gpt-researcher and fastapi.
 - **Its own copies of what lives elsewhere**:
   - `MODE_BUTTONS` and `SOURCE_BUTTONS`, whose keys come from `common/settings.py`;
   - the time estimates in `HELP`, which are also in `core/web.MODE_HINTS`;
-  - the conclusion pattern in `_conclusion()`: a level-2 «Заключение», «Выводы» or «Conclusion» heading, as the worker writes it.
+  - the conclusion pattern in `_conclusion()`: a level-2 «Заключение», «Выводы» or «Conclusion» heading, as the worker writes it;
+  - `_factcheck_line()`, which reads `checked`, `relinked`, `rewritten` and `doubtful` of the report's `factcheck`, like the web's chip.
+  - The fact-check toggle sends `factcheck` true, false or nothing (as the mode has it); the status header guesses the mode's default from `FACTCHECK_MODES`, core decides.
   - The writer is never sent, so core's default (`DEFAULT_WRITER`) applies.
 - **Telegram**:
   - `callback_data` holds at most 64 bytes, so it never carries a topic:
     - `f:<report>:<i>` and `r:<report>:<i>` read the topic back from core by position;
-    - `m:`, `s:`, `c:` and `a:` refer to `pending` by the key of the message that offered the topic;
+    - `m:`, `s:`, `k:` (fact-check toggle), `c:` and `a:` refer to `pending` by the key of the message that offered the topic;
     - `x:<job>` restarts a job.
   - Messages use HTML (`ParseMode.HTML`): escape everything from reports or users with `html.escape`. Text longer than `TG_LIMIT` goes through `_chunks()`.
   - A media group takes 2–10 files, so a single file goes as one document.

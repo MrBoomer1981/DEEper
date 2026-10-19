@@ -4,6 +4,7 @@ import base64
 import json
 
 from my_browser.common.clients import call
+from my_browser.common.settings import FACTCHECK_MODES
 from my_browser.core import blocklist, qa, queue
 from my_browser.core.library import Entry, Library
 
@@ -18,9 +19,11 @@ def meta(entry: Entry) -> dict:
 
 
 def submit(query: str, mode: str, sources: str, writer: str, parent_id: int | None = None,
-           origin: str = "web", origin_ref: dict | None = None) -> dict:
+           origin: str = "web", origin_ref: dict | None = None, factcheck: bool | None = None) -> dict:
+    """factcheck None: as the mode has it (FACTCHECK_MODES)."""
     parent = Library().get(parent_id) if parent_id else None
-    return queue.submit(query, mode, sources, writer, parent.base.name if parent else None, origin, origin_ref)
+    return queue.submit(query, mode, sources, writer, parent.base.name if parent else None, origin, origin_ref,
+                        mode in FACTCHECK_MODES if factcheck is None else factcheck)
 
 
 def claim(worker: str) -> dict | None:

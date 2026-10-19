@@ -6,11 +6,9 @@ each researched and written as its own section, then stitched together with an
 introduction, table of contents, conclusion and references.
 """
 
-import re
-
 from gpt_researcher import GPTResearcher
 
-CITED_LINK = re.compile(r"\]\((https?://[^)\s]+)\)")
+from my_browser.common.text import MARKDOWN_LINK
 
 
 class DetailedReport:
@@ -50,7 +48,7 @@ class DetailedReport:
 
         # Upstream lists every visited URL, including pages dropped as irrelevant;
         # list what the text actually cites, unless it barely cites inline.
-        cited = list(dict.fromkeys(CITED_LINK.findall(report)))
+        cited = list(dict.fromkeys(m.group(2) for m in MARKDOWN_LINK.finditer(report)))
         self.references = cited if len(cited) >= 3 else sorted(self.researcher.visited_urls)
         heading = "Источники" if self.researcher.cfg.language.lower() == "russian" else "References"
         return report + f"\n\n\n## {heading}\n\n" + "".join(f"- [{url}]({url})\n" for url in self.references)

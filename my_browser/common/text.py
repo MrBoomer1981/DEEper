@@ -1,9 +1,11 @@
-"""Small text helpers used by several parts: URLs, file names, money."""
+"""Small text helpers used by several parts: URLs, file names, money, Russian plurals."""
 
 import re
 from urllib.parse import quote, urlparse
 
 _ENCODED_RUN = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
+# [anchor](url) with a web URL; the URL may hold balanced parentheses, as in «…/Облачные_сервисы_(рынок_России)»
+MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
 
 
 def host(url: str) -> str:
@@ -38,3 +40,10 @@ def rub_text(rub: float | None) -> str:
     if rub is None:
         return "—"
     return f"{rub:.2f} ₽".replace(".", ",") if rub < 10 else f"{rub:.1f} ₽".replace(".", ",")
+
+
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """The Russian word form for n: 1 отчёт, 2 отчёта, 5 отчётов."""
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many

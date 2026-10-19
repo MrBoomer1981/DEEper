@@ -6,13 +6,14 @@ Guidance for changing `my_browser/core/`: what the other parts expect from core 
 
 **Worker** (`worker/runner.py`, over HTTP with `call_core`) uses the queue endpoints:
 - `POST /api/worker/hello {worker}`: every running job of another worker id becomes interrupted.
-- `POST /api/worker/claim {worker}`: 204 when nothing is queued, otherwise the job plus `blocked` (the blocklist). The worker reads `id`, `query`, `mode`, `sources`, `writer`, `parent`, `blocked`.
+- `POST /api/worker/claim {worker}`: 204 when nothing is queued, otherwise the job plus `blocked` (the blocklist). The worker reads `id`, `query`, `mode`, `sources`, `writer`, `parent`, `factcheck`, `blocked`.
 - `POST /api/worker/jobs/{id}/progress {worker, phase, queries, urls, log, cost_rub}`: also the heartbeat (`HEARTBEAT_TIMEOUT` is 5 min, the worker sends at least every 30 s). It is ignored unless the job is running under that worker. `urls` are `[url, "3/3"]` pairs.
 - `POST /api/worker/jobs/{id}/result {worker, files}`: `files` maps `.md`, `.json` and, when rendering worked, `.docx` and `.pdf` to base64. Accepted even after the job was given up as interrupted. The worker retries six times over about two minutes; a retry after a lost response would store the report twice, since nothing deduplicates by job id.
 - `POST /api/worker/jobs/{id}/error {worker, error}`.
 
 **Bot** (`bot/telegram.py`) uses the rest of `/api` and reads these fields; a renamed field breaks a handler at run time, not at import:
-- job: `id`, `active`, `status`, `phase`, `elapsed`, `error`, `report_id`, `query`, `mode`, `sources`, `origin_ref`;
+- job: `id`, `active`, `status`, `phase`, `elapsed`, `error`, `report_id`, `query`, `mode`, `sources`, `factcheck`, `origin_ref`;
+- `POST /api/jobs` takes `factcheck` as true, false or absent; absent means the mode decides (`FACTCHECK_MODES`), resolved in `service.submit()` and stored as a bool;
 - `GET /api/reports/{id}` (`service.report_view`): `entry` (`id`, `query`, `words`, `sources_count`, `duration_sec`, `name`), `meta` (the report JSON as stored), `markdown`, `qa`;
 - `GET /api/reports` (plus `snippet` when searching with `q`), `GET /api/reports/{id}/files/{pdf|docx|md}` (404 for a missing file; the bot sends what exists), `DELETE /api/reports/{id}` → `deleted`;
 - `POST /api/reports/{id}/ask` → the stored Q&A item (`a`, `cost_rub`, `research`); `/api/clarify` → `questions`, `cost_rub`; `/api/refine` → `topic`, `cost_rub`; blocklist → `domains`, `domain`, `removed`;
@@ -26,14 +27,15 @@ Guidance for changing `my_browser/core/`: what the other parts expect from core 
 - **The worker's API**, through `common.clients.call("worker", ...)` in `service.py`; request and response shapes are in `worker/CLAUDE.md`. With `WORKER_URL` unset it runs inside core's process and imports `my_browser.worker.api`, and gpt-researcher with it. So core installed alone (`--group core`) needs `WORKER_URL`.
 - **The report files written by the worker's `pipeline.render()`**:
   - `Library.add` requires `query`, `mode`, `created`, `words`, `duration_sec` and `sources` (a list); `parent` is optional. `store_result` reads `cost.rub`.
-  - The pages read `writer`, `cost`, `followups`, `followups_cost_rub`, `sources`. Reports already on the volume predate some fields, so read newer ones with `.get()`.
-  - The Markdown ends with the follow-ups section; `common.report.body()` cuts it off for the page.
+  - The pages read `writer`, `cost`, `followups`, `followups_cost_rub`, `sources` and `factcheck` (`checked`; `doubtful` items with `raw`, `verdict`, `note`). Reports already on the volume predate some fields, so read newer ones with `.get()`.
+  - The Markdown ends with «Проверка фактов» (when checked), then «Что исследовать дальше»; `common.report.body()` cuts both off for the page, and `appended()` gives the fact-check text for its block.
+  - `mark_doubtful()` finds each doubtful sentence by its `raw` text (whitespace-tolerant) to put the «?» after it, so a worker change to how claims are cut out of the text shows up here as missing marks.
 - **`common`**: `settings`, `auth`, `report`, `text`, `clients`. Core imports no module of the worker, search or bot.
 
 ## State core owns
 
 All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats.json`:
-- `library.sqlite`: tables `reports` and `reports_fts` (`library.py`) and `jobs` (`queue.py`), each created on first use. `sync()` rebuilds the report tables from the files; the queue cannot be rebuilt, so deleting the database also drops queued and finished jobs.
+- `library.sqlite`: tables `reports` and `reports_fts` (`library.py`) and `jobs` (`queue.py`), each created on first use; a column added to `jobs` later goes into `ADDED_COLUMNS`, so older databases on the volume get it. `sync()` rebuilds the report tables from the files; the queue cannot be rebuilt, so deleting the database also drops queued and finished jobs.
 - `<date>_<time>_<slug>.{md,json,docx,pdf}` and `<name>.qa.json`. `sync()` indexes only `<date>_*.json` files that are not `.qa.json`, so other JSON in the directory is left alone.
 - `blocked_domains.txt` (eval reads it straight from `reports/`), `.service_token` (when `SERVICE_TOKEN` is unset, every part with the same `REPORTS_DIR` reads it), `.storage_secret` and `.nicegui/` (logins).
 
@@ -54,6 +56,7 @@ All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats
 | a job field or status | the bot (`Status.follow`, `finish`, `notify_interrupted`), the job page in `web.py`, `worker/runner.py` if it sends or reads the field |
 | an `/api` route or response field | the bot; for `/api/worker/*` also `worker/runner.py` |
 | what the pages read from the report JSON | it is written by `worker/pipeline.render()`; old reports lack newer fields |
-| a mode, source or writer key | `common/settings.py`; `web.py` (`MODES`, `MODE_HINTS`, `WRITER_LABELS`, `WRITER_HINTS`, `WRITER_OF_MODEL`); the bot (`MODE_BUTTONS`, `SOURCE_BUTTONS`, `HELP`); `worker/suggest.FOLLOWUP_MODES` |
+| a mode, source or writer key | `common/settings.py` (also `FACTCHECK_MODES`); `web.py` (`MODES`, `MODE_HINTS`, `WRITER_LABELS`, `WRITER_HINTS`, `WRITER_OF_MODEL`); the bot (`MODE_BUTTONS`, `SOURCE_BUTTONS`, `HELP`); `worker/suggest.FOLLOWUP_MODES` |
+| what the report page shows of the fact-check | it comes from `worker/factcheck.summary()` and `section()`; the bot's `_factcheck_line()` reads the same counts |
 | the time estimates of the modes | `web.MODE_HINTS` and the bot's `HELP` |
 | report file naming (`Library.store`, `common.text.slugify`) | `REPORT_NAME` in `library.py`; parents are stored by file name |
