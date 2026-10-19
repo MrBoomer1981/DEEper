@@ -56,7 +56,8 @@ ui.add_head_html(f"""
 <link rel="stylesheet" href="/static/app.css?v={VERSION}">
 <script defer src="/static/app.js?v={VERSION}"></script>
 """, shared=True)
-app.add_static_files("/static", ROOT / "static")
+# app.css and app.js change their address with every change (?v=); fonts, the mascot and icons hardly ever change.
+app.add_static_files("/static", ROOT / "static", max_cache_age=7 * 24 * 3600)
 app.include_router(router)
 
 
@@ -105,6 +106,8 @@ def main() -> None:
         language="ru",
         storage_secret=storage_secret(),
         viewport="width=device-width, initial-scale=1, viewport-fit=cover",  # safe areas of an installed iPhone app
+        tailwind=False,  # every screen is styled by static/app.css; Tailwind would compile CSS in the phone's browser
+        reconnect_timeout=60,  # a phone switching apps for a minute comes back to the same page, scroll position and all
         reload=False,
         show=False,
         show_welcome_message=not kit.PUBLIC,

@@ -44,12 +44,12 @@ def cite(markdown: str) -> tuple[str, dict[str, int]]:
     numbers: dict[str, int] = {}
 
     def group(match: re.Match) -> str:
-        sups = []
+        links = []
         for link in MARKDOWN_LINK.finditer(match.group(0)):
             anchor, url = link.group(1), link.group(2)
             n = numbers.setdefault(url, len(numbers) + 1)
-            sups.append(f'<sup class="cite"><a href="{html.escape(url, quote=True)}" title="{html.escape(anchor, quote=True)}">{n}</a></sup>')
-        return "".join(sups)
+            links.append(f'<a href="{html.escape(url, quote=True)}" title="{html.escape(anchor, quote=True)}">{n}</a>')
+        return f'<sup class="cite">{",".join(links)}</sup>'
 
     return CITATIONS.sub(group, markdown), numbers
 
