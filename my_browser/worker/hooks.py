@@ -2,7 +2,8 @@
 
 Importing this module patches gpt-researcher in the worker process:
 - every retriever's search() remembers titles and snippets of its results (SEARCH_META), so the
-  search part can rate candidates by more than their URL; arXiv and SearXNG wait for their turn (PACE);
+  search part can rate candidates by more than their URL; arXiv and SearXNG wait for their turn (PACE),
+  and arXiv gets no Cyrillic queries (ENGLISH_ONLY);
 - ResearchConductor._get_new_urls (where search results become research sources, and later the
   references) asks the search part which candidates to take (POST /select);
 - Scraper.extract_data_from_url reads every page through the search part (POST /read), which adds
@@ -14,6 +15,7 @@ import contextvars
 import inspect
 import logging
 import os
+import re
 import threading
 import time
 from collections import Counter
@@ -43,6 +45,11 @@ read_pages: contextvars.ContextVar[dict | None] = contextvars.ContextVar("read_p
 #   once (20.10.2026), which leaves the subtopics nearly without web results. Tavily (Railway) copes and is not paced.
 # search() runs in a worker thread (asyncio.to_thread), so waiting here does not hold up the event loop.
 PACE = {"ArxivSearch": 3.0, "SearxSearch": 1.0}
+# Engines that get no Cyrillic queries. gpt-researcher always searches the research's own query too, which is the
+# user's Russian topic (or a detailed report's Russian subtopic); arXiv answers it with nothing useful, and slowly:
+# 150 s against 5 s for an English query (20.10.2026), which held up every research step that sent one.
+ENGLISH_ONLY = {"ArxivSearch"}
+CYRILLIC = re.compile("[а-яё]", re.I)
 _pace_locks = {engine: threading.Lock() for engine in PACE}
 _last_search: dict[str, float] = {}
 
@@ -78,6 +85,8 @@ def _patch_retrievers() -> None:
             continue
 
         def remembering(self, *args, _search=search, _engine=name, **kwargs):
+            if _engine in ENGLISH_ONLY and CYRILLIC.search(str(getattr(self, "query", ""))):
+                return []
             _wait_turn(_engine)
             results = _search(self, *args, **kwargs)
             _remember(results)
