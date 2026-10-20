@@ -60,7 +60,7 @@ Adding a function, a constant or an optional argument is safe. Renaming or remov
 - `host()` (core's blocklist, search, the worker's hooks, eval) is the domain key everywhere: blocklist entries, per-domain caps and tiers, `read_stats.json`, eval's metrics. Changing its normalization, for example keeping `www.`, makes existing blocklist entries and stats silently stop matching.
 - `readable_url()` (the worker's hooks) produces the keys of `SEARCH_META` and `visited_urls`.
 - `slugify()` (core's library) names new report files only; old names stay valid.
-- `rub_text()` is used by the web UI, the bot and `research.py`; `plural()` by the web UI, `phases.py` and the worker's fact-check section.
+- `rub_text()` is used by the web UI, the bot and `research.py`; it puts a no-break space before «₽», so the sign never wraps alone on a narrow screen. `plural()` is used by the web UI, `phases.py` and the worker's fact-check section.
 - `MARKDOWN_LINK` finds `[anchor](url)` with URLs that hold parentheses («…_(рынок_России)»). The fact-check's claims (and so eval's citation pairs) and the detailed report's reference list use it; changing it changes eval's sampled pairs, so bump `JUDGE` in `eval/run.py`.
 
 **`report.py`**: used by the worker (`section`, `KINDS`, `ANY_ANSWER`, `body`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the web UI (`body`, `appended`, `KINDS`, `ANY_ANSWER`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the bot (`KINDS`, `ANY_ANSWER`) and eval (`body`, through the fact-check's helpers).

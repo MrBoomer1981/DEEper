@@ -19,7 +19,7 @@ PRESETS = {
     "news": ("Новости", "веб · быстро · Flash, без проверки", {"sources": "web", "mode": "quick", "writer": "flash", "factcheck": False}),
 }
 FACTCHECK = {None: "как в режиме", True: "всегда", False: "никогда"}
-FACTCHECK_HINTS = {None: "в подробном и глубоком режимах да, в быстром нет", True: "+1–2 мин и ≈ 1–3 ₽ к отчёту", False: ""}
+FACTCHECK_HINTS = {None: "в подробном и глубоком режимах да, в быстром нет", True: "+1–2\u00a0мин и ≈\u00a01–3\u00a0₽ к отчёту", False: ""}
 
 
 def blocklist_sheet(on_close=None) -> None:

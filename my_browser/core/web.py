@@ -11,8 +11,11 @@ module of core/ui/, imported below.
 
 import hashlib
 import logging
+import mimetypes
 import os
+import re
 import secrets
+from pathlib import Path
 
 from my_browser.common.settings import PORT, REPORTS_DIR, ROOT, configure_logging
 
@@ -20,6 +23,7 @@ REPORTS_DIR.mkdir(exist_ok=True)
 # Read by NiceGUI at import: keep login sessions on the Railway volume across redeploys.
 os.environ.setdefault("NICEGUI_STORAGE_PATH", str(REPORTS_DIR / ".nicegui"))
 
+import nicegui  # noqa: E402
 from fastapi import Request, Response  # noqa: E402
 from fastapi.responses import FileResponse, RedirectResponse  # noqa: E402
 from nicegui import app, ui  # noqa: E402
@@ -42,7 +46,16 @@ def asset_version() -> str:
     return digest.hexdigest()[:10]
 
 
+def icon_font_url() -> str:
+    """NiceGUI's Material Icons font. Icons are ligatures of it, invisible until it loads, and a browser fetches
+    a font only once some text needs it: without a preload every new screen showed its icons a moment late."""
+    css = (Path(nicegui.__file__).parent / "static" / "fonts.css").read_text()
+    found = re.search(r'font-family: "Material Icons";[^}]*?src: url\((fonts/[\w.-]+\.woff2)\)', css)
+    return f"/_nicegui/{nicegui.__version__}/static/{found.group(1)}" if found else ""
+
+
 VERSION = asset_version()
+ICON_FONT = icon_font_url()
 ui.add_head_html(f"""
 <link rel="manifest" href="/static/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -53,10 +66,13 @@ ui.add_head_html(f"""
 <meta name="theme-color" content="#14100E">
 <link rel="preload" href="/static/fonts/Onest.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/Unbounded.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/JetBrainsMono.woff2" as="font" type="font/woff2" crossorigin>
+{f'<link rel="preload" href="{ICON_FONT}" as="font" type="font/woff2" crossorigin>' if ICON_FONT else ''}
 <link rel="stylesheet" href="/static/app.css?v={VERSION}">
 <script defer src="/static/app.js?v={VERSION}"></script>
 """, shared=True)
 # app.css and app.js change their address with every change (?v=); fonts, the mascot and icons hardly ever change.
+mimetypes.add_type("font/woff2", ".woff2")  # the slim Docker image does not know it and served the fonts as octet-stream
 app.add_static_files("/static", ROOT / "static", max_cache_age=7 * 24 * 3600)
 app.include_router(router)
 

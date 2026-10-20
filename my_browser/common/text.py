@@ -37,9 +37,10 @@ def slugify(text: str, max_len: int = 60) -> str:
 
 
 def rub_text(rub: float | None) -> str:
+    """«0,87 ₽»: with a no-break space, so that «₽» never wraps to a line of its own on a narrow screen."""
     if rub is None:
         return "—"
-    return f"{rub:.2f} ₽".replace(".", ",") if rub < 10 else f"{rub:.1f} ₽".replace(".", ",")
+    return f"{rub:.2f}\u00a0₽".replace(".", ",") if rub < 10 else f"{rub:.1f}\u00a0₽".replace(".", ",")
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:

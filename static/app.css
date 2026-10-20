@@ -3,8 +3,10 @@
 @font-face { font-family: 'Onest'; src: url('fonts/Onest.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: 'Unbounded'; src: url('fonts/Unbounded.woff2') format('woff2'); font-weight: 700 900; font-display: swap; }  /* the web needs 700 and 900 only */
 @font-face { font-family: 'JetBrains Mono'; src: url('fonts/JetBrainsMono.woff2') format('woff2'); font-weight: 100 800; font-display: swap; }
-@font-face { font-family: 'Permanent Marker'; src: url('fonts/PermanentMarker.woff2') format('woff2'); font-display: swap; }
-@font-face { font-family: 'Amatic SC'; src: url('fonts/AmaticSC-Bold.woff2') format('woff2'); font-weight: 700; font-display: swap; }
+/* The graffiti stays invisible until its font arrives: in a fallback script font, wider and taller, a marker word
+   overlapped the mascot and its neighbours for a moment. */
+@font-face { font-family: 'Permanent Marker'; src: url('fonts/PermanentMarker.woff2') format('woff2'); font-display: block; }
+@font-face { font-family: 'Amatic SC'; src: url('fonts/AmaticSC-Bold.woff2') format('woff2'); font-weight: 700; font-display: block; }
 
 :root {
   /* бренд AVEN */
@@ -30,6 +32,25 @@ body {
   -webkit-tap-highlight-color: transparent; text-size-adjust: 100%; -webkit-text-size-adjust: 100%;
 }
 a, button, .q-btn, [role="button"] { touch-action: manipulation; }
+
+/* Moving between screens: the old one fades into the new instead of a hard cut (cross-document view
+   transitions: Safari 18.2+, Chrome 126+; older browsers just switch). The bottom navigation stays put. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+}
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .2s; }
+
+/* A tap answers at once: the installed app has no browser chrome, and the next screen or sheet takes a round
+   trip to the server. app.js shows a thin line at the top while the next screen loads (html.nav-pending). */
+.li, .tab, .icon-btn, .ttab, .toc-button, .continue, .more-link, .avatar, .profile-card { transition: opacity .2s ease; }
+.li:not(.disabled):active, .tab:active, .icon-btn:active, .ttab:active, .toc-button:active, .continue:active, .more-link:active,
+.avatar:active, .profile-card:active { opacity: .5; transition: none; }
+/* Safari stops every animation of a page once it starts leaving it, so the line is drawn at a third of the
+   width at once; where animations go on (Chrome) it keeps growing. */
+html.nav-pending body::after { content: ''; position: fixed; z-index: 6000; top: env(safe-area-inset-top); left: 0; right: 0; height: 2px;
+  background: var(--amber); transform: scaleX(.3); transform-origin: left; pointer-events: none;
+  animation: nav-progress 3s cubic-bezier(.08, .6, .3, 1) both; }
+@keyframes nav-progress { from { transform: scaleX(.3) } to { transform: scaleX(.92) } }
 
 /* ---- Quasar под бренд и общее оформление текста отчётов ---- */
 .q-notification { color: var(--paper) !important; font-family: 'Onest', sans-serif; }
@@ -78,7 +99,8 @@ a, button, .q-btn, [role="button"] { touch-action: manipulation; }
 
 /* нижняя навигация: на телефоне снизу, от 1024 px колонкой слева */
 .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2000; display: flex; justify-content: space-around; align-items: center;
-          height: calc(var(--nav-h) + env(safe-area-inset-bottom)); padding: 0 8px env(safe-area-inset-bottom); background: var(--night); }
+          height: calc(var(--nav-h) + env(safe-area-inset-bottom)); padding: 0 8px env(safe-area-inset-bottom); background: var(--night);
+          view-transition-name: tabbar; }
 .tabbar .tab { width: 64px; height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
                color: var(--icon-off); text-decoration: none; border-radius: 14px; }
 .tabbar .tab .q-icon { font-size: 26px; }
@@ -147,7 +169,9 @@ body.graffiti-off .graffiti { display: none !important; }
 .dip-wrap svg { width: 100%; height: auto; overflow: visible; }
 .dip .dip-body  { transform-origin: 0 60px; animation: dip-bob 2.4s ease-in-out infinite; }
 .dip .dip-eyes  { transform-origin: 0 -14px; animation: dip-blink 4.8s infinite; }
-.dip--dig .dip-tool { transform-origin: 34px -18px; animation: dip-dig .9s ease-in-out infinite; }
+/* The shovel and its sticker outline (two layers of the sticker, under and over the body's ring) swing as one;
+   their transform-origin is in the SVG's own coordinates, the top of the handle. */
+.dip--dig .dip-tool, .dip--dig .dip-tool-sticker { transform-origin: 34px -18px; animation: dip-dig .9s ease-in-out infinite; }
 .dip--dig .dip-lamp, .dip--dig .dip-beam { animation: dip-flicker 1.8s infinite; }
 .dip--found .dip-sparkles { transform-box: fill-box; transform-origin: center; animation: dip-twinkle 1.2s ease-in-out infinite; }
 .dip--sleep .dip-zzz { animation: dip-float 2.6s ease-in-out infinite; }
@@ -157,7 +181,10 @@ body.graffiti-off .graffiti { display: none !important; }
 @keyframes dip-flicker { 0%,100% { opacity: 1 } 45% { opacity: .75 } 50% { opacity: .95 } }
 @keyframes dip-twinkle { 0%,100% { opacity: .5; transform: scale(.9) } 50% { opacity: 1; transform: scale(1.1) } }
 @keyframes dip-float   { 0% { transform: translateY(4px); opacity: 0 } 40% { opacity: 1 } 100% { transform: translateY(-6px); opacity: 0 } }
-@media (prefers-reduced-motion: reduce) { .dip * { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) {
+  .dip *, .job-stage, .recent .r0, html.nav-pending body::after { animation: none !important; }
+  .bar > div { transition: none !important; }
+}
 
 /* пустые экраны */
 .empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 18px; padding: 48px 0 24px; }
@@ -240,10 +267,14 @@ body.kb-open .pill { bottom: calc(var(--kb, 0px) + 10px); }
 .job-status { font-size: 16px; color: var(--paper); margin-top: 4px; }
 .job-sub { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--muted); min-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar { height: 2px; background: #2A2420; border-radius: 1px; overflow: hidden; margin-top: 4px; }
-.bar > div { height: 100%; width: 0; background: var(--amber); transition: width .6s ease; }
+.bar > div { height: 100%; background: var(--amber); transform: scaleX(0); transform-origin: left; transition: transform .6s ease; }  /* job.py sets the scale: no layout per frame */
 .recent { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; font-family: 'JetBrains Mono', monospace; font-size: 13px; min-height: 64px; }
 .recent > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent .r0 { color: var(--paper); } .recent .r1 { color: var(--muted); } .recent .r2 { color: #5E564F; }
+.recent .r0 { animation: recent-in .4s ease both; }  /* the newest source slides in; the list is rebuilt when it changes */
+@keyframes recent-in { from { opacity: 0; transform: translateY(-6px) } }
+.job-stage { animation: stage-in .35s ease both; }  /* Дип changes (digging, found, error) with a fade, not a cut */
+@keyframes stage-in { from { opacity: 0; transform: scale(.97) } }
 .more-link { align-self: flex-start; background: none; border: 0; padding: 10px 0; cursor: pointer; color: var(--muted); font: 14px 'Onest', sans-serif;
              text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
 .job-bottom { margin-top: auto; padding-top: 28px; display: flex; flex-direction: column; gap: 10px; }
@@ -274,7 +305,9 @@ body:not(.graffiti-off) .report.main h2:first-of-type { padding-bottom: 12px; ba
 .report sup.cite a { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--amber); text-decoration: none; padding: 0 1px; }
 .report ::selection { background: var(--mark); }
 .end-block { display: flex; flex-direction: column; gap: 10px; margin-top: 36px; padding-top: 22px; border-top: 1px solid var(--hairline); }
-.end-block a[id] { position: relative; top: -80px; }
+/* The end blocks' anchors (#factcheck, #next) stop below the sticky top bar. Not «a[id]»: NiceGUI gives every element
+   an id, and that rule moved the blocks' link rows 80 px up, over the labels and the mascot above them. */
+.end-block .anchor { display: block; scroll-margin-top: calc(env(safe-area-inset-top) + 72px); }
 .next-head { display: flex; align-items: flex-end; justify-content: space-between; }
 .next-dip { display: flex; align-items: center; gap: 0; margin-right: 6px; }
 .next-marker { font-size: 20px; margin: -40px 0 0 -4px; }
@@ -282,6 +315,9 @@ body:not(.graffiti-off) .report.main h2:first-of-type { padding-bottom: 12px; ba
 .li-text.plain { text-decoration: none; color: inherit; }
 .icon-btn.done { color: var(--bordo); pointer-events: none; }
 .ask-pill .pill-input textarea { max-height: 110px; }
+/* Under the pill at the bottom of a report: the text fades out instead of showing below the pill and around its corners. */
+.pill-scrim { position: fixed; z-index: 1850; left: 0; right: 0; bottom: 0; height: calc(env(safe-area-inset-bottom) + 96px);
+              pointer-events: none; background: linear-gradient(to top, var(--night) 58%, rgba(20,16,14,0)); }
 
 /* тулбар выделения */
 .sel-bar { position: fixed; z-index: 3000; display: none; gap: 2px; padding: 4px; border-radius: 999px; background: var(--paper);

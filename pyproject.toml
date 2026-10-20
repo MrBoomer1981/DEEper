@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-core = ["nicegui>=3.18.0"]
+core = ["nicegui>=3.18.0", "markdown2>=2.5"]  # markdown2 comes with NiceGUI; core imports it itself (ui/kit.markdown)
 worker = ["gpt-researcher>=0.16.1", "langchain-mcp-adapters>=0.3.2", "fastapi>=0.143.3", "uvicorn>=0.54.0"]
 search = ["gpt-researcher>=0.16.1", "json-repair>=0.64.0", "fastapi>=0.143.3", "uvicorn>=0.54.0"]
 bot = ["aiogram>=3.31.0"]

@@ -14,6 +14,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlencode, urlparse
 
+import markdown2
 from nicegui import app, ui
 
 from my_browser.common.settings import DEFAULT_SOURCES, DEFAULT_WRITER, ROOT
@@ -135,7 +136,12 @@ def secondary(text: str, on_click=None, icon: str | None = None) -> ui.button:
 
 
 def sheet(title: str | None = None) -> tuple[ui.dialog, ui.element]:
-    """A bottom sheet: (dialog, body); put the content `with body:` and call dialog.open()."""
+    """A bottom sheet: (dialog, body); put the content `with body:` and call dialog.open().
+
+    Every opening builds a new sheet, and closed ones stay in the page until the user leaves it. Deleting a closed
+    sheet is no option: when one sheet opens another («⋯» → «Источники»), deleting the first one re-renders its
+    siblings, and the new sheet vanished.
+    """
     dialog = ui.dialog().props("position=bottom")
     with dialog:
         body = ui.element("div").classes("sheet")
@@ -203,6 +209,21 @@ def text_tabs(options: dict[str, str], value: str, on_change) -> ui.element:
                 ui.label(label)
             button.on("click", lambda key=key: on_change(key))
     return tabs
+
+
+@functools.lru_cache(maxsize=32)
+def _markdown_html(text: str) -> str:
+    return markdown2.markdown(text, extras=["fenced-code-blocks", "tables"])
+
+
+def markdown(text: str) -> ui.html:
+    """Markdown turned into HTML on the server and shown at once, sanitized in the browser (DOMPurify) like ui.markdown.
+
+    ui.markdown renders an empty block and fills it only after fetching its code-highlighting stylesheet, which
+    takes a round trip to the server: on a phone, everything below a report showed up at the top for a moment,
+    overlapping, and then jumped down.
+    """
+    return ui.html(_markdown_html(text)).classes("nicegui-markdown")
 
 
 @functools.cache

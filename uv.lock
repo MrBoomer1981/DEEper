@@ -2899,6 +2899,7 @@ bot = [
     { name = "aiogram" },
 ]
 core = [
+    { name = "markdown2" },
     { name = "nicegui" },
 ]
 search = [
@@ -2922,7 +2923,10 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 bot = [{ name = "aiogram", specifier = ">=3.31.0" }]
-core = [{ name = "nicegui", specifier = ">=3.18.0" }]
+core = [
+    { name = "markdown2", specifier = ">=2.5" },
+    { name = "nicegui", specifier = ">=3.18.0" },
+]
 search = [
     { name = "fastapi", specifier = ">=0.143.3" },
     { name = "gpt-researcher", specifier = ">=0.16.1" },

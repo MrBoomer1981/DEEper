@@ -127,8 +127,8 @@ def job_page(job_id: str) -> RedirectResponse | None:
             detail = "начну, когда закончится текущее исследование"
         pct_row.set_visibility(value is not None and kind in ("running", "done"))
         bar.set_visibility(value is not None and kind in ("running", "done"))
-        pct.set_text(str(value or 0))
-        fill.style(f"width: {value or 0}%")
+        pct.set_text(str(value or 0))  # app.js counts the shown number up to it
+        fill.style(f"transform: scaleX({(value or 0) / 100})")
         status.set_text("Готово" if kind == "done" else ("Остановлено" if kind == "stopped" else text))
         sub.set_text(" · ".join(part for part in (detail, progress.remaining(current, value)) if part) if kind == "running" else
                      (detail if kind == "queued" else ""))

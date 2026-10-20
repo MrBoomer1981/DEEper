@@ -109,7 +109,7 @@ def report_page(report_id: int) -> None:
     def show_answer(sheet_body, item: dict) -> None:
         with sheet_body:
             ui.label(item["q"]).classes("question")
-            ui.markdown(item["a"]).classes("report compact")
+            kit.markdown(item["a"]).classes("report compact")
             if item.get("research"):
                 kit.row(item["research"], "исследовать отдельно", target=kit.follow_up_url(item["research"], "quick", entry.id), accent=True)
             if item.get("cost_rub") is not None:
@@ -220,13 +220,13 @@ def report_page(report_id: int) -> None:
             with ui.link(target=f"/report/{origin.id}").classes("continue linked"):
                 ui.icon("subdirectory_arrow_right")
                 ui.label(f"продолжение отчёта #{origin.id}: {origin.query}").classes("continue-topic")
-        ui.markdown(text).classes("report main")
+        kit.markdown(text).classes("report main")
 
         if checks := appended(markdown, FACTCHECK_TITLE):
             with ui.element("section").classes("end-block"):
-                ui.html('<a id="factcheck"></a>', sanitize=False)
+                ui.html('<a id="factcheck" class="anchor"></a>', sanitize=False)
                 ui.label("Проверка фактов").classes("sheet-label")
-                ui.markdown(checks).classes("report compact")
+                kit.markdown(checks).classes("report compact")
 
         @ui.refreshable
         def next_steps() -> None:
@@ -234,7 +234,7 @@ def report_page(report_id: int) -> None:
             children = library.children(entry)
             related = library.related(entry, exclude={c.id for c in children} | ({origin.id} if origin else set()))
             with ui.element("section").classes("end-block"):
-                ui.html('<a id="next"></a>', sanitize=False)
+                ui.html('<a id="next" class="anchor"></a>', sanitize=False)
                 with ui.element("div").classes("next-head"):
                     ui.label("Что исследовать дальше").classes("sheet-label")
                     with ui.element("div").classes("next-dip"):
@@ -248,7 +248,7 @@ def report_page(report_id: int) -> None:
                                     target=kit.follow_up_url(t["query"], t["mode"], entry.id), lines=3)
                 else:
                     propose_button = kit.secondary("Предложить темы", lambda: propose(propose_button), icon="auto_awesome")
-                    ui.label("модель прочтёт оглавление и выводы · ≈ 0,1 ₽").classes("mono-label")
+                    ui.label("модель прочтёт оглавление и выводы · ≈\u00a00,1\u00a0₽").classes("mono-label")
                 for title, items in (("Продолжения этого отчёта", children), ("Похожие в библиотеке", related)):
                     if items:
                         ui.label(title).classes("sheet-label")
@@ -258,6 +258,7 @@ def report_page(report_id: int) -> None:
 
         next_steps()
 
+    ui.element("div").classes("pill-scrim").props('aria-hidden="true"')
     with ui.element("div").classes("pill bottom ask-pill").props('role="form"'):
         field = ui.textarea(placeholder="Спросить по отчёту") \
             .props('borderless dense dark autogrow rows=1 enterkeyhint=send aria-label="Вопрос по отчёту"').classes("pill-input")

@@ -17,9 +17,10 @@ Core is DEEper's web app (NiceGUI), its API under `/api`, the report library and
   - static files with a 7-day cache and `/files/{id}/{pdf|docx|md}` for downloads;
   - auth: `AuthMiddleware` is active when it listens publicly (`kit.PUBLIC`: `PORT` is set, as on Railway, unless `PUBLIC=0`) or when `APP_PASSWORD` is set; `/api/` is open to it and checks the service token itself;
   - `NICEGUI_STORAGE_PATH` and the storage secret in `reports/` (the volume), so logins survive redeploys;
+  - font preloads: Onest, Unbounded, JetBrains Mono and NiceGUI's Material Icons (`icon_font_url()` reads its file name from NiceGUI's `fonts.css`). A browser fetches a font only once some text needs it, so without the preload every new screen showed its icons and mono labels a moment late. `.woff2` is registered as `font/woff2`, which the slim Docker image did not know;
   - `ui.run(tailwind=False, reconnect_timeout=60)`: every screen is styled by `static/app.css`, and a phone that switched apps for a minute comes back to the same page.
 - `core/ui/`: one module per screen, mobile first (`DESIGN_HANDOFF.md`), with a bottom tab bar «Поиск · Радар · Библиотека · Фокус».
-  - `kit.py`: what the screens share (the shell with the tab bar, bottom sheets, list rows, buttons, the mascot, the graffiti layer, labels such as `MODES`, `MODE_HINTS`, `WRITER_LABELS`) and the user's defaults from «Фокус» (`prefs()`, per browser in `app.storage.user`).
+  - `kit.py`: what the screens share (the shell with the tab bar, bottom sheets, list rows, buttons, the mascot, the graffiti layer, labels such as `MODES`, `MODE_HINTS`, `WRITER_LABELS`) and the user's defaults from «Фокус» (`prefs()`, per browser in `app.storage.user`). `kit.markdown()` turns Markdown into HTML on the server (markdown2) and shows it at once through `ui.html`, sanitized in the browser like `ui.markdown`.
   - `progress.py` turns a job's progress into a percent and a status line. It reads the worker's phase lines through `common/phases.py`, and the number of pages read from gpt-researcher's `Scraped N pages` log lines.
   - `search.py` `/`: the topic pill; «Подробно» opens a sheet with mode, sources, model, fact-check and «Уточнить тему». It takes `topic`, `mode`, `parent` query parameters (follow-up links). The fact-check follows the mode unless «Фокус» or the sheet sets it.
   - `job.py` `/job/{id}`: polls the queue every second; Дип digs, the percent, the last sources; error and interrupted states offer restart. A finished job's page redirects to its report.
@@ -27,7 +28,8 @@ Core is DEEper's web app (NiceGUI), its API under `/api`, the report library and
     - the text only, with a sticky bar: «3 / 9 ▾» contents and «⋯» (files, sources with block buttons, questions, delete);
     - citations become numbered superscripts (`cite()`), and a bordo «?» follows each sentence the fact-check could not confirm (`mark_doubtful()`);
     - selecting text offers «Сохранить», «Спросить», «Глубже» (`app.js` → `emitEvent('deeper_selection')`);
-    - the fact-check block, «Что исследовать дальше», continuations and related reports at the end.
+    - the fact-check block, «Что исследовать дальше», continuations and related reports at the end. Their anchors (`#factcheck`, `#next`) are `a.anchor` with a `scroll-margin-top` that clears the sticky bar;
+    - a scrim under the question pill (`.pill-scrim`): the text fades out below it instead of showing around it.
   - `library.py` `/library`: reports (running ones first), bookmarks, «Слежу» (empty until topic watching exists), search.
   - `focus.py` `/focus`: presets and defaults, the blocklist, graffiti, the profile card.
   - `radar.py` `/radar`: until news and watching exist, the follow-up topics of recent reports that were not researched yet.
@@ -97,6 +99,17 @@ All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats
 - One core process per `REPORTS_DIR`: the queue's write lock is per process (Railway runs one replica).
 - One worker: `hello()` interrupts the running jobs of every other worker id, so a second worker starting would cut off the first one's research. Several workers would need a hello that gives up only the restarted worker's own jobs, leaving the rest to the heartbeat.
 - `web.py` sets `NICEGUI_STORAGE_PATH` before importing NiceGUI, which reads the variable at import. Import NiceGUI only through `core.web` (as `app.py` does), and the screens in `core/ui/` likewise only from `web.py`; otherwise logins live outside the volume and every redeploy logs everyone out.
+- **Motion and the phone** (`static/app.css`, `static/app.js`):
+  - Moving between screens is a cross-document view transition (a 0.2 s fade; Safari 18.2+, Chrome 126+; off with «reduce motion»). The tab bar has `view-transition-name: tabbar`, so it stays in place; such a name must be unique on a page.
+  - A tap answers at once: `:active` dims rows, tabs and icon buttons (iOS applies `:active` only because app.js listens to `touchstart`). While the next screen loads, `html.nav-pending` draws an amber line at the top: on app links, and on server navigations where the browser has the Navigation API; not on downloads, new tabs or `history.replaceState`.
+  - Safari stops every animation of a page once it starts leaving it, so feedback for a navigation must work without one: the line is drawn at a third of the width at once and grows only where animations go on.
+  - Animate `transform` and `opacity` only: the job page's bar is a `scaleX`, the percent counts up in app.js (written into the same text node Vue keeps updating).
+  - A moving part of a mascot carries its own piece of the sticker outline: the shovel's is `.dip-tool-sticker`, in both of the sticker's layers, animated like `.dip-tool`. In one static outline it stayed behind while the shovel swung, a cream blob over the body.
+  - The report's «3 / 9» measures the headings' positions once (and on resize) and compares numbers on scroll; it lands right after a jump across sections.
+- **Never `ui.markdown` on the screens**: it renders an empty block, fetches its code-highlighting stylesheet, and only then the text. On a phone everything below a report showed up at the top for a moment, overlapping, and jumped down (layout shift 0.67 on a slow profile, 0 with `kit.markdown`).
+- **NiceGUI gives every element an `id`** (`c123`): never select by `[id]`. `.end-block a[id]` once moved the end blocks' link rows 80 px up, over the labels and the mascot.
+- **Closed sheets stay in the page** until the user leaves it: deleting one re-renders its siblings, and a sheet opened from it («⋯» → «Источники») vanished.
+- The graffiti fonts (Permanent Marker, Amatic SC) are `font-display: block`: in a fallback script font a marker word, wider and taller, overlapped its neighbours until the font arrived.
 - Styles live in `static/app.css`. Quasar puts its own `!important` color classes (`bg-primary`, `text-white`) in a CSS cascade layer, and an `!important` declaration inside a layer beats one outside it, so app.css cannot override a component's color: give it through props (`color=accent text-color=night`), as `ui/kit.primary()` does. Avoid class names Quasar already uses (`.row`, `.column`, `.col`…): its `.row` wraps flex children.
 - `PORT` also switches on public mode: bind to 0.0.0.0 and require `APP_PASSWORD` (Railway sets `PORT`). `PUBLIC=0` keeps a local copy on another port private. The worker and the bot find core at `CORE_URL`, by default `http://127.0.0.1:$PORT`.
 - `OPEN_PATHS` must keep `/api/` open to the login middleware: the bot and the worker carry the service token, not a login.
