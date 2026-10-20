@@ -1,14 +1,45 @@
 """Detailed (multi-section) report.
 
-Port of GPT Researcher's backend DetailedReport, which is not shipped in the
-pip package: one broad research pass, then the topic is split into subtopics,
-each researched and written as its own section, then stitched together with an
-introduction, table of contents, conclusion and references.
+Port of GPT Researcher's backend DetailedReport, which is not shipped in the pip package: one broad
+research pass, then the topic is split into subtopics, each researched and written as its own section,
+then stitched together with an introduction, table of contents, conclusion and references.
+
+Unlike upstream, the subtopics are researched all at once (that is mostly waiting for the network) while
+the introduction is written; their sections are still written one after another, so that each sees the
+ones before it and does not repeat them. The sub-researchers share one visited_urls set, so no page is
+read twice and the search part's per-domain cap holds across the whole research.
 """
 
+import asyncio
+import copy
+import logging
+
 from gpt_researcher import GPTResearcher
+from gpt_researcher.actions import generate_draft_section_titles
+from gpt_researcher.utils.llm import construct_subtopics
 
 from my_browser.common.text import MARKDOWN_LINK
+
+logger = logging.getLogger(__name__)
+
+# The subtopic list is the report's structure, so the writer model still makes it, with a short answer.
+SUBTOPICS_TOKENS = 2000
+# Draft section titles only find what earlier sections already wrote, so FAST_LLM makes them. On the
+# writer model they cost ≈ 3 ₽ a Pro report, and one such call looped up to its 32k-token limit (≈ 5 ₽, 4 min).
+TITLES_TOKENS, MAX_TITLES = 1000, 8
+
+
+def _limited(cfg, tokens: int, fast: bool = False):
+    """A copy of the run's config whose "smart" calls answer in at most `tokens` tokens, on FAST_LLM if `fast`."""
+    limited = copy.copy(cfg)
+    if fast:
+        limited.smart_llm_model, limited.smart_llm_provider = cfg.fast_llm_model, cfg.fast_llm_provider
+    limited.smart_token_limit = tokens
+    # DeepSeek reads only extra_body.max_tokens (see config.json), which would otherwise allow 32k.
+    limited.llm_kwargs = copy.deepcopy(cfg.llm_kwargs or {})
+    if "max_tokens" in limited.llm_kwargs.get("extra_body", {}):
+        limited.llm_kwargs["extra_body"]["max_tokens"] = tokens
+    return limited
 
 
 class DetailedReport:
@@ -18,29 +49,42 @@ class DetailedReport:
         self.on_progress = on_progress
         self.researcher = GPTResearcher(query=query, report_type="research_report", config_path=config_path)
         self.existing_headers: list[dict] = []
-        self.global_context: list[str] = []
-        self.global_written_sections: list[dict] = []
-        self.global_urls: set[str] = set()
+        self.written_sections: list[dict] = []
         self.references: list[str] = []
 
     async def run(self) -> str:
         self.on_progress("Общий поиск по теме...")
         await self.researcher.conduct_research()
-        self.global_context = self.researcher.context
-        self.global_urls = self.researcher.visited_urls
-
         subtopics = await self._get_subtopics()
-        self.on_progress(f"Разделов: {len(subtopics)}. Пишу введение...")
-        introduction = await self.researcher.write_introduction()
+
+        done = 0
+
+        async def research(task: str) -> tuple[GPTResearcher, list[str]]:
+            nonlocal done
+            researched = await self._research(task)
+            done += 1
+            self.on_progress(f"Исследую разделы: готово {done} из {len(subtopics)}")
+            return researched
+
+        self.on_progress(f"Исследую разделы: готово 0 из {len(subtopics)}")
+        introduction, *results = await asyncio.gather(
+            self.researcher.write_introduction(), *(research(task) for task in subtopics), return_exceptions=True)
+        if isinstance(introduction, BaseException):
+            raise introduction
+        failed = [(task, r) for task, r in zip(subtopics, results) if isinstance(r, BaseException)]
+        for task, error in failed:
+            logger.warning("Subtopic %r failed, its section is left out: %r", task, error)
+        researched = [(task, r) for task, r in zip(subtopics, results) if not isinstance(r, BaseException)]
+        if subtopics and not researched:
+            raise failed[0][1]
 
         body = ""
-        for i, task in enumerate(subtopics, 1):
-            self.on_progress(f"Раздел {i}/{len(subtopics)}: {task}")
-            section = await self._write_subtopic(task)
+        for i, (task, (assistant, titles)) in enumerate(researched, 1):
+            self.on_progress(f"Раздел {i}/{len(researched)}: {task}")
+            section = await self._write(task, assistant, titles)
             if section:
                 body += f"\n\n\n{section}"
 
-        self.researcher.visited_urls.update(self.global_urls)
         self.on_progress("Пишу заключение...")
         toc = self.researcher.table_of_contents(body)
         conclusion = await self.researcher.write_report_conclusion(body)
@@ -57,47 +101,36 @@ class DetailedReport:
         return self.references
 
     async def _get_subtopics(self) -> list[str]:
-        data = await self.researcher.get_subtopics()
+        r = self.researcher
+        data = await construct_subtopics(task=r.query, data=r.context, config=_limited(r.cfg, SUBTOPICS_TOKENS),
+                                         subtopics=r.subtopics, prompt_family=r.prompt_family)
         if not data or not getattr(data, "subtopics", None):
             return []
         return [subtopic.task for subtopic in data.subtopics]
 
-    async def _write_subtopic(self, task: str) -> str:
+    async def _research(self, task: str) -> tuple[GPTResearcher, list[str]]:
+        """A subtopic's own research (it replaces whatever context the researcher had) and its draft titles."""
         assistant = GPTResearcher(
             query=task,
             report_type="subtopic_report",
             config_path=self.config_path,
             parent_query=self.query,
-            visited_urls=self.global_urls,
+            visited_urls=self.researcher.visited_urls,  # one set for all: shared, not copied
             agent=self.researcher.agent,
             role=self.researcher.role,
         )
-        assistant.context = list(set(_as_strings(self.global_context)))
         await assistant.conduct_research()
-
-        draft_titles = await assistant.get_draft_section_titles(task)
-        titles = [h.get("text", "") for h in self.researcher.extract_headers(str(draft_titles))]
-        relevant = await assistant.get_similar_written_contents_by_draft_section_titles(
-            task, titles, self.global_written_sections
+        draft = await generate_draft_section_titles(
+            query=assistant.query, current_subtopic=task, context=assistant.context,
+            role=assistant.cfg.agent_role or assistant.role, config=_limited(assistant.cfg, TITLES_TOKENS, fast=True),
+            cost_callback=assistant.add_costs, prompt_family=assistant.prompt_family,
         )
-        section = await assistant.write_report(
-            existing_headers=self.existing_headers,
-            relevant_written_contents=relevant,
-        )
+        titles = [h.get("text", "") for h in self.researcher.extract_headers("\n".join(draft or []))]
+        return assistant, titles[:MAX_TITLES]
 
-        self.global_written_sections.extend(self.researcher.extract_sections(section))
-        self.global_context = list(set(_as_strings(assistant.context)))
-        self.global_urls.update(assistant.visited_urls)
+    async def _write(self, task: str, assistant: GPTResearcher, titles: list[str]) -> str:
+        relevant = await assistant.get_similar_written_contents_by_draft_section_titles(task, titles, self.written_sections)
+        section = await assistant.write_report(existing_headers=self.existing_headers, relevant_written_contents=relevant)
+        self.written_sections.extend(self.researcher.extract_sections(section))
         self.existing_headers.append({"subtopic task": task, "headers": self.researcher.extract_headers(section)})
         return section
-
-
-def _as_strings(context: list) -> list[str]:
-    """Context items can be dicts (e.g. from MCP); make them hashable strings."""
-    items = []
-    for item in context:
-        if isinstance(item, dict):
-            items.append(f"Title: {item.get('title', 'No title')}\nContent: {item.get('body', item.get('content', ''))}")
-        else:
-            items.append(str(item))
-    return items

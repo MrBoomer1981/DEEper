@@ -7,6 +7,7 @@ checked), never with the clock; where a phase has no counter it stays put. Phase
 import re
 
 SECTION = re.compile(r"^Раздел (\d+)/(\d+)")
+RESEARCHED = re.compile(r"^Исследую разделы: готово (\d+) из (\d+)")  # detailed: subtopics researched at once
 DEPTH = re.compile(r"^Глубина (\d+)/(\d+), запросов (\d+)/(\d+)")
 CHECKING = re.compile(r"^Проверяю факты: (\d+) из (\d+)")
 SCRAPED = re.compile(r"Scraped (\d+) pages")  # gpt-researcher, once per search batch
@@ -38,10 +39,10 @@ def percent(job: dict) -> int | None:
     if mode == "detailed":
         if phase.startswith("Общий поиск"):
             return 4 + round(14 * _reading(job)[0])
-        if phase.startswith("Разделов:"):
-            return 20
+        if m := RESEARCHED.search(phase):
+            return 20 + round(36 * int(m.group(1)) / max(1, int(m.group(2))))
         if m := SECTION.search(phase):
-            return 20 + round(56 * (int(m.group(1)) - 1) / int(m.group(2)))
+            return 56 + round(22 * (int(m.group(1)) - 1) / int(m.group(2)))
         if phase.startswith("Пишу заключение"):
             return 78
     if m := DEPTH.search(phase):
@@ -66,8 +67,8 @@ def status(job: dict) -> tuple[str, str]:
         return "Читаю источники", f"прочитано {read} из {urls}" if urls else ""
     if m := DEPTH.search(phase):
         return f"Копаю вглубь · уровень {m.group(1)} из {m.group(2)}", f"запросов {m.group(3)} из {m.group(4)}"
-    if phase.startswith("Разделов:"):
-        return "Пишу введение", phase.split(".", 1)[0].lower()
+    if m := RESEARCHED.search(phase):
+        return "Исследую разделы", f"готово {m.group(1)} из {m.group(2)}"
     if m := SECTION.search(phase):
         return f"Пишу раздел {m.group(1)} из {m.group(2)}", phase.split(":", 1)[-1].strip()
     if m := CHECKING.search(phase):

@@ -2,7 +2,7 @@
 
 Importing this module patches gpt-researcher in the worker process:
 - every retriever's search() remembers titles and snippets of its results (SEARCH_META), so the
-  search part can rate candidates by more than their URL;
+  search part can rate candidates by more than their URL; arXiv's waits for its turn (PACE);
 - ResearchConductor._get_new_urls (where search results become research sources, and later the
   references) asks the search part which candidates to take (POST /select);
 - Scraper.extract_data_from_url reads every page through the search part (POST /read), which adds
@@ -14,6 +14,8 @@ import contextvars
 import inspect
 import logging
 import os
+import threading
+import time
 from collections import Counter
 
 import gpt_researcher.retrievers as retrievers
@@ -33,6 +35,14 @@ blocked: contextvars.ContextVar[list[str]] = contextvars.ContextVar("blocked_dom
 # url -> {"text", "title"} of every page read, per research; pipeline.research() sets a fresh dict
 read_pages: contextvars.ContextVar[dict | None] = contextvars.ContextVar("read_pages", default=None)
 
+# Seconds between searches of one engine, for this process. arXiv asks for at most one API request every 3 s;
+# its retriever opens a new client for every search, which loses that pause, and searches made at once (the
+# detailed report researches its subtopics in parallel) get HTTP 429. search() runs in a worker thread
+# (asyncio.to_thread), so waiting here does not hold up the event loop.
+PACE = {"ArxivSearch": 3.0}
+_pace_locks = {engine: threading.Lock() for engine in PACE}
+_last_search: dict[str, float] = {}
+
 
 def _remember(results) -> None:
     if not isinstance(results, list):
@@ -45,6 +55,17 @@ def _remember(results) -> None:
             SEARCH_META[readable_url(url)] = {"title": str(r.get("title") or "").strip(), "snippet": str(r.get("body") or "").strip()}
 
 
+def _wait_turn(engine: str) -> None:
+    if engine not in PACE:
+        return
+    with _pace_locks[engine]:  # held while waiting, so this engine's searches start one at a time
+        interval = PACE[engine]
+        wait = _last_search.get(engine, 0.0) + interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_search[engine] = time.monotonic()
+
+
 def _patch_retrievers() -> None:
     for name in dir(retrievers):
         cls = getattr(retrievers, name)
@@ -53,7 +74,8 @@ def _patch_retrievers() -> None:
                 or inspect.iscoroutinefunction(search) or getattr(search, "remembers", False):
             continue
 
-        def remembering(self, *args, _search=search, **kwargs):
+        def remembering(self, *args, _search=search, _engine=name, **kwargs):
+            _wait_turn(_engine)
             results = _search(self, *args, **kwargs)
             _remember(results)
             return results
