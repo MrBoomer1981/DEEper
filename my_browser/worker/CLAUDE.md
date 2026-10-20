@@ -21,7 +21,7 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
   - `followups`: `[{kind, query, why, mode}]`;
   - `factcheck` (only when the job had it): `factcheck.summary()`, i.e. counts by verdict, `accuracy`, `relinked`, `rewritten`, `fixed`, and `doubtful` items `{statement, url, verdict, note, raw}`, where `raw` is the sentence as it stands in the report and core puts its «?» after it; plus `cost_rub` and `seconds`, or `error` when the check failed;
   - `parent`: the parent report's file name without suffix.
-  - Readers: `core/library.py`, `core/service.py`, `core/web.py`, the bot (through core) and `eval/`.
+  - Readers: `core/library.py`, `core/service.py`, the screens in `core/ui/` (report, library, radar), the bot (through core) and `eval/`.
 - The Markdown ends with `factcheck.section()` («Проверка фактов», only when checked) and then `common.report.section(followups)`; `common.report.body()` strips both by their titles. The bot's `_conclusion()` looks for a level-2 «Заключение», «Выводы» or «Conclusion» heading. `suggest._excerpt()` looks for conclusion, limitation and reference headings.
 - Progress: `Progress.snapshot()` matches core's `ProgressRequest`; the job page shows `urls` as `[url, score]` pairs.
 
@@ -85,13 +85,13 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
 
 | Change | Also update |
 |---|---|
-| a field of the report JSON | `core/library.py` (`add`), `core/service.py`, `core/web.py`, the bot, `eval/metrics.py` and `eval/run.py`; reports already on the volume keep the old shape |
-| the shape or kinds of follow-up topics | `common/report.py` (`KINDS`, `section`), the cards in `core/web.py`, the bot's buttons |
+| a field of the report JSON | `core/library.py` (`add`), `core/service.py`, `core/ui/` (`report.py`, `radar.py`), the bot, `eval/metrics.py` and `eval/run.py`; reports already on the volume keep the old shape |
+| the shape or kinds of follow-up topics | `common/report.py` (`KINDS`, `section`), the end of `core/ui/report.py`, the feed in `core/ui/radar.py`, the bot's buttons |
 | the `Added source url to research` line | `runner.SOURCE_LINE`, `eval/metrics.ADDED` |
 | report headings (conclusion, limitations, references) | the bot's `_conclusion()`, the patterns in `suggest.py`, `factcheck.REFERENCES` (eval uses it too) |
-| the fact-check's summary or section | `core/web.py` (the «факты» chip, `mark_doubtful()`, the block), the bot's `_factcheck_line()`, `common/report.VERDICT_TEXT`, eval's `fc_*` columns |
+| the fact-check's summary or section | `core/ui/report.py` (`mark_doubtful()`, the «⋯» row, the block), the bot's `_factcheck_line()`, `common/report.VERDICT_TEXT`, eval's `fc_*` columns |
 | how `factcheck.claims()` cuts sentences | `raw` must still match the report text for core's marks; eval's sampled pairs change, so bump `JUDGE` |
 | a request or response of `api.py` | `core/service.py`, and `core/qa.py` for `/ask` |
-| the progress payload | `ProgressRequest` in `core/api.py`, `core/queue.progress`, the job page in `core/web.py` |
+| the progress payload | `ProgressRequest` in `core/api.py`, `core/queue.progress`, `core/ui/progress.py` (the percent) and `core/ui/job.py` |
 | a mode, source or writer | the table in `core/CLAUDE.md` |
-| how long a mode takes | `core/web.MODE_HINTS`, the bot's `HELP` |
+| how long a mode takes | `core/ui/kit.MODE_HINTS`, the bot's `HELP` |

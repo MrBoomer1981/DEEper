@@ -11,7 +11,7 @@ Guidance for changing `my_browser/bot/`: what the bot expects from core, from Te
   - It must not import `common.costs`, `common.gptr` or `common.auth`: they pull in gpt-researcher and fastapi.
 - **Its own copies of what lives elsewhere**:
   - `MODE_BUTTONS` and `SOURCE_BUTTONS`, whose keys come from `common/settings.py`;
-  - the time estimates in `HELP`, which are also in `core/web.MODE_HINTS`;
+  - the time estimates in `HELP`, which are also in `core/ui/kit.MODE_HINTS`;
   - the conclusion pattern in `_conclusion()`: a level-2 «Заключение», «Выводы» or «Conclusion» heading, as the worker writes it;
   - `_factcheck_line()`, which reads `checked`, `relinked`, `rewritten` and `doubtful` of the report's `factcheck`, like the web's chip.
   - The fact-check toggle sends `factcheck` true, false or nothing (as the mode has it); the status header guesses the mode's default from `FACTCHECK_MODES`, core decides.

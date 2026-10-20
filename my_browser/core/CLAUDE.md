@@ -37,7 +37,8 @@ Guidance for changing `my_browser/core/`: what the other parts expect from core 
 All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats.json`:
 - `library.sqlite`: tables `reports` and `reports_fts` (`library.py`) and `jobs` (`queue.py`), each created on first use; a column added to `jobs` later goes into `ADDED_COLUMNS`, so older databases on the volume get it. `sync()` rebuilds the report tables from the files; the queue cannot be rebuilt, so deleting the database also drops queued and finished jobs.
 - `<date>_<time>_<slug>.{md,json,docx,pdf}` and `<name>.qa.json`. `sync()` indexes only `<date>_*.json` files that are not `.qa.json`, so other JSON in the directory is left alone.
-- `blocked_domains.txt` (eval reads it straight from `reports/`), `.service_token` (when `SERVICE_TOKEN` is unset, every part with the same `REPORTS_DIR` reads it), `.storage_secret` and `.nicegui/` (logins).
+- `blocked_domains.txt` (eval reads it straight from `reports/`), `.service_token` (when `SERVICE_TOKEN` is unset, every part with the same `REPORTS_DIR` reads it), `.storage_secret` and `.nicegui/` (logins, and each browser's «Фокус» settings in `app.storage.user["prefs"]`).
+- `bookmarks.json` (`bookmarks.py`): passages saved from reports. Each keeps the report's file name besides its id, since ids change when the library is rebuilt; deleting a report leaves its bookmarks, shown as «отчёт удалён».
 
 ## Constraints
 
@@ -54,10 +55,10 @@ All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats
 
 | Change | Also update |
 |---|---|
-| a job field or status | the bot (`Status.follow`, `finish`, `notify_interrupted`), the job page in `web.py`, `worker/runner.py` if it sends or reads the field |
+| a job field or status | the bot (`Status.follow`, `finish`, `notify_interrupted`), `ui/job.py` and `ui/progress.py`, the running rows of `ui/library.py`, `worker/runner.py` if it sends or reads the field |
 | an `/api` route or response field | the bot; for `/api/worker/*` also `worker/runner.py` |
 | what the pages read from the report JSON | it is written by `worker/pipeline.render()`; old reports lack newer fields |
-| a mode, source or writer key | `common/settings.py` (also `FACTCHECK_MODES`); `web.py` (`MODES`, `MODE_HINTS`, `WRITER_LABELS`, `WRITER_HINTS`, `WRITER_OF_MODEL`); the bot (`MODE_BUTTONS`, `SOURCE_BUTTONS`, `HELP`); `worker/suggest.FOLLOWUP_MODES` |
+| a mode, source or writer key | `common/settings.py` (also `FACTCHECK_MODES`); `ui/kit.py` (`MODES`, `MODE_NAMES`, `MODE_HINTS`, `SOURCE_LABELS`, `WRITER_LABELS`, `WRITER_HINTS`, `WRITER_OF_MODEL`, `DEFAULT_PREFS`) and the presets in `ui/focus.py`; the bot (`MODE_BUTTONS`, `SOURCE_BUTTONS`, `HELP`); `worker/suggest.FOLLOWUP_MODES` |
 | what the report page shows of the fact-check | it comes from `worker/factcheck.summary()` and `section()`; the bot's `_factcheck_line()` reads the same counts |
-| the time estimates of the modes | `web.MODE_HINTS` and the bot's `HELP` |
+| the time estimates of the modes | `ui/kit.MODE_HINTS` and the bot's `HELP` |
 | report file naming (`Library.store`, `common.text.slugify`) | `REPORT_NAME` in `library.py`; parents are stored by file name |

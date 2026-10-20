@@ -9,7 +9,7 @@ Guidance for changing `my_browser/common/`. This is code shared by the parts, so
   - `.env` is loaded, but real environment variables win;
   - `REPORTS_DIR`: eval sets its own before importing anything from `my_browser`;
   - `WEB_RETRIEVER`, `PORT`, `CORE_URL` (derived from `PORT`), `WORKER_URL`, `SEARCH_URL`.
-- The keys of `SOURCES`, `WRITERS` and `MODES` are repeated as labels in `core/web.py` and the bot. `FACTCHECK_MODES` (modes checked by default) is read by core's service, the web switch, the bot and `research.py`.
+- The keys of `SOURCES`, `WRITERS` and `MODES` are repeated as labels in `core/ui/kit.py` and the bot. `FACTCHECK_MODES` (modes checked by default) is read by core's service, the search screen's sheet (`core/ui/search.py`), the bot and `research.py`.
 - Each entry point calls `configure_logging()`.
 
 **`clients.py`**: used by core (to reach the worker), the worker (core, search) and the bot (core).
