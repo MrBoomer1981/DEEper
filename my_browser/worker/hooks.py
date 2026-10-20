@@ -42,9 +42,11 @@ read_pages: contextvars.ContextVar[dict | None] = contextvars.ContextVar("read_p
 # - arXiv asks for at most one API request every 3 s; its retriever opens a new client for every search, which
 #   loses that pause, and searches at once get HTTP 429;
 # - SearXNG's Google CSE and Yahoo, the only engines that answer well from here, time out under ~16 queries at
-#   once (20.10.2026), which leaves the subtopics nearly without web results. Tavily (Railway) copes and is not paced.
+#   once, which left the subtopics nearly without web results; and Google CSE suspends itself for 3 minutes
+#   («unusual traffic») even at one query a second (20.10.2026). The subtopics wait for arXiv's 3 s turns
+#   anyway, so SearXNG's same pace costs little. Tavily (Railway) copes and is not paced.
 # search() runs in a worker thread (asyncio.to_thread), so waiting here does not hold up the event loop.
-PACE = {"ArxivSearch": 3.0, "SearxSearch": 1.0}
+PACE = {"ArxivSearch": 3.0, "SearxSearch": 3.0}
 # Engines that get no Cyrillic queries. gpt-researcher always searches the research's own query too, which is the
 # user's Russian topic (or a detailed report's Russian subtopic); arXiv answers it with nothing useful, and slowly:
 # 150 s against 5 s for an English query (20.10.2026), which held up every research step that sent one.

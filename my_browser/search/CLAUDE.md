@@ -13,7 +13,7 @@ Guidance for changing `my_browser/search/`: what the worker and eval expect from
   - This is the shape of gpt-researcher's `Scraper.extract_data_from_url`, and it is handed back to gpt-researcher as is.
   - `raw_content` is `None` when nothing could read the page.
   - The worker also keeps every `raw_content` for the fact-check until the research ends (`hooks.read_pages`), so the fallbacks' 150k cap also bounds the worker's memory.
-  - It is called for every page, with a 180 s timeout that covers the fallbacks and Jina's pacing. An error loses only that page.
+  - It is called for every page. `read()` gives the plain fetch 30 s and the fallbacks 45 s (`DIRECT_SECONDS`, `RESCUE_SECONDS`), because a batch of pages waits for its slowest one; the worker's own 180 s timeout applies only when search runs apart (`SEARCH_URL`), since an in-process call never leaves the process. An error loses only that page.
 
 **eval** relies on search's internals:
 - `eval/metrics.py` imports `sources.static_score` for the «authoritative» share. Editing `DOMAIN_SCORES` or `TOP_TIER_HOST` changes that metric, so later runs stop being comparable on it.

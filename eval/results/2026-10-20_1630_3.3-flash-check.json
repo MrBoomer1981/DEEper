@@ -1,0 +1,65 @@
+{
+  "run": {
+    "started": "2026-10-20T16:30:37+03:00",
+    "commit": "fb3ff4e + незакоммиченные правки",
+    "mode": "detailed",
+    "writer": "flash",
+    "sources": "searx,arxiv,openalex",
+    "factcheck": false,
+    "judge": 3,
+    "pairs": 20,
+    "judging_rub": 0.37
+  },
+  "averages": {
+    "words": 8294.0,
+    "seconds": 324.0,
+    "rub": 3.42,
+    "sources": 39.0,
+    "domains": 33.0,
+    "english": 0.718,
+    "authoritative": 0.077,
+    "score3": 0.422,
+    "in_report": 1.0,
+    "linked_paragraphs": 0.88,
+    "failed": 0.193,
+    "rescued": 0.193,
+    "off_topic": 0.128,
+    "citation_accuracy": 0.975,
+    "checked": 20.0
+  },
+  "rows": [
+    {
+      "n": 1,
+      "topic": "твердотельные аккумуляторы: состояние в 2026 году",
+      "report": "2026-10-20_163602_твердотельные-аккумуляторы-состояние-в-2026-году.md",
+      "words": 8294,
+      "seconds": 324,
+      "rub": 3.42,
+      "truncated": 0,
+      "sources": 39,
+      "domains": 33,
+      "top_domain": "troy-technical.com",
+      "top_domain_share": 0.103,
+      "english": 0.718,
+      "authoritative": 0.077,
+      "in_report": 1.0,
+      "linked_paragraphs": 0.88,
+      "attempted": 83,
+      "score3": 0.422,
+      "failed": 0.193,
+      "rescued": 0.193,
+      "rescued_via": {
+        "jina": 9,
+        "abstract": 7
+      },
+      "off_topic": 0.128,
+      "linked_statements": 138,
+      "checked": 20,
+      "citation_accuracy": 0.975,
+      "verdicts": {
+        "SUPPORTED": 19,
+        "PARTIAL": 1
+      }
+    }
+  ]
+}

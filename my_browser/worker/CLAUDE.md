@@ -45,7 +45,7 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
   - `preflight()` does not check the search part. With `SEARCH_URL` set and search down, the report gets written without sources.
 - **gpt-researcher 0.16.1** (locked in `uv.lock`; `pyproject.toml` allows newer versions): the worker patches its internals at import. After an upgrade, re-check:
   - `hooks.py`:
-    - the retriever class name `ArxivSearch` (the key of `PACE`) and that `search()` runs in a worker thread (`asyncio.to_thread`): pacing sleeps there;
+    - the retriever class names `ArxivSearch` and `SearxSearch` (keys of `PACE` and `ENGLISH_ONLY`), each retriever's `query` attribute, and that `search()` runs in a worker thread (`asyncio.to_thread`): pacing sleeps there;
     - retriever classes named `*Search` with a synchronous `search()` that returns dicts with `href`/`url`, `title` and `body`;
     - `ResearchConductor._get_new_urls(self, url_set_input)`, and `self.researcher.visited_urls`, `query`, `parent_query`, `verbose`, `websocket`;
     - `Scraper.extract_data_from_url(self, link, session)`, returning `{url, raw_content, image_urls, title}`;
