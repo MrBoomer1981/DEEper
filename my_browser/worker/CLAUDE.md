@@ -51,7 +51,9 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
     - `stream_output`.
   - `prompts.py`:
     - the literal "You must respond with a list of strings" in `PromptFamily.generate_search_queries_prompt`. The English-first rule is inserted before it; if upstream rewords it, the rule silently disappears.
+    - the five writing prompts that get `CITATION_RULES` (`generate_report_prompt`, `generate_subtopic_report_prompt`, `generate_report_introduction`, `generate_deep_research_prompt`; `generate_report_conclusion` gets `CONCLUSION_RULES`), and upstream's citation lines that `EVERY_CLAIM` and `PLACEMENT` cut out. If upstream rewords those lines, the rules are still appended, but its old instruction (a citation on every claim, at the end of the sentence or paragraph) stays beside them. A new writing prompt upstream starts without our rules.
     - `prompt_family_mapping`, `get_prompt_family`, `query_processing.generate_sub_queries(query, parent_query, report_type, context, cfg, cost_callback, **kwargs)`, `DeepResearchSkill.generate_search_queries(self, query, num_queries)`.
+    - `generate_report` as `skills/writer.py` imports it by name and calls it with keyword arguments including `cfg`; the patch adds the configured `prompt_family`, which `ReportGenerator.write_report()` leaves out. If upstream starts passing it, `setdefault` keeps upstream's; if the call moves elsewhere, the report is written with upstream's prompts again, which shows as citations at the end of paragraphs and the fact-check's not-found count going up.
   - `stemming.py`: `tokenize`, `_TOKEN`, `_STOPWORDS`, `_stem` in `gpt_researcher/context/lexical.py`.
   - `common/costs.py`: `GenericLLMProvider.get_chat_response(self, messages, stream, websocket=None, **kwargs)`, `last_usage_metadata`, `last_response_metadata`.
   - `runner.py`:
@@ -91,6 +93,7 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
 | report headings (conclusion, limitations, references) | the bot's `_conclusion()`, the patterns in `suggest.py`, `factcheck.REFERENCES` (eval uses it too) |
 | the fact-check's summary or section | `core/ui/report.py` (`mark_doubtful()`, the «⋯» row, the block), the bot's `_factcheck_line()`, `common/report.VERDICT_TEXT`, eval's `fc_*` columns |
 | how `factcheck.claims()` cuts sentences | `raw` must still match the report text for core's marks; eval's sampled pairs change, so bump `JUDGE` |
+| the writer's citation rules (`prompts.CITATION_RULES`) | the fact-check checks only sentences with a link, so the rules decide what it sees; measure on a detailed Pro report (`eval/run.py --mode detailed --writer pro --factcheck`), where the fact-check's not-found and partial counts show the effect over all claims |
 | a request or response of `api.py` | `core/service.py`, and `core/qa.py` for `/ask` |
 | the progress payload | `ProgressRequest` in `core/api.py`, `core/queue.progress`, `core/ui/progress.py` (the percent) and `core/ui/job.py` |
 | a mode, source or writer | the table in `core/CLAUDE.md` |

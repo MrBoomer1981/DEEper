@@ -6,7 +6,7 @@
   "SMART_TOKEN_LIMIT": 32000,
 
   "RETRIEVER": "searx,arxiv,openalex",
-  "PROMPT_FAMILY": "english_first",
+  "PROMPT_FAMILY": "deeper",
   "CONTEXT_FILTER": "keyword",
   "MAX_SEARCH_RESULTS_PER_QUERY": 8,
 

@@ -72,7 +72,8 @@ def main() -> None:
     if check and check.get("checked"):
         print(f"Проверка фактов: подтверждено {check['supported']} из {check['checked']}, исправлено "
               f"{check['relinked'] + check['rewritten']}, сомнительных {len(check['doubtful'])} ({rub_text(check['cost_rub'])})")
-    print(f"Отчёт #{entry.id}: {entry.md_path.relative_to(ROOT)} (+ .docx, .pdf, .json рядом)")
+    path = entry.md_path.relative_to(ROOT) if entry.md_path.is_relative_to(ROOT) else entry.md_path  # REPORTS_DIR may be elsewhere
+    print(f"Отчёт #{entry.id}: {path} (+ .docx, .pdf, .json рядом)")
     if followups:
         print("\nЧто исследовать дальше:")
         for topic in followups:
