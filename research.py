@@ -30,7 +30,8 @@ def parse_args() -> argparse.Namespace:
                              "all — всё сразу (по умолчанию)")
     parser.add_argument("--writer", choices=WRITERS, default=DEFAULT_WRITER,
                         help="модель для итогового текста: pro — DeepSeek V4 Pro (лучше, дороже ≈3×), flash — DeepSeek Flash")
-    parser.add_argument("--words", type=int, help="минимальная длина отчёта/раздела в словах (TOTAL_WORDS)")
+    parser.add_argument("--words", type=int, help="минимальная длина быстрого и глубокого отчёта в словах (TOTAL_WORDS); "
+                        "любой отчёт не длиннее 5000 слов, подробный делит их между разделами сам")
     parser.add_argument("--lang", help="язык отчёта, например russian или english (LANGUAGE)")
     parser.add_argument("--factcheck", action=argparse.BooleanOptionalAction,
                         help="сверить утверждения со ссылками с источниками и исправить расхождения "

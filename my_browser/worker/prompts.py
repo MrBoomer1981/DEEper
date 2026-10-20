@@ -8,6 +8,8 @@
 - The writer cites a source only for what that source says. Upstream asks for a citation on every
   substantive claim, at the end of the sentence or paragraph; the fact-check then found the report's own
   conclusions carrying a citation «for show» and facts that no page the research read states (plan 3.13).
+- A report is at most REPORT_WORDS words. Upstream asks for at least TOTAL_WORDS per report, and per
+  section in the detailed report, whose four sections then ran to 7-9 thousand words with Pro writing.
 """
 
 import re
@@ -37,20 +39,53 @@ CONCLUSION_RULES = """Citations. These rules take precedence over anything said 
 - When you restate a specific fact or figure from the report, keep the citation the report gives it (the same link), right after that sentence.
 - Your conclusions, implications and next steps go without citations. Do not add facts or citations that are not in the report."""
 
+# Length, the user's limit (20.10.2026): a whole report, its table of contents and references included,
+# is at most REPORT_WORDS words. The detailed report gives its introduction and conclusion theirs, and its
+# sections share the rest (detailed.section_words()).
+REPORT_WORDS = 5000
+INTRO_WORDS, CONCLUSION_WORDS = 300, 350
+OVERSHOOT = 1.15  # how far above a section's length the writer may go
+SECTION_SUBSECTIONS = 3  # ### parts of a detailed report's section; upstream allows 5, each a line of the contents
+
 # Upstream's citation instructions (gpt-researcher 0.16.1) that the rules above replace. If an upgrade
 # rewords them, the rules are still appended, and the old wording stays beside them.
 EVERY_CLAIM = re.compile(r"^- Every substantive claim, figure or quote MUST carry an in-text citation[^\n]*\n", re.M)
 PLACEMENT = re.compile(r"(?:you must )?use in-text citation references in (\S+) format and make it with markdown hyperlink "
                        r"placed at the end of the sentence or paragraph that references them like this: "
                        r"\(\[in-text citation\]\(url\)\)\.", re.I)
+# A detailed report's section: «about N words» below replaces upstream's minimum of N words.
+MINIMUM_LENGTH = re.compile(r"^- The report should have a minimum length of \d+ words\.\n", re.M)
+
+LENGTH_HEADER = "Length. This rule takes precedence over anything said about length above:"
 
 
-def _citing(upstream, rules: str = CITATION_RULES):
-    """Upstream's writing prompt with our citation rules in place of its own."""
+def report_length(**_) -> str:
+    return (f"{LENGTH_HEADER} the whole report, references included, is at most {REPORT_WORDS} words. "
+            "When the information is richer than that, keep the most important facts and figures and leave the rest out.")
+
+
+def section_length(total_words: int, **_) -> str:
+    return (f"{LENGTH_HEADER} this section is about {total_words} words and never more than {round(total_words * OVERSHOOT)}. "
+            f"It is one of several sections of a report of at most {REPORT_WORDS} words, so keep to the subtopic's "
+            "most important facts and figures.")
+
+
+def intro_length(**_) -> str:
+    return f"{LENGTH_HEADER} the introduction is at most {INTRO_WORDS} words."
+
+
+def conclusion_length(**_) -> str:
+    return f"{LENGTH_HEADER} the conclusion is at most {CONCLUSION_WORDS} words."
+
+
+def _writing(upstream, length, rules: str = CITATION_RULES, **defaults):
+    """Upstream's writing prompt with our citation rules in place of its own, and our length limit."""
     def prompt(*args, **kwargs) -> str:
+        kwargs = {**defaults, **kwargs}
         text = EVERY_CLAIM.sub("", upstream(*args, **kwargs))
         text = PLACEMENT.sub(r"Use in-text citations in \1 format, as markdown hyperlinks like this: ([in-text citation](url)).", text)
-        return f"{text.rstrip()}\n\n{rules}\n"
+        text = MINIMUM_LENGTH.sub("", text)
+        return f"{text.rstrip()}\n\n{rules}\n\n{length(**kwargs)}\n"
     return staticmethod(prompt)
 
 
@@ -63,11 +98,12 @@ class DeeperPromptFamily(prompts.PromptFamily):
         return prompt.replace("You must respond with a list of strings", f"{QUERY_LANGUAGE_RULE}\n\nYou must respond with a list of strings")
 
     # quick mode; detailed mode's sections, introduction and conclusion; deep mode
-    generate_report_prompt = _citing(prompts.PromptFamily.generate_report_prompt)
-    generate_subtopic_report_prompt = _citing(prompts.PromptFamily.generate_subtopic_report_prompt)
-    generate_report_introduction = _citing(prompts.PromptFamily.generate_report_introduction)
-    generate_report_conclusion = _citing(prompts.PromptFamily.generate_report_conclusion, CONCLUSION_RULES)
-    generate_deep_research_prompt = _citing(prompts.PromptFamily.generate_deep_research_prompt)
+    generate_report_prompt = _writing(prompts.PromptFamily.generate_report_prompt, report_length)
+    generate_subtopic_report_prompt = _writing(prompts.PromptFamily.generate_subtopic_report_prompt, section_length,
+                                               max_subsections=SECTION_SUBSECTIONS)
+    generate_report_introduction = _writing(prompts.PromptFamily.generate_report_introduction, intro_length)
+    generate_report_conclusion = _writing(prompts.PromptFamily.generate_report_conclusion, conclusion_length, CONCLUSION_RULES)
+    generate_deep_research_prompt = _writing(prompts.PromptFamily.generate_deep_research_prompt, report_length)
 
 
 prompts.prompt_family_mapping["deeper"] = DeeperPromptFamily

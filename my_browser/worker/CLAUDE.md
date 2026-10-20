@@ -20,9 +20,10 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
   - `deep` is its recursive `deep` report (`DEEP_RESEARCH_*` keys).
   - `detailed` is `worker/detailed.py`, a port of upstream `backend/report_type/detailed_report`, which is **not shipped in the pip package**:
     - One broad research pass first. Then all subtopics are researched at once while the introduction is written (since 20.10.2026; the sub-researchers share one `visited_urls` set).
-    - Their sections, each at least `TOTAL_WORDS` long, are written strictly one after another, so that each sees the ones already written. Then the TOC, conclusion and references are stitched together.
+    - Their sections are written strictly one after another, so that each sees the ones already written. Then the TOC, conclusion and references are stitched together.
+    - The report is at most `prompts.REPORT_WORDS` (5000) words, contents and references included (the user's limit, 20.10.2026). Upstream asked for every section to be at least `TOTAL_WORDS` (1500) long, which made 7–9 thousand words of four sections. The introduction gets at most `INTRO_WORDS`, the conclusion `CONCLUSION_WORDS`, and `section_words()` shares the rest among the sections, less `CONTENTS_WORDS` for the contents and references and room for the writer to go over (`OVERSHOOT`): about 800 words each with four subtopics. A section has at most `SECTION_SUBSECTIONS` (3) `###` parts.
     - The subtopic list comes from the writer model capped at 2,000 tokens. The draft section titles, used only to find what earlier sections wrote, come from FAST_LLM capped at 1,000. `_limited()` puts the caps in `extra_body.max_tokens`, the only cap DeepSeek reads.
-    - With Pro writing it takes about 8–10 minutes, about 6 with Flash (20.10.2026).
+    - With Pro writing it takes about 5–7 minutes (5:05 and 3 674 words on eval topic 1, 20.10.2026, against 9:42 and 7 522 words before the limit), about 5 with Flash.
     - Its `## Источники` list is built from the links cited inline, not from every visited URL. If fewer than 3 links are cited (APA author-date style), it falls back to all visited URLs.
 - `worker/hooks.py` patches gpt-researcher in the worker process:
   - Every `*Search` retriever's `search()` remembers titles and snippets in `SEARCH_META`.
@@ -34,6 +35,7 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
   - The search engines themselves still run inside gpt-researcher here.
 - `worker/prompts.py` registers the `deeper` prompt family (`PROMPT_FAMILY` in `config.json`), which does two things:
   - It makes search queries English-first while the report stays in `LANGUAGE`.
+  - It limits the length in the same five prompts: a quick or deep report is at most `REPORT_WORDS` words (upstream's «at least `TOTAL_WORDS`» stays), a detailed report's section is «about N words and never more than N × `OVERSHOOT`» in place of upstream's minimum, the introduction and the conclusion get their own caps.
   - It gives the writer its citation rules (`CITATION_RULES`, plan 3.13) in all five writing prompts: the quick report, the detailed report's sections, introduction and conclusion, and the deep report.
     - A source is cited only for what it says itself; the report's own comparisons, generalizations and forecasts go without a citation.
     - A fact and its interpretation go in separate sentences, with the citation right after its own sentence rather than at the end of the paragraph.
@@ -143,6 +145,7 @@ uv run ../../research.py "тема" --mode quick --writer flash   # one research
     - the literal "You must respond with a list of strings" in `PromptFamily.generate_search_queries_prompt`. The English-first rule is inserted before it; if upstream rewords it, the rule silently disappears.
     - the five writing prompts that get `CITATION_RULES` (`generate_report_prompt`, `generate_subtopic_report_prompt`, `generate_report_introduction`, `generate_deep_research_prompt`; `generate_report_conclusion` gets `CONCLUSION_RULES`), and upstream's citation lines that `EVERY_CLAIM` and `PLACEMENT` cut out. If upstream rewords those lines, the rules are still appended, but its old instruction (a citation on every claim, at the end of the sentence or paragraph) stays beside them. A new writing prompt upstream starts without our rules.
     - `prompt_family_mapping`, `get_prompt_family`, `query_processing.generate_sub_queries(query, parent_query, report_type, context, cfg, cost_callback, **kwargs)`, `DeepResearchSkill.generate_search_queries(self, query, num_queries)`.
+    - upstream's line «- The report should have a minimum length of N words.» in `generate_subtopic_report_prompt` (`MINIMUM_LENGTH` cuts it; if reworded, upstream's minimum stays beside our «about N words»), the prompt's `max_subsections` argument, and `actions/report_generation.generate_report` passing `cfg.total_words` to it: `detailed.py` sets the section's length there.
     - `generate_report` as `skills/writer.py` imports it by name and calls it with keyword arguments including `cfg`; the patch adds the configured `prompt_family`, which `ReportGenerator.write_report()` leaves out. If upstream starts passing it, `setdefault` keeps upstream's; if the call moves elsewhere, the report is written with upstream's prompts again, which shows as citations at the end of paragraphs and the fact-check's not-found count going up.
   - `stemming.py`: `tokenize`, `_TOKEN`, `_STOPWORDS`, `_stem` in `gpt_researcher/context/lexical.py`.
   - `common/costs.py`: `GenericLLMProvider.get_chat_response(self, messages, stream, websocket=None, **kwargs)`, `last_usage_metadata`, `last_response_metadata`.
@@ -188,6 +191,7 @@ uv run ../../research.py "тема" --mode quick --writer flash   # one research
 | how `factcheck.claims()` cuts sentences | `raw` must still match the report text for core's marks; eval's sampled pairs change, so bump `JUDGE` |
 | the writer's citation rules (`prompts.CITATION_RULES`) | the fact-check checks only sentences with a link, so the rules decide what it sees; measure on a detailed Pro report (`eval/run.py --mode detailed --writer pro --factcheck`), where the fact-check's not-found and partial counts show the effect over all claims |
 | a prompt's wording | `dev/mock_llm.py` if it recognizes that prompt by the phrase you changed |
+| the length limit (`REPORT_WORDS`, `INTRO_WORDS`, `CONCLUSION_WORDS`, `section_words()`) | measure a detailed Pro report (`eval/run.py --topics 1 --mode detailed --writer pro --factcheck`): words, time and cost change together; the length in `README.md`'s modes table, the time hints (`core/ui/kit.MODE_HINTS`, the bot's `HELP`) if the time changes |
 | a request or response of `api.py` | `core/service.py`, and `core/qa.py` for `/ask` |
 | a phase (the progress line) | write it in `common/phases.py`, never as a literal here; a new phase or counter needs its pattern there and a branch in `core/ui/progress.py` (`percent()`, `status()`); the bot shows the line as it is |
 | the progress payload | `ProgressRequest` in `core/api.py`, `core/jobs.progress`, `core/ui/progress.py` (the percent) and `core/ui/job.py` |

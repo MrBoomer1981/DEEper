@@ -8,6 +8,10 @@ Unlike upstream, the subtopics are researched all at once (that is mostly waitin
 the introduction is written; their sections are still written one after another, so that each sees the
 ones before it and does not repeat them. The sub-researchers share one visited_urls set, so no page is
 read twice and the search part's per-domain cap holds across the whole research.
+
+The whole report is at most prompts.REPORT_WORDS words: upstream wanted every section at least
+TOTAL_WORDS long, which made 7-9 thousand words of four sections. Here the sections share what the
+introduction, the conclusion, the contents and the references leave (section_words()).
 """
 
 import asyncio
@@ -20,6 +24,7 @@ from gpt_researcher.utils.llm import construct_subtopics
 
 from my_browser.common import phases
 from my_browser.common.text import MARKDOWN_LINK
+from my_browser.worker.prompts import CONCLUSION_WORDS, INTRO_WORDS, OVERSHOOT, REPORT_WORDS
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,15 @@ SUBTOPICS_TOKENS = 2000
 # Draft section titles only find what earlier sections already wrote, so FAST_LLM makes them. On the
 # writer model they cost ≈ 3 ₽ a Pro report, and one such call looped up to its 32k-token limit (≈ 5 ₽, 4 min).
 TITLES_TOKENS, MAX_TITLES = 1000, 8
+# The table of contents and the reference list count in the report's words too: about 200-400 together.
+CONTENTS_WORDS = 450
+
+
+def section_words(sections: int) -> int:
+    """How long each section is asked to be: what the introduction, conclusion, contents and references leave
+    of the report's limit, shared by the sections, with room for the writer to go over (OVERSHOOT)."""
+    left = REPORT_WORDS - INTRO_WORDS - CONCLUSION_WORDS - CONTENTS_WORDS
+    return max(300, int(left / OVERSHOOT / max(1, sections)) // 50 * 50)
 
 
 def _limited(cfg, tokens: int, fast: bool = False):
@@ -80,8 +94,10 @@ class DetailedReport:
             raise failed[0][1]
 
         body = ""
+        words = section_words(len(researched))
         for i, (task, (assistant, titles)) in enumerate(researched, 1):
             self.on_progress(phases.section(i, len(researched), task))
+            assistant.cfg.total_words = words  # the section prompt's length (prompts.section_length)
             section = await self._write(task, assistant, titles)
             if section:
                 body += f"\n\n\n{section}"
