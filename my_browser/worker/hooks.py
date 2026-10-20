@@ -2,7 +2,7 @@
 
 Importing this module patches gpt-researcher in the worker process:
 - every retriever's search() remembers titles and snippets of its results (SEARCH_META), so the
-  search part can rate candidates by more than their URL; arXiv's waits for its turn (PACE);
+  search part can rate candidates by more than their URL; arXiv and SearXNG wait for their turn (PACE);
 - ResearchConductor._get_new_urls (where search results become research sources, and later the
   references) asks the search part which candidates to take (POST /select);
 - Scraper.extract_data_from_url reads every page through the search part (POST /read), which adds
@@ -35,11 +35,14 @@ blocked: contextvars.ContextVar[list[str]] = contextvars.ContextVar("blocked_dom
 # url -> {"text", "title"} of every page read, per research; pipeline.research() sets a fresh dict
 read_pages: contextvars.ContextVar[dict | None] = contextvars.ContextVar("read_pages", default=None)
 
-# Seconds between searches of one engine, for this process. arXiv asks for at most one API request every 3 s;
-# its retriever opens a new client for every search, which loses that pause, and searches made at once (the
-# detailed report researches its subtopics in parallel) get HTTP 429. search() runs in a worker thread
-# (asyncio.to_thread), so waiting here does not hold up the event loop.
-PACE = {"ArxivSearch": 3.0}
+# Seconds between searches of one engine, for this process. The detailed report researches its subtopics in
+# parallel, and a burst of searches at once breaks two engines:
+# - arXiv asks for at most one API request every 3 s; its retriever opens a new client for every search, which
+#   loses that pause, and searches at once get HTTP 429;
+# - SearXNG's Google CSE and Yahoo, the only engines that answer well from here, time out under ~16 queries at
+#   once (20.10.2026), which leaves the subtopics nearly without web results. Tavily (Railway) copes and is not paced.
+# search() runs in a worker thread (asyncio.to_thread), so waiting here does not hold up the event loop.
+PACE = {"ArxivSearch": 3.0, "SearxSearch": 1.0}
 _pace_locks = {engine: threading.Lock() for engine in PACE}
 _last_search: dict[str, float] = {}
 

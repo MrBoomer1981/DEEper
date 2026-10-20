@@ -42,6 +42,10 @@ EUROPE_PMC_XML = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullT
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
 MIN_CHARS = 500  # less than this is an error page, a cookie wall or a teaser
 MAX_CHARS = 150_000  # a whole book or journal issue would only slow down context compression
+# A batch of pages waits for its slowest one, and one slow page (a big PDF, a stalled server) once held a batch
+# for 4 minutes (20.10.2026). The worker's 180 s timeout for /read does not apply in the all-in-one process,
+# where the call never leaves it. A page past its time counts as failed and goes on to the fallbacks.
+DIRECT_SECONDS, RESCUE_SECONDS = 30, 45
 
 DOI = re.compile(r"\b(10\.\d{4,9}/[^\s?#&]+)", re.I)
 DOI_TAIL = re.compile(r"/(?:full|abstract|pdf|epdf|html|meta|references)$", re.I)
@@ -226,13 +230,19 @@ async def read(url: str) -> dict:
         return await ORIGINAL_EXTRACT(scraper, url, scraper.session)  # upstream rejects and logs it
     result = None
     if not stats.skip_direct(url):
-        result = await ORIGINAL_EXTRACT(scraper, url, scraper.session)
+        try:
+            result = await asyncio.wait_for(ORIGINAL_EXTRACT(scraper, url, scraper.session), DIRECT_SECONDS)
+        except TimeoutError:
+            logger.info("Plain fetch gave up after %d s: %s", DIRECT_SECONDS, url)
         if result and result.get("raw_content"):
             stats.record(url, "direct_ok")
             return result
         stats.record(url, "direct_fail")
     try:
-        found = await rescue(url, scraper)
+        found = await asyncio.wait_for(rescue(url, scraper), RESCUE_SECONDS)
+    except TimeoutError:
+        logger.info("Fallbacks gave up after %d s: %s", RESCUE_SECONDS, url)
+        found = None
     except Exception as e:  # a fallback must never break the research
         logger.warning("Fallback reading failed for %s: %s", url, e)
         found = None

@@ -45,6 +45,7 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
   - `preflight()` does not check the search part. With `SEARCH_URL` set and search down, the report gets written without sources.
 - **gpt-researcher 0.16.1** (locked in `uv.lock`; `pyproject.toml` allows newer versions): the worker patches its internals at import. After an upgrade, re-check:
   - `hooks.py`:
+    - the retriever class name `ArxivSearch` (the key of `PACE`) and that `search()` runs in a worker thread (`asyncio.to_thread`): pacing sleeps there;
     - retriever classes named `*Search` with a synchronous `search()` that returns dicts with `href`/`url`, `title` and `body`;
     - `ResearchConductor._get_new_urls(self, url_set_input)`, and `self.researcher.visited_urls`, `query`, `parent_query`, `verbose`, `websocket`;
     - `Scraper.extract_data_from_url(self, link, session)`, returning `{url, raw_content, image_urls, title}`;
@@ -60,7 +61,9 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
     - the `scraper` logger, whose console handler `gpt_researcher.actions` creates; it is imported first;
     - the wording of the `based on the following queries:` message in `skills/researcher.py`.
   - `detailed.py` is a port of upstream's `backend/report_type/detailed_report`.
-    - It uses `GPTResearcher`'s `conduct_research`, `get_subtopics`, `write_introduction`, `write_report_conclusion`, `get_draft_section_titles`, `get_similar_written_contents_by_draft_section_titles`, `write_report`, `extract_headers`, `extract_sections`, `table_of_contents`, `context`, `visited_urls`, `agent`, `role` and `cfg`, and the constructor's `report_type="subtopic_report"`, `parent_query`, `visited_urls`, `agent` and `role`.
+    - It uses `GPTResearcher`'s `conduct_research`, `write_introduction`, `write_report_conclusion`, `get_similar_written_contents_by_draft_section_titles`, `write_report`, `extract_headers`, `extract_sections`, `table_of_contents`, `query`, `context`, `subtopics`, `visited_urls`, `agent`, `role`, `prompt_family`, `add_costs` and `cfg`, and the constructor's `report_type="subtopic_report"`, `parent_query`, `visited_urls` (kept as the same set object, which the parallel sub-researchers rely on), `agent` and `role`.
+    - It calls `actions.generate_draft_section_titles` and `utils.llm.construct_subtopics` itself with a copy of the config (`_limited()`): they read `smart_llm_model`, `smart_llm_provider`, `smart_token_limit` and `llm_kwargs`, and `_limited()` sets those from `fast_llm_*` and the cap. If upstream changes which fields they read, the cap or the switch to Flash silently stops.
+    - `conduct_research()` replaces the researcher's context with what it found, which is why a sub-researcher needs no context from the others.
     - Compare it with upstream's current version when upgrading.
 - **The fact-check** (`factcheck.py`) runs after `research()` with the run's config file: FAST_LLM judges, the run's `SMART_LLM` (the writer) corrects. It needs `config_path` still alive, so callers run it inside `config_file()`. It changes only sentences it can back with a page the research read; the prompts' wording («a conclusion drawn from what the page says counts», «correct only what differs») is what keeps it from cutting the report's reasoning, which an earlier version did.
 - **Configuration**:
@@ -95,6 +98,7 @@ Guidance for changing `my_browser/worker/`: what the other parts expect from the
 | how `factcheck.claims()` cuts sentences | `raw` must still match the report text for core's marks; eval's sampled pairs change, so bump `JUDGE` |
 | the writer's citation rules (`prompts.CITATION_RULES`) | the fact-check checks only sentences with a link, so the rules decide what it sees; measure on a detailed Pro report (`eval/run.py --mode detailed --writer pro --factcheck`), where the fact-check's not-found and partial counts show the effect over all claims |
 | a request or response of `api.py` | `core/service.py`, and `core/qa.py` for `/ask` |
+| a phase text in `pipeline.py`, `detailed.py`, `factcheck.py` or `runner.py` | `core/ui/progress.py` parses the texts for the percent and the status line; the bot shows them as they are |
 | the progress payload | `ProgressRequest` in `core/api.py`, `core/queue.progress`, `core/ui/progress.py` (the percent) and `core/ui/job.py` |
 | a mode, source or writer | the table in `core/CLAUDE.md` |
 | how long a mode takes | `core/ui/kit.MODE_HINTS`, the bot's `HELP` |
