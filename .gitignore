@@ -8,3 +8,6 @@ logs/
 
 # Local brand reference (positioning, launch plan): not for the public repo
 aven-brandbook.pdf
+
+# Cloudflare Worker (proxy/): wrangler's local state
+.wrangler/

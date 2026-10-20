@@ -136,8 +136,12 @@ The UI and PDFs follow the user's brandbook (`aven-brandbook.pdf`, kept locally 
 ## Deployment
 
 - GitHub: public repo `MrBoomer1981/DEEper`. The pre-2026-10 DEEper code (aiogram + Groq + Tavily) lives in the `legacy` branch. Old history contains a leaked `.env`.
-- Railway deploys `main` with the `Dockerfile` (`railway.json`, a single replica, because two Telegram pollers conflict) and runs `app.py`: all four parts in one process.
-- Railway reads `railway.json` (Config as Code) only until 2026-12-01, and the service's own build setting is still Railpack. Before removing the file, switch the setting: `railway environment edit --service-config DEEPer build.builder DOCKERFILE --service-config DEEPer build.dockerfilePath Dockerfile`. Avoid `railway config migrate` (IaC) here: its generated file omits the volume and the domain, and `apply` deletes resources the file does not declare.
+- Railway deploys `main` with the `Dockerfile` and runs `app.py` (the Dockerfile's `CMD`): all four parts in one process, on a single replica, because two Telegram pollers conflict.
+- The build and deploy settings live in the service's settings on Railway (Settings → Build → Builder = Dockerfile, since 2026-10-20), not in the repo: `railway.json` (Config as Code) was removed because Railway reads it only until 2026-12-01. Avoid `railway config migrate` (Infrastructure as Code) here: its generated file omits the volume and the domain, and `apply` deletes resources the file does not declare.
+- From Russian networks Railway's edge address (69.46.46.46: every `*.up.railway.app` site and railway.com itself) does not open without a VPN, whatever the domain name, so a custom domain on Railway would not help; Cloudflare does open (checked 2026-10-20: `*.workers.dev` yes, `*.pages.dev` no).
+  - `proxy/` is a Cloudflare Worker that passes every request on to the app, NiceGUI's WebSocket included, and rewrites redirects that name the Railway address. The phone opens `deeper.<subdomain>.workers.dev`.
+  - The Railway address is the Worker's `ORIGIN` secret, kept out of this public repo. Deploy from `proxy/` with `npx wrangler deploy` (once before: `npx wrangler login`, `npx wrangler secret put ORIGIN`).
+  - Behind it the app must keep to relative redirects and links: an absolute URL built from the request's host names the Railway address. Per-IP logic (the login rate limit) sees a proxy's address, not the phone's.
 - There is no SearXNG on Railway. `SOURCES["web"]` becomes `tavily` automatically when `TAVILY_API_KEY` is set and `SEARX_URL` is not; `WEB_RETRIEVER` overrides this.
 - Reports, the job queue and read stats persist only if a volume is mounted at `/app/reports`.
 - The container runs in UTC, and on Linux WeasyPrint finds pango without the DYLD workaround.

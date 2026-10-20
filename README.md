@@ -87,7 +87,9 @@ uv run app.py                 # http://127.0.0.1:8501 (порт 8080 занят 
 
 ## Деплой на Railway
 
-Сборка по `Dockerfile` (настройки в `railway.json`; Railway читает его только до 1 декабря 2026, поэтому в настройках сервиса должен стоять сборщик Dockerfile, а не Railpack). SearXNG на Railway не поднимается, поэтому веб-поиск там идёт через Tavily (бесплатно 1000 запросов в месяц): он включается сам, когда задан `TAVILY_API_KEY`, а `SEARX_URL` — нет. Явно выбрать поиск можно переменной `WEB_RETRIEVER`.
+Сборка по `Dockerfile`: в настройках сервиса на Railway выбран сборщик Dockerfile (Settings → Build → Builder), одна реплика. SearXNG на Railway не поднимается, поэтому веб-поиск там идёт через Tavily (бесплатно 1000 запросов в месяц): он включается сам, когда задан `TAVILY_API_KEY`, а `SEARX_URL` — нет. Явно выбрать поиск можно переменной `WEB_RETRIEVER`.
+
+**Из России без VPN.** Адрес Railway (`*.up.railway.app`) из российских сетей не открывается, а Cloudflare открывается. Поэтому перед приложением стоит бесплатный прокси на Cloudflare Workers (`proxy/`): телефон открывает `deeper.<поддомен>.workers.dev`, а прокси передаёт всё приложению на Railway. Выложить его: в папке `proxy/` выполнить `npx wrangler login`, `npx wrangler secret put ORIGIN` (адрес приложения на Railway) и `npx wrangler deploy`.
 
 Переменные сервиса:
 

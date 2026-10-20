@@ -1,0 +1,7 @@
+# Cloudflare Worker: DEEper's address that opens without a VPN in Russia (see worker.js).
+# Deploy from this folder: npx wrangler login (once), npx wrangler secret put ORIGIN (the app's Railway
+# address, once), npx wrangler deploy.
+name = "deeper"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
