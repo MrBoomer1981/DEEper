@@ -7,7 +7,7 @@ from nicegui import ui
 from my_browser.common.report import ANY_ANSWER
 from my_browser.common.settings import FACTCHECK_MODES
 from my_browser.common.text import rub_text
-from my_browser.core import queue, service
+from my_browser.core import jobs, service
 from my_browser.core.library import Library
 from my_browser.core.ui import kit, progress
 
@@ -139,7 +139,7 @@ def search_page(topic: str = "", mode: str = "", parent: int | None = None) -> N
 
             @ui.refreshable
             def going() -> None:
-                running = queue.active()
+                running = jobs.active()
                 if running:
                     job = next((j for j in running if j["status"] == "running"), running[0])
                     value = progress.percent(job)

@@ -15,6 +15,7 @@ from typing import Callable, NamedTuple
 
 import requests
 
+from my_browser.common import phases
 from my_browser.common.report import section
 from my_browser.common.settings import CONFIG_PATH, SOURCES, WRITERS
 
@@ -118,14 +119,14 @@ async def research(query: str, mode: str, config_path: Path, on_progress: Callab
 
     report_type = "deep" if mode == "deep" else "research_report"
     researcher = GPTResearcher(query=query, report_type=report_type, config_path=str(config_path))
-    on_progress("Ищу и читаю источники...")
+    on_progress(phases.READING)
     if mode == "deep":
         await researcher.conduct_research(on_progress=lambda p: on_progress(
-            f"Глубина {p.current_depth}/{p.total_depth}, запросов {p.completed_queries}/{p.total_queries}"
+            phases.depth(p.current_depth, p.total_depth, p.completed_queries, p.total_queries)
         ))
     else:
         await researcher.conduct_research()
-    on_progress("Пишу отчёт...")
+    on_progress(phases.WRITING)
     return Research(await researcher.write_report(), researcher.get_source_urls(), pages)
 
 

@@ -1,6 +1,36 @@
 # CLAUDE.md: bot
 
-Guidance for changing `my_browser/bot/`: what the bot expects from core, from Telegram and from the process it runs in. What the bot does is in the root CLAUDE.md; paths below are relative to `my_browser/` unless they are repo-root files.
+The bot is DEEper in Telegram: it starts researches, follows them and sends the reports, all through core's API. This file covers what it does, how to run and check it alone, and what it expects from core, from Telegram and from the process it runs in. The repository's rules for working in one part are in the root CLAUDE.md. Paths below are relative to `my_browser/` unless they are repo-root files.
+
+## What the bot does
+
+`bot/telegram.py` (aiogram 3) uses core's API only; report files are downloaded from core and sent as `BufferedInputFile`.
+- Access is limited to `TELEGRAM_ALLOWED_USERS` through an outer middleware; anyone else is only told their ID. `TELEGRAM_TOKEN` (the DEEper v1 name) works as a fallback for `TELEGRAM_BOT_TOKEN`.
+- A plain-text message is treated as a topic and answered with mode and source buttons. A research is a job in core; a status message follows it every few seconds and shows the worker's phase line as it is.
+- Replying to any message that contains `#N`, or using `/ask N`, answers from report N's text.
+- Callback data prefixes:
+  - `m:`/`s:` mode and sources;
+  - `k:` the fact-check toggle (as the mode has it → yes → no);
+  - `c:`/`a:` clarification;
+  - `f:<report id>:<index>` a follow-up topic;
+  - `r:<report id>:<qa index>` a question's research topic;
+  - `x:<job id>` restart a failed or interrupted job.
+
+  Topics are read back through the API, because Telegram limits callback data to 64 bytes. `pending` holds the offered topics, keyed by the message that offered them.
+- Every minute it looks for Telegram jobs interrupted by a restart and edits their status message to offer a restart.
+
+## Run and check it alone
+
+```bash
+uv run python -m my_browser.bot       # needs core at CORE_URL and a bot token; exits with a hint without a token
+```
+
+- **Never with the production token.** Railway polls with it, and two pollers break the bot for the user. Local runs keep `TELEGRAM_BOT_TOKEN` and `TELEGRAM_TOKEN` empty.
+- **A live try** needs a test bot. Ask the user to create one at @BotFather and give its token.
+  - Pass that token as `TELEGRAM_BOT_TOKEN` for that run only, with the user's id in `TELEGRAM_ALLOWED_USERS`.
+  - Run it against a local core: the all-in-one app with the mock LLM, as the `check-project` skill starts it, with `CORE_URL` pointing at it.
+- **Without a token**, check the import with only the bot's group, in a throwaway environment: `UV_PROJECT_ENVIRONMENT=<scratch>/venv-bot uv run --no-default-groups --group bot python -c "import my_browser.bot.telegram"`. Check the handlers' logic by reading them against the fields core's API returns (`core/CLAUDE.md`).
+- **The whole project.** Before committing, run the `check-project` skill.
 
 ## What the bot relies on
 
@@ -42,6 +72,6 @@ Guidance for changing `my_browser/bot/`: what the bot expects from core, from Te
 | Change | Also update |
 |---|---|
 | a command | `set_my_commands()` in `start()`, and `HELP` |
-| a callback prefix | keep the data within 64 bytes; the prefix list in the root CLAUDE.md |
-| the fields read from core | check them in `core/service.py` and `core/queue.py`, not only here |
+| a callback prefix | keep the data within 64 bytes; the prefix list above |
+| the fields read from core | check them in `core/service.py` and `core/jobs.py`, not only here |
 | a mode or source | the table in `core/CLAUDE.md` |

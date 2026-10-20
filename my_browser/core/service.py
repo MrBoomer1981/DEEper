@@ -5,7 +5,7 @@ import json
 
 from my_browser.common.clients import call
 from my_browser.common.settings import FACTCHECK_MODES
-from my_browser.core import blocklist, qa, queue
+from my_browser.core import blocklist, jobs, qa
 from my_browser.core.library import Entry, Library
 
 
@@ -22,13 +22,13 @@ def submit(query: str, mode: str, sources: str, writer: str, parent_id: int | No
            origin: str = "web", origin_ref: dict | None = None, factcheck: bool | None = None) -> dict:
     """factcheck None: as the mode has it (FACTCHECK_MODES)."""
     parent = Library().get(parent_id) if parent_id else None
-    return queue.submit(query, mode, sources, writer, parent.base.name if parent else None, origin, origin_ref,
-                        mode in FACTCHECK_MODES if factcheck is None else factcheck)
+    return jobs.submit(query, mode, sources, writer, parent.base.name if parent else None, origin, origin_ref,
+                       mode in FACTCHECK_MODES if factcheck is None else factcheck)
 
 
 def claim(worker: str) -> dict | None:
     """The next queued job for the worker, with the blocklist its source selection needs."""
-    job = queue.claim(worker)
+    job = jobs.claim(worker)
     if job:
         job["blocked"] = blocklist.blocked_domains()
     return job
@@ -37,7 +37,7 @@ def claim(worker: str) -> dict | None:
 def store_result(job_id: str, files_b64: dict[str, str]) -> int:
     files = {suffix: base64.b64decode(data) for suffix, data in files_b64.items()}
     report_id = Library().store(files)
-    queue.finish(job_id, report_id, (json.loads(files[".json"]).get("cost") or {}).get("rub"))
+    jobs.finish(job_id, report_id, (json.loads(files[".json"]).get("cost") or {}).get("rub"))
     return report_id
 
 

@@ -9,7 +9,7 @@ import re
 from nicegui import ui
 
 from my_browser.common.text import plural
-from my_browser.core import bookmarks, queue
+from my_browser.core import bookmarks, jobs
 from my_browser.core.library import Library
 from my_browser.core.ui import kit, progress
 
@@ -42,7 +42,7 @@ def library_page(tab: str = "reports", q: str = "") -> None:
     def reports(q: str = "") -> None:
         library = Library()
         found = library.search(q, 40) if q else [(e, "") for e in library.recent(200)]
-        running = [] if q else queue.active()
+        running = [] if q else jobs.active()
         if not found and not running:
             with ui.element("div").classes("empty"):
                 kit.mascot("hello", 110)

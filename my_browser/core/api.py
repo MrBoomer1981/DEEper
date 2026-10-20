@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from my_browser.common.auth import require_token
 from my_browser.common.settings import DEFAULT_SOURCES, DEFAULT_WRITER
-from my_browser.core import blocklist, queue, service
+from my_browser.core import blocklist, jobs, service
 from my_browser.core.library import Entry, Library
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
@@ -82,29 +82,29 @@ def create_job(request: JobRequest) -> dict:
 @router.get("/jobs")
 def list_jobs(status: str = "active", origin: str = "telegram") -> list[dict]:
     """Active jobs, or interrupted ones from `origin` nobody has been told about yet."""
-    return queue.interrupted(origin) if status == "interrupted" else queue.active()
+    return jobs.interrupted(origin) if status == "interrupted" else jobs.active()
 
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
-    return _job(queue.get(job_id))
+    return _job(jobs.get(job_id))
 
 
 @router.post("/jobs/{job_id}/restart")
 def restart_job(job_id: str) -> dict:
-    return _job(queue.restart(job_id))
+    return _job(jobs.restart(job_id))
 
 
 @router.post("/jobs/{job_id}/notified")
 def job_notified(job_id: str) -> dict:
-    queue.mark_notified(job_id)
+    jobs.mark_notified(job_id)
     return {"ok": True}
 
 
 # the worker's side of the queue
 @router.post("/worker/hello")
 def worker_hello(request: WorkerRequest) -> dict:
-    queue.hello(request.worker)
+    jobs.hello(request.worker)
     return {"ok": True}
 
 
@@ -115,7 +115,7 @@ def worker_claim(request: WorkerRequest):
 
 @router.post("/worker/jobs/{job_id}/progress")
 def worker_progress(job_id: str, request: ProgressRequest) -> dict:
-    queue.progress(job_id, request.worker, request.model_dump())
+    jobs.progress(job_id, request.worker, request.model_dump())
     return {"ok": True}
 
 
@@ -126,7 +126,7 @@ def worker_result(job_id: str, request: ResultRequest) -> dict:
 
 @router.post("/worker/jobs/{job_id}/error")
 def worker_error(job_id: str, request: ErrorRequest) -> dict:
-    queue.fail(job_id, request.error)
+    jobs.fail(job_id, request.error)
     return {"ok": True}
 
 

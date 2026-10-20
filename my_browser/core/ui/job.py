@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse
 from nicegui import ui
 
 from my_browser.common.text import rub_text
-from my_browser.core import queue
+from my_browser.core import jobs
 from my_browser.core.library import Library
 from my_browser.core.ui import kit, progress
 
@@ -17,7 +17,7 @@ def _kind(job: dict) -> str:
 
 @ui.page("/job/{job_id}")
 def job_page(job_id: str) -> RedirectResponse | None:
-    job = queue.get(job_id)
+    job = jobs.get(job_id)
     if job and job["status"] == "done":
         return RedirectResponse(f"/report/{job['report_id']}")
     kit.shell("Исследование")
@@ -34,11 +34,11 @@ def job_page(job_id: str) -> RedirectResponse | None:
         state = {"kind": None, "sources": None, "job": job}
 
         def restart() -> None:
-            queue.restart(job_id)
+            jobs.restart(job_id)
             ui.navigate.to(f"/job/{job_id}")
 
         def details() -> None:
-            current = queue.get(job_id) or state["job"]
+            current = jobs.get(job_id) or state["job"]
             dialog, body = kit.sheet("Подробнее")
             with body:
                 facts = [kit.MODE_NAMES.get(current["mode"], current["mode"]), kit.SOURCE_LABELS.get(current["sources"], current["sources"]).lower(),
@@ -111,7 +111,7 @@ def job_page(job_id: str) -> RedirectResponse | None:
             ui.label("Можно закрыть — отчёт появится в Библиотеке").classes("job-caption")
 
     def update() -> None:
-        current = queue.get(job_id)
+        current = jobs.get(job_id)
         if current is None:
             timer.deactivate()
             return
@@ -123,7 +123,7 @@ def job_page(job_id: str) -> RedirectResponse | None:
         value = progress.percent(current)
         text, detail = progress.status(current)
         if kind == "queued":
-            text = f"В очереди, ты {progress.position(current, queue.active())}-й"
+            text = f"В очереди, ты {progress.position(current, jobs.active())}-й"
             detail = "начну, когда закончится текущее исследование"
         pct_row.set_visibility(value is not None and kind in ("running", "done"))
         bar.set_visibility(value is not None and kind in ("running", "done"))

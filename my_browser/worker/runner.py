@@ -19,7 +19,7 @@ from collections import deque
 
 import gpt_researcher.actions  # noqa: F401  creates the "scraper" logger's console handler first
 
-from my_browser.common import costs
+from my_browser.common import costs, phases
 from my_browser.common.clients import call_core
 from my_browser.worker import factcheck, hooks, suggest
 from my_browser.worker.pipeline import PreflightError, config_file, preflight, render, research, run_settings
@@ -38,7 +38,7 @@ class Progress(logging.Handler):
 
     def __init__(self) -> None:
         super().__init__()
-        self.phase = "Проверяю DeepSeek и поиск..."
+        self.phase = phases.PREFLIGHT
         self.queries: list[str] = []
         self.urls: list[list[str]] = []  # [url, score like "3/3"]
         self.log: deque = deque(maxlen=200)
@@ -113,9 +113,9 @@ def execute(job: dict) -> None:
             if job.get("factcheck"):
                 markdown, check = asyncio.run(factcheck.run(markdown, result.pages, path, on_progress=progress.set_phase))
         seconds = time.monotonic() - started
-        progress.set_phase("Подбираю, что исследовать дальше...")
+        progress.set_phase(phases.FOLLOWUPS)
         followups = asyncio.run(suggest.followups(job["query"], markdown))
-        progress.set_phase("Собираю PDF и DOCX...")
+        progress.set_phase(phases.FILES)
         files = render(job["query"], job["mode"], markdown, result.sources, seconds, settings, cost=meter.summary(),
                        followups=followups, parent=job.get("parent"), factcheck=check)
         _hand_in(job["id"], files)

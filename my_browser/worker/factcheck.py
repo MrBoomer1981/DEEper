@@ -24,7 +24,7 @@ from collections import Counter
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from my_browser.common import costs
+from my_browser.common import costs, phases
 from my_browser.common.report import FACTCHECK_TITLE, VERDICT_TEXT, body
 from my_browser.common.text import MARKDOWN_LINK, host, plural, readable_url
 from my_browser.worker.stemming import tokenize
@@ -386,18 +386,22 @@ async def _check(markdown: str, pages: dict[str, dict], cfg, progress) -> tuple[
         found = [claim for i, claim in enumerate(found) if i in keep]
     if not found:
         return markdown, []
-    progress(f"Проверяю факты: {len(found)} {plural(len(found), 'утверждение', 'утверждения', 'утверждений')} со ссылками...")
+    progress(phases.checking(0, len(found)))
     passages = Passages({url: page.get("text") or "" for url, page in pages.items()})
     titles = {url: page.get("title") or "" for url, page in pages.items()}
     translations = await translate([c.statement for c in found], cfg)
     queries = {id(c): Passages.query(c.statement, t) for c, t in zip(found, translations)}
     limit = asyncio.Semaphore(JUDGING)
+    judged = 0  # claims with a verdict, for the job page's counter
 
     async def check(url: str, group: list[Claim], chunks: set[int]) -> None:
+        nonlocal judged
         async with limit:
             results = await judge(cfg, url, passages.texts(url, chunks), group)
         for claim, (verdict, note) in zip(group, results):
             claim.verdict, claim.note = verdict, note
+        judged += len(group)
+        progress(phases.checking(judged, len(found)))
 
     by_page: dict[str, list] = {}
     for claim in found:
@@ -405,6 +409,7 @@ async def _check(markdown: str, pages: dict[str, dict], cfg, progress) -> tuple[
             by_page.setdefault(page, []).append((claim, passages.best(page, queries[id(claim)])))
         else:
             claim.verdict = "UNREAD"
+            judged += 1
     await asyncio.gather(*(check(url, group, chunks) for url, items in by_page.items() for group, chunks in batches(items)))
 
     async def look_elsewhere(claim: Claim) -> None:
@@ -420,7 +425,7 @@ async def _check(markdown: str, pages: dict[str, dict], cfg, progress) -> tuple[
 
     unsupported = [c for c in found if c.verdict in ("MISMATCH", "CONTRADICTED", "NOT_FOUND", "NO_TEXT", "UNREAD")]
     if unsupported:
-        progress(f"Ищу подтверждение в других источниках: {len(unsupported)}...")
+        progress(phases.looking(len(unsupported)))
         await asyncio.gather(*(look_elsewhere(c) for c in unsupported))
 
     edited: dict[str, str] = {}  # sentence as written -> as fixed
@@ -434,7 +439,7 @@ async def _check(markdown: str, pages: dict[str, dict], cfg, progress) -> tuple[
         if not claim.fix and claim.verdict in FIXABLE and claim.raw not in to_rewrite:
             to_rewrite[claim.raw] = claim
     if to_rewrite:
-        progress(f"Исправляю {len(to_rewrite)} {plural(len(to_rewrite), 'предложение', 'предложения', 'предложений')} по источникам...")
+        progress(phases.fixing(len(to_rewrite)))
         writing = asyncio.Semaphore(REWRITING)
 
         async def fix(raw: str, claim: Claim) -> None:

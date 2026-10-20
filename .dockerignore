@@ -7,3 +7,7 @@ logs/
 __pycache__/
 *.log
 eval/
+dev/
+proxy/
+**/.claude/
+aven-brandbook.pdf

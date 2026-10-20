@@ -1,6 +1,34 @@
 # CLAUDE.md: common
 
-Guidance for changing `my_browser/common/`. This is code shared by the parts, so every change here changes several of them at once. What lives here is in the root CLAUDE.md; paths below are relative to `my_browser/` unless they are repo-root files.
+`my_browser/common/` is the code every part shares, so every change here changes several of them at once. This file covers what lives here, who relies on what, and how to check a change. The repository's rules for working in one part are in the root CLAUDE.md. Paths below are relative to `my_browser/` unless they are repo-root files.
+
+## What lives here
+
+- `settings.py`:
+  - paths: `ROOT`, `CONFIG_PATH`, `REPORTS_DIR`;
+  - research options: `SOURCES`, `WRITERS`, `MODES`, `FACTCHECK_MODES`;
+  - how the parts find each other: `PORT`, `CORE_URL`, `WORKER_URL`, `SEARCH_URL`, `service_token()`;
+  - `configure_logging()`, which quiets httpx because the job loop polls core every few seconds.
+- `clients.py`: `call(part, method, path)` and the blocking `call_core()`, in-process or over HTTP (see the root CLAUDE.md).
+- `auth.py`: `require_token`, the service token check of the parts' APIs.
+- `costs.py` meters real cost.
+  - It wraps `GenericLLMProvider.get_chat_response` and adds usage tokens to the `Meter` in the `costs.current` ContextVar. The job loop sets it per research; `costs.metered()` isolates a single call (a question, a clarification, search's rating, which is returned as usage and merged into the job's meter).
+  - DeepSeek prices (peak 01–04 and 06–10 UTC on weekdays, half price otherwise) and the CBR USD/RUB rate (cached 12 h; `USD_RUB` overrides) go into `cost` in each report's JSON and into `cost_rub` per Q&A. The UI and the bot show them.
+  - Streamed calls report usage only because `LLM_KWARGS.stream_usage` is true.
+  - `finish_reason == "length"` is logged and counted as `truncated_calls`.
+- `text.py`: `host`, `readable_url`, `slugify`, `rub_text`, `plural`, `MARKDOWN_LINK`.
+  - `readable_url` decodes percent-encoded Cyrillic and keeps ASCII escapes. Encoded slugs cost 3–4 tokens per letter, and they made long reports hit the output cap mid-reference (16k back then, now 32k).
+- `report.py`: the sections appended to a report, «Проверка фактов» and «Что исследовать дальше», with the verdict wording.
+- `phases.py`: a running job's phase, the line in which the worker says what it is doing. The worker writes it and core's job page parses it, both from this module.
+- `gptr.py`: gpt-researcher's unpatched `Scraper.extract_data_from_url`, captured before the worker patches it, so that search can still fetch pages in the same process.
+
+## Run and check
+
+Nothing here runs on its own. Check a change through the parts:
+- The `check-project` skill imports every module and runs one research end to end, through the queue, the worker and search.
+- When you change what existing code does, also check each user listed below, with the commands in its folder's CLAUDE.md («Run and check it alone»).
+
+Adding a function, a constant or an optional argument is safe. Renaming or removing one, or changing what it returns, changes every part that uses it: update them in the same commit.
 
 ## Who relies on what
 
@@ -11,6 +39,7 @@ Guidance for changing `my_browser/common/`. This is code shared by the parts, so
   - `WEB_RETRIEVER`, `PORT`, `CORE_URL` (derived from `PORT`), `WORKER_URL`, `SEARCH_URL`.
 - The keys of `SOURCES`, `WRITERS` and `MODES` are repeated as labels in `core/ui/kit.py` and the bot. `FACTCHECK_MODES` (modes checked by default) is read by core's service, the search screen's sheet (`core/ui/search.py`), the bot and `research.py`.
 - Each entry point calls `configure_logging()`.
+- `PORT` also makes core public (`core/ui/kit.PUBLIC`, unless `PUBLIC=0`).
 
 **`clients.py`**: used by core (to reach the worker), the worker (core, search) and the bot (core).
 - `call()` raises on 4xx and 5xx, and callers rely on it: the bot treats a 404 as "no such report".
@@ -31,7 +60,7 @@ Guidance for changing `my_browser/common/`. This is code shared by the parts, so
 - `host()` (core's blocklist, search, the worker's hooks, eval) is the domain key everywhere: blocklist entries, per-domain caps and tiers, `read_stats.json`, eval's metrics. Changing its normalization, for example keeping `www.`, makes existing blocklist entries and stats silently stop matching.
 - `readable_url()` (the worker's hooks) produces the keys of `SEARCH_META` and `visited_urls`.
 - `slugify()` (core's library) names new report files only; old names stay valid.
-- `rub_text()` is used by the web UI, the bot and `research.py`; `plural()` by the web UI and the worker's fact-check section.
+- `rub_text()` is used by the web UI, the bot and `research.py`; `plural()` by the web UI, `phases.py` and the worker's fact-check section.
 - `MARKDOWN_LINK` finds `[anchor](url)` with URLs that hold parentheses («…_(рынок_России)»). The fact-check's claims (and so eval's citation pairs) and the detailed report's reference list use it; changing it changes eval's sampled pairs, so bump `JUDGE` in `eval/run.py`.
 
 **`report.py`**: used by the worker (`section`, `KINDS`, `ANY_ANSWER`, `body`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the web UI (`body`, `appended`, `KINDS`, `ANY_ANSWER`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the bot (`KINDS`, `ANY_ANSWER`) and eval (`body`, through the fact-check's helpers).
@@ -39,6 +68,14 @@ Guidance for changing `my_browser/common/`. This is code shared by the parts, so
 - `VERDICT_TEXT` keys are the lower-case verdicts the worker writes into `factcheck.doubtful`.
 - The `KINDS` keys are the `kind` values the follow-ups prompt asks for and `suggest.followups()` accepts.
 - `ANY_ANSWER` is dropped from the model's options and added back by both UIs.
+
+**`phases.py`**:
+- Writers: the worker (`runner.py`, `pipeline.py`, `detailed.py`, `factcheck.py`).
+- Reader: core's `ui/progress.py`, which turns a line into the job page's percent and status (`percent()`, `status()`).
+- The bot sends the line to the chat as it is, and `research.py` prints it.
+- A phase with a counter has its pattern right under the function that writes it; change both together.
+- A line core cannot read only loses its percent: nothing fails, so check a changed phase through `percent()` and `status()`.
+- Core's own queue states («В очереди», «Прервано», «Готово», «Остановлено») are not phases of the worker; they live in `core/jobs.py`.
 
 **`gptr.py`**: used by the worker's hooks and search's reader.
 - It must be imported before anything patches `Scraper.extract_data_from_url`; `worker/hooks.py` imports it first.
@@ -48,4 +85,4 @@ Guidance for changing `my_browser/common/`. This is code shared by the parts, so
 
 - `[project]` in `pyproject.toml` holds only httpx and python-dotenv, which every part installs.
 - `costs.py` and `gptr.py` import gpt-researcher, and `auth.py` imports fastapi. Only the parts that have those packages import these modules: the worker and search, plus core, which gets fastapi with NiceGUI.
-- The bot uses only `clients`, `report`, `settings` and `text`, so a bot-only install stays small. Keep these four free of heavy imports.
+- The bot uses only `clients`, `report`, `settings` and `text`, so a bot-only install stays small. Keep these four free of heavy imports, and `phases` too (core and the worker import it, and it imports only `text`).

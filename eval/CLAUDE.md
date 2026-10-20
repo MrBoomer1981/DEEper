@@ -1,0 +1,51 @@
+# CLAUDE.md: eval
+
+`eval/` measures research quality on a fixed set of topics (`topics.txt`). It is the project's measurement harness, not a test suite: the user decided against tests while the project is in active development and kept eval. This file covers what it measures, how to run it, and what it relies on in the parts. The repository's rules for working in one part are in the root CLAUDE.md. Paths below are relative to the repository root.
+
+## What eval does
+
+- `eval/run.py` runs each topic through `pipeline.research()` (search in-process) with `REPORTS_DIR=eval/reports`, a library of its own, and the app's blocklist (`reports/blocked_domains.txt`).
+- `eval/metrics.py` computes source and citation stats from the saved report and from the captured log lines of the `scraper`, `gpt_researcher.scraper.scraper` and `my_browser.search.reader` loggers (accepted sources with scores, fetch failures, rescues).
+- Two FAST_LLM judges, billed apart from the reports:
+  - Off-topic sources, by URL and title. SearXNG results carry no titles, so the snippet stands in.
+  - FACT-style citation accuracy:
+    - statement→link pairs (`factcheck.claims()`) are sampled with a per-topic seed, and the page is re-fetched;
+    - the 4 chunks found by `factcheck.Passages` for the statement and its English translation are judged, with the sentence before it as context.
+  - The current citation judge is judge 3 (`JUDGE` in `run.py`; 19.10.2026). Judge 1 matched chunks by numbers, Latin names and stems only, so Russian statements got the wrong chunks of English pages. It read 71% where the newer judges read about 90% on the same reports (`--rejudge`).
+- `--factcheck` runs the fact-check after each research and judges the report before and after its fixes. The two judges are alike, so the gain it shows is an upper bound.
+- Results go to `eval/results/<date>_<label>.md|json`, each next to the averages of the last run made the same way (same mode, writer, sources, fact-check and judge). In detailed mode the report's source list is its cited links (`DetailedReport.source_urls()`), so `in_report` is 100% there by construction.
+
+## Run it
+
+```bash
+uv run run.py                             # every topic: quick reports, Flash writes the text (≈10 ₽)
+uv run run.py --topics 1,4 --label exa    # a subset, named; --mode/--writer/--sources/--pairs as in research.py
+uv run run.py --topics 1 --mode detailed --writer pro   # one detailed Pro report, ≈12 ₽
+uv run run.py --factcheck                 # with the fact-check: each report judged before and after its fixes
+uv run run.py --rejudge 2026-10-18_2327_3.1-reader      # a past run's reports judged again by the current judge
+```
+
+- **Cost.** A run spends real money on DeepSeek: the reports plus the judges. Tell the user what a run will cost and ask before starting it; the whole budget is about 300 ₽ a month.
+- **Timing.** Compare runs made off-peak. DeepSeek doubles its price 01–04 and 06–10 UTC on weekdays, and its speed changes over the day too.
+- **One run at a time.** Runs share `eval/reports/`, with its library and `read_stats.json`.
+- **Labels.** Name what changed in `--label`, and read the numbers against the last run made the same way, which the results file prints beside its own.
+- **What gets committed.** The results (`eval/results/*.md|json`) are the record behind the numbers in `plan.md`; commit them. `eval/reports/` is gitignored.
+- **Web sources** need the local SearXNG (`docker compose up -d`).
+- **Checking the harness itself.** Use the mock LLM's environment (`dev/mock_llm.py`): every step runs for free, though the numbers then mean nothing.
+
+## What eval relies on
+
+eval imports the parts' internals in its own process, so a change there can change its numbers without failing anything:
+- **worker**:
+  - `pipeline` (`run_settings`, `config_file`, `preflight`, `research`, `render`);
+  - `factcheck.run`, and for the citation judge `claims`, `Claim`, `Passages`, `translate`, plus `LINK`, `text_and_references` and `units` in `metrics.py`;
+  - `hooks.blocked` and `hooks.SEARCH_META` (titles for the off-topic judge);
+  - `suggest.fast` and `suggest.json_list` (the judges);
+  - the `Added source url to research (s/3): url` log line (`metrics.ADDED`).
+- **search**:
+  - `sources.static_score`, for the «authoritative» share;
+  - the reader's INFO lines `Read via <how>: <url>` and `Unreadable after fallbacks: <url>` («Спасено», «Не скачалось»), and gpt-researcher's fetch-failure warnings. Search must run in-process: no `SEARCH_URL`.
+- **core**: `library.Library`, which stores eval's reports in its own library.
+- **common**: `costs` (the meter, `is_peak`), `settings` (`MODES`, `ROOT`, `SOURCES`, `WRITERS`), `text.host`.
+
+When the citation judge's inputs change (`factcheck.claims`, `Passages`, `translate`, `common.text.MARKDOWN_LINK`), bump `JUDGE` and rejudge the last run (`--rejudge`) so that the numbers stay comparable.

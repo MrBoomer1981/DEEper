@@ -18,6 +18,7 @@ from gpt_researcher import GPTResearcher
 from gpt_researcher.actions import generate_draft_section_titles
 from gpt_researcher.utils.llm import construct_subtopics
 
+from my_browser.common import phases
 from my_browser.common.text import MARKDOWN_LINK
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ class DetailedReport:
         self.references: list[str] = []
 
     async def run(self) -> str:
-        self.on_progress("Общий поиск по теме...")
+        self.on_progress(phases.BROAD_SEARCH)
         await self.researcher.conduct_research()
         subtopics = await self._get_subtopics()
 
@@ -63,10 +64,10 @@ class DetailedReport:
             nonlocal done
             researched = await self._research(task)
             done += 1
-            self.on_progress(f"Исследую разделы: готово {done} из {len(subtopics)}")
+            self.on_progress(phases.researched(done, len(subtopics)))
             return researched
 
-        self.on_progress(f"Исследую разделы: готово 0 из {len(subtopics)}")
+        self.on_progress(phases.researched(0, len(subtopics)))
         introduction, *results = await asyncio.gather(
             self.researcher.write_introduction(), *(research(task) for task in subtopics), return_exceptions=True)
         if isinstance(introduction, BaseException):
@@ -80,12 +81,12 @@ class DetailedReport:
 
         body = ""
         for i, (task, (assistant, titles)) in enumerate(researched, 1):
-            self.on_progress(f"Раздел {i}/{len(researched)}: {task}")
+            self.on_progress(phases.section(i, len(researched), task))
             section = await self._write(task, assistant, titles)
             if section:
                 body += f"\n\n\n{section}"
 
-        self.on_progress("Пишу заключение...")
+        self.on_progress(phases.CONCLUSION)
         toc = self.researcher.table_of_contents(body)
         conclusion = await self.researcher.write_report_conclusion(body)
         report = f"{introduction}\n\n{toc}\n\n{body}\n\n{conclusion}"

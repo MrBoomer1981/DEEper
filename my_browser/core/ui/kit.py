@@ -17,9 +17,11 @@ from urllib.parse import urlencode, urlparse
 from nicegui import app, ui
 
 from my_browser.common.settings import DEFAULT_SOURCES, DEFAULT_WRITER, ROOT
-from my_browser.core import queue
+from my_browser.core import jobs
 
-PUBLIC = "PORT" in os.environ  # Railway sets PORT; locally the app listens on 127.0.0.1
+# Railway sets PORT: listen on every interface and require APP_PASSWORD. Locally the app listens on
+# 127.0.0.1; PUBLIC=0 keeps it there on another PORT too (a second copy, e.g. another session's check).
+PUBLIC = os.environ.get("PUBLIC", "1" if "PORT" in os.environ else "0") != "0"
 PASSWORD = os.environ.get("APP_PASSWORD", "")
 AUTH = PUBLIC or bool(PASSWORD)
 
@@ -84,12 +86,12 @@ def shell(title: str, active: str | None = None) -> None:
 
 def watch_jobs() -> None:
     """Say when a research started from any screen is ready, while the app is open."""
-    seen = {"active": {j["id"] for j in queue.active()}}
+    seen = {"active": {j["id"] for j in jobs.active()}}
 
     def check() -> None:
-        now = {j["id"] for j in queue.active()}
+        now = {j["id"] for j in jobs.active()}
         for job_id in seen["active"] - now:
-            job = queue.get(job_id)
+            job = jobs.get(job_id)
             if job and job["status"] == "done":
                 ui.notify(f"Отчёт готов: {job['query']}", type="positive", position="top", timeout=8000,
                           actions=[{"label": "Открыть", "color": "amber", ":handler": f"() => location.href = '/report/{job['report_id']}'"}])

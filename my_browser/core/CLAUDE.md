@@ -1,13 +1,64 @@
 # CLAUDE.md: core
 
-Guidance for changing `my_browser/core/`: what the other parts expect from core and what core expects from them. What core does is in the root CLAUDE.md; paths below are relative to `my_browser/` unless they are repo-root files.
+Core is DEEper's web app (NiceGUI), its API under `/api`, the report library and the job queue. This file covers what core does, how to run and check it alone, what the other parts expect from it and what it expects from them. The repository's rules for working in one part are in the root CLAUDE.md. Paths below are relative to `my_browser/` unless they are repo-root files.
+
+## What core does
+
+- `core/jobs.py`: jobs in SQLite (`jobs` table in `library.sqlite`).
+  - Statuses go queued → running → done | error | interrupted.
+  - The worker claims the oldest queued job and reports progress (phase, queries, accepted sources with scores, the last 200 log lines, cost), which doubles as its heartbeat.
+  - A worker that (re)starts says hello, and jobs running under another worker id become interrupted; a running job silent for 5 minutes is interrupted too. Interrupted and failed jobs go back to the queue as they were (`restart`).
+  - Telegram jobs keep `origin_ref` (chat, status message), so the bot can update that message after a restart.
+  - Each job carries `factcheck`; when the bot or the API leave it out, `service.submit()` takes it from the mode (`FACTCHECK_MODES`: detailed and deep).
+  - Columns newer than an existing `jobs` table are added on first use (`ADDED_COLUMNS`).
+- `core/service.py`: operations shared by the pages (direct calls) and `core/api.py` (bot, worker): submit, claim (adds the blocklist), store a finished report (`Library.store`, base64 files from the worker), report view, and the worker-backed `ask` / `followups` / `clarify` / `refine`.
+- `core/web.py` (NiceGUI 3) sets the app up and imports the screens:
+  - the head (manifest, iPhone meta, font preloads, `app.css`/`app.js` with a `?v=` content hash);
+  - static files with a 7-day cache and `/files/{id}/{pdf|docx|md}` for downloads;
+  - auth: `AuthMiddleware` is active when it listens publicly (`kit.PUBLIC`: `PORT` is set, as on Railway, unless `PUBLIC=0`) or when `APP_PASSWORD` is set; `/api/` is open to it and checks the service token itself;
+  - `NICEGUI_STORAGE_PATH` and the storage secret in `reports/` (the volume), so logins survive redeploys;
+  - `ui.run(tailwind=False, reconnect_timeout=60)`: every screen is styled by `static/app.css`, and a phone that switched apps for a minute comes back to the same page.
+- `core/ui/`: one module per screen, mobile first (`DESIGN_HANDOFF.md`), with a bottom tab bar «Поиск · Радар · Библиотека · Фокус».
+  - `kit.py`: what the screens share (the shell with the tab bar, bottom sheets, list rows, buttons, the mascot, the graffiti layer, labels such as `MODES`, `MODE_HINTS`, `WRITER_LABELS`) and the user's defaults from «Фокус» (`prefs()`, per browser in `app.storage.user`).
+  - `progress.py` turns a job's progress into a percent and a status line. It reads the worker's phase lines through `common/phases.py`, and the number of pages read from gpt-researcher's `Scraped N pages` log lines.
+  - `search.py` `/`: the topic pill; «Подробно» opens a sheet with mode, sources, model, fact-check and «Уточнить тему». It takes `topic`, `mode`, `parent` query parameters (follow-up links). The fact-check follows the mode unless «Фокус» or the sheet sets it.
+  - `job.py` `/job/{id}`: polls the queue every second; Дип digs, the percent, the last sources; error and interrupted states offer restart. A finished job's page redirects to its report.
+  - `report.py` `/report/{id}`:
+    - the text only, with a sticky bar: «3 / 9 ▾» contents and «⋯» (files, sources with block buttons, questions, delete);
+    - citations become numbered superscripts (`cite()`), and a bordo «?» follows each sentence the fact-check could not confirm (`mark_doubtful()`);
+    - selecting text offers «Сохранить», «Спросить», «Глубже» (`app.js` → `emitEvent('deeper_selection')`);
+    - the fact-check block, «Что исследовать дальше», continuations and related reports at the end.
+  - `library.py` `/library`: reports (running ones first), bookmarks, «Слежу» (empty until topic watching exists), search.
+  - `focus.py` `/focus`: presets and defaults, the blocklist, graffiti, the profile card.
+  - `radar.py` `/radar`: until news and watching exist, the follow-up topics of recent reports that were not researched yet.
+  - `login.py` `/login`.
+- `core/bookmarks.py`: passages saved from reports, in `REPORTS_DIR/bookmarks.json`, keyed by the report's file name as well as its id.
+- `core/library.py`: SQLite with an FTS5 table. Report files are the source of truth. `sync()` re-indexes `reports/<date>_*.json` (other JSON there, such as `read_stats.json` and `.qa.json` files, is skipped), so the DB can be deleted and rebuilt. Search uses per-word prefix matching so that Russian word forms match.
+- Research threads: a report started from another one stores `parent` = the parent's file name, not its library id, because ids change when the DB is rebuilt. The library's `parent` column is added by `ALTER TABLE` on older DBs; `children()`, `by_name()` and `related()` (OR prefix match on titles) feed the report page.
+- `core/qa.py`: Q&A history next to each report as `<name>.qa.json`. When the report lacks the answer, the worker's model ends with an «ИССЛЕДОВАТЬ: тема» line, which is cut from the answer and kept as `research`; both UIs offer to run it.
+- `core/blocklist.py`: `reports/blocked_domains.txt` (on the Railway volume), managed from «Фокус» → «Не брать», the report's sources sheet and the bot's `/block`, `/unblock`, `/blocked`; handed to each research with its job.
+
+## Run and check it alone
+
+```bash
+uv run python -m my_browser.core     # core alone: web UI + API at 127.0.0.1:8501 (PORT)
+uv run ../../app.py                  # core with the worker and the bot in one process, as on Railway
+```
+
+- Alone, core serves the pages and the API.
+  - Questions, follow-ups and clarification go to the worker: at `WORKER_URL`, or in-process when it is unset (`uv run` installs the worker's group too).
+  - Jobs wait in the queue until a worker's job loop takes them: run `python -m my_browser.worker` with `CORE_URL` pointing here, or use the all-in-one app.
+- **Screens and flows.** Run the all-in-one app with the mock LLM, started as the `check-project` skill does: a throwaway `REPORTS_DIR`, `PORT=86xx PUBLIC=0`. Without `PUBLIC=0`, any `PORT` makes the app public and sends every page to the login.
+- **Real reports.** A throwaway `REPORTS_DIR` starts with an empty library. To see real reports, copy a few `reports/<date>_*.{md,json}` into it; the library indexes them on start.
+- **Phone first.** Look at every screen change at 360 and 390 px wide first: playwright with the installed Chrome (`channel="chrome"`, headless). The user mostly opens DEEper on the phone, installed from Safari.
+- **The whole project.** Before committing, run the `check-project` skill: a research through the queue, the worker and search, then the main pages.
 
 ## What others rely on
 
 **Worker** (`worker/runner.py`, over HTTP with `call_core`) uses the queue endpoints:
 - `POST /api/worker/hello {worker}`: every running job of another worker id becomes interrupted.
 - `POST /api/worker/claim {worker}`: 204 when nothing is queued, otherwise the job plus `blocked` (the blocklist). The worker reads `id`, `query`, `mode`, `sources`, `writer`, `parent`, `factcheck`, `blocked`.
-- `POST /api/worker/jobs/{id}/progress {worker, phase, queries, urls, log, cost_rub}`: also the heartbeat (`HEARTBEAT_TIMEOUT` is 5 min, the worker sends at least every 30 s). It is ignored unless the job is running under that worker. `urls` are `[url, "3/3"]` pairs.
+- `POST /api/worker/jobs/{id}/progress {worker, phase, queries, urls, log, cost_rub}`: also the heartbeat (`HEARTBEAT_TIMEOUT` is 5 min, the worker sends at least every 30 s). It is ignored unless the job is running under that worker. `urls` are `[url, "3/3"]` pairs; `phase` is one of the lines in `common/phases.py`.
 - `POST /api/worker/jobs/{id}/result {worker, files}`: `files` maps `.md`, `.json` and, when rendering worked, `.docx` and `.pdf` to base64. Accepted even after the job was given up as interrupted. The worker retries six times over about two minutes; a retry after a lost response would store the report twice, since nothing deduplicates by job id.
 - `POST /api/worker/jobs/{id}/error {worker, error}`.
 
@@ -25,17 +76,18 @@ Guidance for changing `my_browser/core/`: what the other parts expect from core 
 ## What core relies on
 
 - **The worker's API**, through `common.clients.call("worker", ...)` in `service.py`; request and response shapes are in `worker/CLAUDE.md`. With `WORKER_URL` unset it runs inside core's process and imports `my_browser.worker.api`, and gpt-researcher with it. So core installed alone (`--group core`) needs `WORKER_URL`.
+- **The worker's progress**: the phase lines and their patterns in `common/phases.py`, which `ui/progress.py` reads; a line it cannot read leaves the percent where it was. The pages read is counted from gpt-researcher's own `Scraped N pages` log line in the job's log tail.
 - **The report files written by the worker's `pipeline.render()`**:
   - `Library.add` requires `query`, `mode`, `created`, `words`, `duration_sec` and `sources` (a list); `parent` is optional. `store_result` reads `cost.rub`.
   - The pages read `writer`, `cost`, `followups`, `followups_cost_rub`, `sources` and `factcheck` (`checked`; `doubtful` items with `raw`, `verdict`, `note`). Reports already on the volume predate some fields, so read newer ones with `.get()`.
   - The Markdown ends with «Проверка фактов» (when checked), then «Что исследовать дальше»; `common.report.body()` cuts both off for the page, and `appended()` gives the fact-check text for its block.
   - `mark_doubtful()` finds each doubtful sentence by its `raw` text (whitespace-tolerant) to put the «?» after it, so a worker change to how claims are cut out of the text shows up here as missing marks.
-- **`common`**: `settings`, `auth`, `report`, `text`, `clients`. Core imports no module of the worker, search or bot.
+- **`common`**: `settings`, `auth`, `report`, `text`, `clients`, `phases`. Core imports no module of the worker, search or bot.
 
 ## State core owns
 
 All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats.json`:
-- `library.sqlite`: tables `reports` and `reports_fts` (`library.py`) and `jobs` (`queue.py`), each created on first use; a column added to `jobs` later goes into `ADDED_COLUMNS`, so older databases on the volume get it. `sync()` rebuilds the report tables from the files; the queue cannot be rebuilt, so deleting the database also drops queued and finished jobs.
+- `library.sqlite`: tables `reports` and `reports_fts` (`library.py`) and `jobs` (`jobs.py`), each created on first use; a column added to `jobs` later goes into `ADDED_COLUMNS`, so older databases on the volume get it. `sync()` rebuilds the report tables from the files; the queue cannot be rebuilt, so deleting the database also drops queued and finished jobs.
 - `<date>_<time>_<slug>.{md,json,docx,pdf}` and `<name>.qa.json`. `sync()` indexes only `<date>_*.json` files that are not `.qa.json`, so other JSON in the directory is left alone.
 - `blocked_domains.txt` (eval reads it straight from `reports/`), `.service_token` (when `SERVICE_TOKEN` is unset, every part with the same `REPORTS_DIR` reads it), `.storage_secret` and `.nicegui/` (logins, and each browser's «Фокус» settings in `app.storage.user["prefs"]`).
 - `bookmarks.json` (`bookmarks.py`): passages saved from reports. Each keeps the report's file name besides its id, since ids change when the library is rebuilt; deleting a report leaves its bookmarks, shown as «отчёт удалён».
@@ -46,10 +98,11 @@ All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats
 - One worker: `hello()` interrupts the running jobs of every other worker id, so a second worker starting would cut off the first one's research. Several workers would need a hello that gives up only the restarted worker's own jobs, leaving the rest to the heartbeat.
 - `web.py` sets `NICEGUI_STORAGE_PATH` before importing NiceGUI, which reads the variable at import. Import NiceGUI only through `core.web` (as `app.py` does), and the screens in `core/ui/` likewise only from `web.py`; otherwise logins live outside the volume and every redeploy logs everyone out.
 - Styles live in `static/app.css`. Quasar puts its own `!important` color classes (`bg-primary`, `text-white`) in a CSS cascade layer, and an `!important` declaration inside a layer beats one outside it, so app.css cannot override a component's color: give it through props (`color=accent text-color=night`), as `ui/kit.primary()` does. Avoid class names Quasar already uses (`.row`, `.column`, `.col`…): its `.row` wraps flex children.
-- `PORT` also switches on public mode: bind to 0.0.0.0 and require `APP_PASSWORD` (Railway sets `PORT`). The worker and the bot find core at `CORE_URL`, by default `http://127.0.0.1:$PORT`.
+- `PORT` also switches on public mode: bind to 0.0.0.0 and require `APP_PASSWORD` (Railway sets `PORT`). `PUBLIC=0` keeps a local copy on another port private. The worker and the bot find core at `CORE_URL`, by default `http://127.0.0.1:$PORT`.
 - `OPEN_PATHS` must keep `/api/` open to the login middleware: the bot and the worker carry the service token, not a login.
 - The API does not validate `mode`, `sources` and `writer`. An unknown key is queued and then fails in the worker (`SOURCES[...]`, `WRITERS[...]`), and `MODES[job["mode"]]` in the pages and `MODE_BUTTONS[...]` in the bot raise on it.
-- The pages call `service` and `queue` directly, the bot goes through the API: an operation both need belongs in `service.py`, with a thin route in `api.py`.
+- The pages call `service` and `jobs` directly, the bot goes through the API: an operation both need belongs in `service.py`, with a thin route in `api.py`.
+- No module here may take a stdlib module's name (`queue`, `json`, `logging`…): started from this folder, `python -m` puts the folder first on `sys.path`, and the stdlib's module would be shadowed.
 
 ## When you change…
 
@@ -57,6 +110,7 @@ All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats
 |---|---|
 | a job field or status | the bot (`Status.follow`, `finish`, `notify_interrupted`), `ui/job.py` and `ui/progress.py`, the running rows of `ui/library.py`, `worker/runner.py` if it sends or reads the field |
 | an `/api` route or response field | the bot; for `/api/worker/*` also `worker/runner.py` |
+| how the job page reads a phase | the phase lines live in `common/phases.py`, shared with the worker; the bot shows them as they are |
 | what the pages read from the report JSON | it is written by `worker/pipeline.render()`; old reports lack newer fields |
 | a mode, source or writer key | `common/settings.py` (also `FACTCHECK_MODES`); `ui/kit.py` (`MODES`, `MODE_NAMES`, `MODE_HINTS`, `SOURCE_LABELS`, `WRITER_LABELS`, `WRITER_HINTS`, `WRITER_OF_MODEL`, `DEFAULT_PREFS`) and the presets in `ui/focus.py`; the bot (`MODE_BUTTONS`, `SOURCE_BUTTONS`, `HELP`); `worker/suggest.FOLLOWUP_MODES` |
 | what the report page shows of the fact-check | it comes from `worker/factcheck.summary()` and `section()`; the bot's `_factcheck_line()` reads the same counts |
