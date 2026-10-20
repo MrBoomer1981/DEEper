@@ -41,6 +41,10 @@ def answer(prompt: str) -> str:
         return '[{"q": "Какой регион важнее?", "options": ["Россия", "Китай", "Весь мир"]}]'
     if "Перепиши тему исследования" in prompt:  # suggest.refine()
         return "«Перспективы натрий-ионных аккумуляторов в России»"
+    if "Сократи его до краткой версии" in prompt:  # worker/shorten.py: two links of the report, nothing new
+        urls = [u for u in dict.fromkeys(re.findall(r"https?://[^\s)\]'\"<>]+", prompt))][:2] or ["https://www.iea.org"]
+        return ("# Краткая версия\n\n## Главное\n\nКороткий вывод из отчёта со ссылкой на источник "
+                + "".join(f"([{i}]({u}))" for i, u in enumerate(urls, 1)) + ". Свои выводы — без ссылок.\n")
     if "=== ОТЧЁТ ===" in prompt:  # worker/ask.py
         return "В отчёте нет данных о ценах в России.\n\n**ИССЛЕДОВАТЬ:** Цены на натрий-ионные аккумуляторы в России в 2026 году"
     if "Translate each numbered statement" in prompt:  # worker/factcheck.py

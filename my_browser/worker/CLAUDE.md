@@ -70,7 +70,12 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
   - Follow-ups («Что исследовать дальше»): 5 topics, deeper/adjacent/verify, each with `why` and a recommended mode, from the report's outline, conclusions and limitation sections. A failure returns `[]` and never blocks saving.
   - Clarification («Уточнить»): `questions()`, `refine()`.
   - `render()` puts follow-ups into the JSON and as the last `## Что исследовать дальше` section into the documents. The web view strips the appended sections (`common/report.body()`) and renders cards and its own fact-check block instead. Older reports get topics on demand («Предложить темы»), in the JSON only.
-- `worker/ask.py` answers a question from a report's text with `SMART_LLM`; `worker/api.py` exposes `/ask`, `/followups`, `/clarify`, `/refine` for core.
+- `worker/ask.py` answers a question from a report's text with `SMART_LLM`; `worker/api.py` exposes `/ask`, `/followups`, `/clarify`, `/refine`, `/shorten` for core.
+- `worker/shorten.py` writes a report's short version (at most `SHORT_WORDS` = 1500 words) with `SMART_LLM`.
+  - It keeps the title, the sections that matter, the findings and the key facts and figures with their citations, and adds nothing the report does not say.
+  - It asks for about 1 200 words: for «около 1 400, не больше 1 500» Pro wrote 1 603 on a 7 500-word report. If the text still runs over the limit, one more pass shortens it, `FIT`, from its own text.
+  - A list of sources the model writes anyway is cut. The list is rebuilt from the links the text cites.
+  - On eval topic 1's 7 522-word report: 1 241 words, 28 s, 2.15 ₽ off-peak; all 25 cited sources came from the report.
 - `worker/export.py`: DOCX is rendered in-process (mistune → htmldocx). The PDF is rendered by WeasyPrint **in a child process** (`python -m my_browser.worker.export`) with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`, because WeasyPrint needs Homebrew's pango (`brew install pango`) and dyld reads that variable only at process start.
 - Writer: `SMART_LLM` (report text and Q&A) defaults to `deepseek-v4-pro`; FAST and STRATEGIC stay on `deepseek-flash`. `--writer`, the bot default and the web toggle pick `WRITERS[...]` through `run_settings(writer=...)`.
 - What a research costs is metered by `common/costs.py` (see `common/CLAUDE.md`). URLs go through `common/text.readable_url` before the writer sees them.
@@ -98,6 +103,7 @@ uv run ../../research.py "тема" --mode quick --writer flash   # one research
 - `POST /followups {query, markdown}` → `{topics, cost_rub}`; a failure gives `topics: []`, never an error.
 - `POST /clarify {query}` → `{questions: [{q, options}], cost_rub}`. The options never include `ANY_ANSWER`; the UIs add it.
 - `POST /refine {query, answers: [[question, answer]]}` → `{topic, cost_rub}`; the original topic comes back when the rewrite looks wrong.
+- `POST /shorten {markdown, words?}` → `{markdown, words, cost_rub}`: the short version ending with `## Источники` (`## References` in English) over the links it cites; `words` counts the text without that list, and so does core's `short.words()`, which finds the list by those two headings. A Pro call takes up to a minute, so core calls it with a 300 s timeout.
 - `GET /health` → `{ok: true}`.
 - In the all-in-one app these handlers run on NiceGUI's event loop, so blocking work inside them (sync HTTP, heavy CPU) freezes the web UI.
 
@@ -190,7 +196,8 @@ uv run ../../research.py "тема" --mode quick --writer flash   # one research
 | the fact-check's summary or section | `core/ui/report.py` (`mark_doubtful()`, the «⋯» row, the block), the bot's `_factcheck_line()`, `common/report.VERDICT_TEXT`, eval's `fc_*` columns |
 | how `factcheck.claims()` cuts sentences | `raw` must still match the report text for core's marks; eval's sampled pairs change, so bump `JUDGE` |
 | the writer's citation rules (`prompts.CITATION_RULES`) | the fact-check checks only sentences with a link, so the rules decide what it sees; measure on a detailed Pro report (`eval/run.py --mode detailed --writer pro --factcheck`), where the fact-check's not-found and partial counts show the effect over all claims |
-| a prompt's wording | `dev/mock_llm.py` if it recognizes that prompt by the phrase you changed |
+| a prompt's wording | `dev/mock_llm.py` if it recognizes that prompt by the phrase you changed (for `shorten.PROMPT`: «Сократи его до краткой версии») |
+| the short version's list of sources (its heading) | `core/short.py` (`SOURCES`, which counts the words without it) |
 | the length limit (`REPORT_WORDS`, `INTRO_WORDS`, `CONCLUSION_WORDS`, `section_words()`) | measure a detailed Pro report (`eval/run.py --topics 1 --mode detailed --writer pro --factcheck`): words, time and cost change together; the length in `README.md`'s modes table, the time hints (`core/ui/kit.MODE_HINTS`, the bot's `HELP`) if the time changes |
 | a request or response of `api.py` | `core/service.py`, and `core/qa.py` for `/ask` |
 | a phase (the progress line) | write it in `common/phases.py`, never as a literal here; a new phase or counter needs its pattern there and a branch in `core/ui/progress.py` (`percent()`, `status()`); the bot shows the line as it is |

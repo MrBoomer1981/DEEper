@@ -141,7 +141,7 @@ class Library:
         with self.db:
             self.db.execute("DELETE FROM reports WHERE id = ?", (report_id,))
             self.db.execute("DELETE FROM reports_fts WHERE rowid = ?", (report_id,))
-        for suffix in (".md", ".json", ".docx", ".pdf", ".qa.json"):
+        for suffix in (".md", ".json", ".docx", ".pdf", ".qa.json", ".short.md"):
             entry.base.with_suffix(suffix).unlink(missing_ok=True)
         return entry
 

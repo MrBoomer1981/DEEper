@@ -3,7 +3,9 @@
 The top bar has «Назад», the section counter «3 / 9 ▾» (follows the scroll in app.js; a tap opens the
 contents) and «⋯» (files, sources, questions, the end blocks, delete). Citations in parentheses become
 amber superscript numbers, and the sources sheet is numbered the same way; links inside a sentence stay
-text. Sentences the fact-check could not confirm get a bordo «?». Selecting text shows a toolbar (app.js):
+text. Sentences the fact-check could not confirm get a bordo «?». «⋯» → «Сократить до 1 500 слов» has the worker write a
+short version once (core/short.py); it shows at ?short=1, without the fact-check's marks and block, which belong to
+the full text. Selecting text shows a toolbar (app.js):
 «Сохранить» (a bookmark), «Спросить» (the quote into the question pill), «Глубже» (a new research on the
 quote that continues this report). Answers to questions open as a sheet; the history is in «⋯».
 """
@@ -16,7 +18,7 @@ from nicegui import ui
 
 from my_browser.common.report import FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body
 from my_browser.common.text import MARKDOWN_LINK, plural, rub_text
-from my_browser.core import blocklist, bookmarks, service
+from my_browser.core import blocklist, bookmarks, service, short as shorts
 from my_browser.core.library import Library
 from my_browser.core.qa import load_qa
 from my_browser.core.ui import kit
@@ -54,8 +56,15 @@ def cite(markdown: str) -> tuple[str, dict[str, int]]:
     return CITATIONS.sub(group, markdown), numbers
 
 
+SHORT_FROM = 1800  # words of the full text above which «⋯» offers a short version
+
+
+def words_text(n: int) -> str:
+    return f"{kit.number(n)} {plural(n, 'слово', 'слова', 'слов')}"
+
+
 @ui.page("/report/{report_id}")
-def report_page(report_id: int) -> None:
+def report_page(report_id: int, short: bool = False) -> None:
     kit.shell("Отчёт")
     library = Library()
     entry = library.get(report_id)
@@ -70,8 +79,13 @@ def report_page(report_id: int) -> None:
     markdown = entry.md_path.read_text("utf-8")
     meta = json.loads(entry.base.with_suffix(".json").read_text("utf-8"))
     check = meta.get("factcheck") or {}
-    text, numbers = cite(mark_doubtful(body(markdown), check.get("doubtful") or []))
-    headings = [m.group(1).strip() for m in H2.finditer(body(markdown))]
+    short_text = shorts.load_short(entry.md_path)
+    short = short and short_text is not None
+    full_words = len(body(markdown).split())
+    shown = short_text if short else body(markdown)
+    # the fact-check's «?» marks and block belong to the full text
+    text, numbers = cite(shown if short else mark_doubtful(shown, check.get("doubtful") or []))
+    headings = [m.group(1).strip() for m in H2.finditer(shown)]
     origin = library.by_name(meta["parent"]) if meta.get("parent") else None
 
     def contents() -> None:
@@ -143,6 +157,29 @@ def report_page(report_id: int) -> None:
         sheet_body.clear()
         show_answer(sheet_body, item)
 
+    async def make_short() -> None:
+        """Have the worker write the short version (once), then show it."""
+        dialog, sheet_body = kit.sheet("Сокращаю до 1 500 слов")
+        with sheet_body:
+            with ui.element("div").classes("short-wait"):
+                kit.mascot("dig", 96)
+                ui.label("Pro перечитает отчёт и оставит главное: выводы, ключевые факты и числа с их ссылками. "
+                         "Обычно до минуты, ≈\u00a01–2\u00a0₽. Можно закрыть — краткая версия сохранится.").classes("sub-text")
+        dialog.open()
+        try:
+            result = await service.shorten(entry)
+        except Exception as e:
+            sheet_body.clear()
+            with sheet_body:
+                ui.label("Сократить не получилось").classes("sheet-title")
+                ui.label(str(e)[:300]).classes("sub-text")
+            return
+        sheet_body.clear()
+        with sheet_body:  # a moment to see what it came to, then the short version
+            ui.label("Готово").classes("sheet-title")
+            ui.label(words_text(result["words"]) + (f" · {rub_text(result['cost_rub'])}" if result.get("cost_rub") is not None else "")).classes("mono-label")
+            ui.timer(1.2, lambda: ui.navigate.to(f"/report/{entry.id}?short=1"), once=True)
+
     def delete() -> None:
         dialog, sheet_body = kit.sheet("Удалить отчёт?")
         with sheet_body:
@@ -170,9 +207,21 @@ def report_page(report_id: int) -> None:
                 for kind, name in (("pdf", "PDF"), ("docx", "DOCX"), ("md", "Markdown")):
                     if entry.base.with_suffix(f".{kind}").exists():
                         kit.row(f"Скачать {name}", on_click=lambda k=kind: ui.download.from_url(f"/files/{entry.id}/{k}"), chevron=True)
+                if short:
+                    kit.row("Полная версия", value=words_text(full_words), target=f"/report/{entry.id}", chevron=True)
+                elif short_text is not None:
+                    kit.row("Краткая версия", value=words_text(shorts.words(short_text)),
+                            target=f"/report/{entry.id}?short=1", chevron=True)
+                elif full_words > SHORT_FROM:
+                    async def shorten_now() -> None:
+                        dialog.close()
+                        await make_short()
+
+                    kit.row("Сократить до 1\u00a0500 слов", "Pro оставит главное · ≈\u00a01–2\u00a0₽ · до минуты", chevron=True,
+                            on_click=shorten_now)
                 kit.row("Источники", value=str(len(meta["sources"])), chevron=True, on_click=lambda: (dialog.close(), sources()))
                 kit.row("Вопросы", value=str(len(load_qa(entry.md_path))), chevron=True, on_click=lambda: (dialog.close(), questions()))
-                if check.get("checked"):
+                if check.get("checked") and not short:
                     kit.row("Проверка фактов", chevron=True, on_click=lambda: (dialog.close(), ui.run_javascript("deeperScrollTo('#factcheck')")))
                 kit.row("Что исследовать дальше", chevron=True, on_click=lambda: (dialog.close(), ui.run_javascript("deeperScrollTo('#next')")))
                 kit.row("Удалить отчёт", on_click=lambda: (dialog.close(), delete()))
@@ -220,9 +269,13 @@ def report_page(report_id: int) -> None:
             with ui.link(target=f"/report/{origin.id}").classes("continue linked"):
                 ui.icon("subdirectory_arrow_right")
                 ui.label(f"продолжение отчёта #{origin.id}: {origin.query}").classes("continue-topic")
+        if short:
+            with ui.element("div").classes("version-note"):
+                ui.label(f"Краткая версия · {words_text(shorts.words(short_text))}").classes("mono-label")
+                ui.link("Полная →", f"/report/{entry.id}").classes("version-link")
         kit.markdown(text).classes("report main")
 
-        if checks := appended(markdown, FACTCHECK_TITLE):
+        if not short and (checks := appended(markdown, FACTCHECK_TITLE)):
             with ui.element("section").classes("end-block"):
                 ui.html('<a id="factcheck" class="anchor"></a>', sanitize=False)
                 ui.label("Проверка фактов").classes("sheet-label")

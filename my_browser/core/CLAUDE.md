@@ -29,7 +29,8 @@ Core is DEEper's web app (NiceGUI), its API under `/api`, the report library and
     - citations become numbered superscripts (`cite()`), and a bordo «?» follows each sentence the fact-check could not confirm (`mark_doubtful()`);
     - selecting text offers «Сохранить», «Спросить», «Глубже» (`app.js` → `emitEvent('deeper_selection')`);
     - the fact-check block, «Что исследовать дальше», continuations and related reports at the end. Their anchors (`#factcheck`, `#next`) are `a.anchor` with a `scroll-margin-top` that clears the sticky bar;
-    - a scrim under the question pill (`.pill-scrim`): the text fades out below it instead of showing around it.
+    - a scrim under the question pill (`.pill-scrim`): the text fades out below it instead of showing around it;
+    - «⋯» → «Сократить до 1 500 слов» (for texts over `SHORT_FROM` = 1 800 words): the worker writes a short version once, and the page shows it at `?short=1`. Above it «Краткая версия · N слов · Полная →». The contents, the counter and the source numbers follow the short text; the fact-check's «?» marks and block stay with the full one.
   - `library.py` `/library`: reports (running ones first), bookmarks, «Слежу» (empty until topic watching exists), search.
   - `focus.py` `/focus`: presets and defaults, the blocklist, graffiti, the profile card.
   - `radar.py` `/radar`: until news and watching exist, the follow-up topics of recent reports that were not researched yet.
@@ -37,6 +38,7 @@ Core is DEEper's web app (NiceGUI), its API under `/api`, the report library and
 - `core/bookmarks.py`: passages saved from reports, in `REPORTS_DIR/bookmarks.json`, keyed by the report's file name as well as its id.
 - `core/library.py`: SQLite with an FTS5 table. Report files are the source of truth. `sync()` re-indexes `reports/<date>_*.json` (other JSON there, such as `read_stats.json` and `.qa.json` files, is skipped), so the DB can be deleted and rebuilt. Search uses per-word prefix matching so that Russian word forms match.
 - Research threads: a report started from another one stores `parent` = the parent's file name, not its library id, because ids change when the DB is rebuilt. The library's `parent` column is added by `ALTER TABLE` on older DBs; `children()`, `by_name()` and `related()` (OR prefix match on titles) feed the report page.
+- `core/short.py`: a report's short version as `<name>.short.md`, which the worker writes once (`/shorten`). `service.shorten()` holds a lock per report, so a second tap waits for the first instead of paying twice.
 - `core/qa.py`: Q&A history next to each report as `<name>.qa.json`. When the report lacks the answer, the worker's model ends with an «ИССЛЕДОВАТЬ: тема» line, which is cut from the answer and kept as `research`; both UIs offer to run it.
 - `core/blocklist.py`: `reports/blocked_domains.txt` (on the Railway volume), managed from «Фокус» → «Не брать», the report's sources sheet and the bot's `/block`, `/unblock`, `/blocked`; handed to each research with its job.
 
@@ -69,6 +71,7 @@ uv run ../../app.py                  # core with the worker and the bot in one p
 - `POST /api/jobs` takes `factcheck` as true, false or absent; absent means the mode decides (`FACTCHECK_MODES`), resolved in `service.submit()` and stored as a bool;
 - `GET /api/reports/{id}` (`service.report_view`): `entry` (`id`, `query`, `words`, `sources_count`, `duration_sec`, `name`), `meta` (the report JSON as stored), `markdown`, `qa`;
 - `GET /api/reports` (plus `snippet` when searching with `q`), `GET /api/reports/{id}/files/{pdf|docx|md}` (404 for a missing file; the bot sends what exists), `DELETE /api/reports/{id}` → `deleted`;
+- `POST /api/reports/{id}/shorten` → `{markdown, words, cost_rub}` (`cost_rub` is null when the short version already existed; the bot does not use it yet);
 - `POST /api/reports/{id}/ask` → the stored Q&A item (`a`, `cost_rub`, `research`); `/api/clarify` → `questions`, `cost_rub`; `/api/refine` → `topic`, `cost_rub`; blocklist → `domains`, `domain`, `removed`;
 - `GET /api/jobs?status=interrupted&origin=telegram` lists only jobs the bot has not reported yet; it then calls `POST /api/jobs/{id}/notified`.
 - The bot addresses follow-up topics and Q&A research topics by position (`f:<report>:<i>`, `r:<report>:<i>`; Telegram limits callback data to 64 bytes). Keep `meta.followups` in its order and `.qa.json` append-only.
@@ -90,7 +93,7 @@ uv run ../../app.py                  # core with the worker and the bot in one p
 
 All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats.json`:
 - `library.sqlite`: tables `reports` and `reports_fts` (`library.py`) and `jobs` (`jobs.py`), each created on first use; a column added to `jobs` later goes into `ADDED_COLUMNS`, so older databases on the volume get it. `sync()` rebuilds the report tables from the files; the queue cannot be rebuilt, so deleting the database also drops queued and finished jobs.
-- `<date>_<time>_<slug>.{md,json,docx,pdf}` and `<name>.qa.json`. `sync()` indexes only `<date>_*.json` files that are not `.qa.json`, so other JSON in the directory is left alone.
+- `<date>_<time>_<slug>.{md,json,docx,pdf}`, `<name>.qa.json` and `<name>.short.md`; `Library.delete()` removes all of them. `sync()` indexes only `<date>_*.json` files that are not `.qa.json`, so other JSON in the directory is left alone.
 - `blocked_domains.txt` (eval reads it straight from `reports/`), `.service_token` (when `SERVICE_TOKEN` is unset, every part with the same `REPORTS_DIR` reads it), `.storage_secret` and `.nicegui/` (logins, and each browser's «Фокус» settings in `app.storage.user["prefs"]`).
 - `bookmarks.json` (`bookmarks.py`): passages saved from reports. Each keeps the report's file name besides its id, since ids change when the library is rebuilt; deleting a report leaves its bookmarks, shown as «отчёт удалён».
 

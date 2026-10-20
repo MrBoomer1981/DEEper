@@ -163,6 +163,12 @@ async def ask(report_id: int, request: QuestionRequest) -> dict:
     return await service.ask(_entry(report_id), request.question)
 
 
+@router.post("/reports/{report_id}/shorten")
+async def shorten(report_id: int) -> dict:
+    """The report's short version (about 1 500 words): written once, then read from its file."""
+    return await service.shorten(_entry(report_id))
+
+
 @router.post("/reports/{report_id}/followups")
 async def followups(report_id: int) -> dict:
     return {"topics": await service.followups(_entry(report_id))}

@@ -322,6 +322,11 @@ body:not(.graffiti-off) .report.main h2:first-of-type { padding-bottom: 12px; ba
 .li-text.plain { text-decoration: none; color: inherit; }
 .icon-btn.done { color: var(--bordo); pointer-events: none; }
 .ask-pill .pill-input textarea { max-height: 110px; }
+/* A report's short version (?short=1): the note above it, and the wait while the worker writes it. */
+.version-note { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 4px; }
+.version-link { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--paper); flex: none;
+                text-decoration: underline; text-decoration-color: var(--amber); text-underline-offset: 4px; }
+.short-wait { display: flex; align-items: center; gap: 14px; }
 /* Under the pill at the bottom of a report: the text fades out instead of showing below the pill and around its corners. */
 .pill-scrim { position: fixed; z-index: 1850; left: 0; right: 0; bottom: 0; height: calc(env(safe-area-inset-bottom) + 96px);
               pointer-events: none; background: linear-gradient(to top, var(--night) 58%, rgba(20,16,14,0)); }

@@ -1,11 +1,12 @@
 """Core's operations, shared by its web pages (direct calls) and its API (the bot and the worker)."""
 
+import asyncio
 import base64
 import json
 
 from my_browser.common.clients import call
 from my_browser.common.settings import FACTCHECK_MODES
-from my_browser.core import blocklist, jobs, qa
+from my_browser.core import blocklist, jobs, qa, short
 from my_browser.core.library import Entry, Library
 
 
@@ -66,6 +67,22 @@ async def followups(entry: Entry) -> list[dict]:
         data["followups"], data["followups_cost_rub"] = result["topics"], result["cost_rub"]
         entry.base.with_suffix(".json").write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
     return result["topics"]
+
+
+_shortening: dict[int, asyncio.Lock] = {}  # one worker call per report: a second tap waits for the first
+
+
+async def shorten(entry: Entry) -> dict:
+    """{markdown, words, cost_rub}: the report's short version, written by the worker once and then read from its file.
+    cost_rub is None when it was already there."""
+    async with _shortening.setdefault(entry.id, asyncio.Lock()):
+        if (text := short.load_short(entry.md_path)) is not None:
+            return {"markdown": text, "words": short.words(text), "cost_rub": None}
+        # Pro condenses a 5 000-word report in one to two minutes, over the default timeout of a call
+        response = await call("worker", "POST", "/shorten", json={"markdown": entry.md_path.read_text("utf-8")}, timeout=300)
+        result = response.json()
+        short.save_short(entry.md_path, result["markdown"])
+        return result
 
 
 async def clarify(query: str) -> dict:
