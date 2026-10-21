@@ -1,0 +1,36 @@
+# DEEper's address in Russia: Caddy on a small Russian server passes every request on to the app, the
+# WebSocket of NiceGUI's pages included: phone -> this server -> Railway (or the Cloudflare Worker).
+# See proxy/CLAUDE.md. SITE (the server's IP address or a domain) and UPSTREAMS come from
+# /etc/caddy/deeper.env, which setup.sh writes; keep them out of this public repository.
+{
+	# An IP address gets its certificate from Let's Encrypt only, and only a short-lived one (6 days,
+	# renewed by Caddy itself). A browser sends no server name to an IP address, so name the default one.
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+	default_sni {$SITE}
+}
+
+{$SITE} {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+	# The first healthy upstream: Railway directly, else the Cloudflare Worker. Each is checked in the
+	# background every 30 s, so a path that stops working costs no request a wait; one that fails a request
+	# is also skipped for two minutes.
+	reverse_proxy {$UPSTREAMS} {
+		lb_policy first
+		lb_try_duration 10s
+		fail_duration 2m
+		health_uri /static/manifest.webmanifest
+		health_interval 30s
+		health_timeout 5s
+		header_up Host {http.reverse_proxy.upstream.host}
+		# A redirect naming Railway's or the Worker's address would send the phone where it does not open.
+		header_down Location ^https://[^/]+\.(?:up\.railway\.app|workers\.dev) ""
+		transport http {
+			dial_timeout 5s
+			tls_timeout 5s
+		}
+	}
+}

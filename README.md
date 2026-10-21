@@ -99,7 +99,7 @@ uv run app.py                 # http://127.0.0.1:8501 (порт 8080 занят 
 
 Сборка по `Dockerfile`: в настройках сервиса на Railway выбран сборщик Dockerfile (Settings → Build → Builder), одна реплика. SearXNG на Railway не поднимается, поэтому веб-поиск там идёт через Tavily (бесплатно 1000 запросов в месяц): он включается сам, когда задан `TAVILY_API_KEY`, а `SEARX_URL` — нет. Явно выбрать поиск можно переменной `WEB_RETRIEVER`.
 
-**Из России без VPN.** Адрес Railway (`*.up.railway.app`) из российских сетей не открывается, а Cloudflare открывается. Поэтому перед приложением стоит бесплатный прокси на Cloudflare Workers (`proxy/`): телефон открывает `deeper.<поддомен>.workers.dev`, а прокси передаёт всё приложению на Railway. Выложить его: в папке `proxy/` выполнить `npx wrangler login`, `npx wrangler secret put ORIGIN` (адрес приложения на Railway) и `npx wrangler deploy`.
+**Из России без VPN.** Адрес Railway (`*.up.railway.app`) из российских сетей не открывается, а Cloudflare открывается. Поэтому перед приложением стоит бесплатный прокси на Cloudflare Workers (`proxy/`): телефон открывает `deeper.<поддомен>.workers.dev`, а прокси передаёт всё приложению на Railway. Выложить его: в папке `proxy/` выполнить `npx wrangler login`, `npx wrangler secret put ORIGIN` (адрес приложения на Railway) и `npx wrangler deploy`. На мобильном интернете прокси не открывается: с июня 2025 года российские провайдеры пропускают к адресам Cloudflare только первые ~16 КБ на соединение. Для этого подготовлен свой сервер в России (`proxy/ru/`), пока он в архиве (`plan.md`, раздел «Архив»).
 
 Переменные сервиса:
 
