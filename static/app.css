@@ -40,12 +40,24 @@ body {
 }
 a, button, .q-btn, [role="button"] { touch-action: manipulation; }
 
-/* Moving between screens: the old one fades into the new instead of a hard cut (cross-document view
-   transitions: Safari 18.2+, Chrome 126+; older browsers just switch). The bottom navigation stays put. */
-@media (prefers-reduced-motion: no-preference) {
-  @view-transition { navigation: auto; }
+/* Moving between screens. The tab bar's sections are one page (core/ui/tabs.py), switched by app.js at once; a
+   section enters with a short rise. Other screens (a report, a research) are pages of their own: the old one
+   fades into the new (cross-document view transitions, Safari 18.2+, Chrome 126+), with the tab bar in place.
+   Where that does not happen (an older browser, a navigation started by a script, a page slower than 4 s), the
+   new page enters with the same rise; html.vt (an inline script in web.py's head) marks a page a view transition
+   brought, which needs no entrance of its own. A fade is fine with «reduce motion» too; the rise is not. */
+@view-transition { navigation: auto; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .25s; }
+.tab-screen { display: none; }
+.tab-screen.on { display: block; }
+.tab-screen.on > .screen, .screen.reading, .screen.job, .screen.login { animation: screen-in .28s cubic-bezier(.2, .7, .2, 1) both; }
+.tab-screen.on > .pill, .tab-screen.on > .home-glow { animation: fade-in .28s ease both; }  /* fixed: no transform on their parents */
+html.vt .screen { animation: none; }
+@keyframes screen-in { from { opacity: 0; transform: translateY(10px) } }
+@keyframes fade-in { from { opacity: 0 } }
+@media (prefers-reduced-motion: reduce) {
+  .tab-screen.on > .screen, .screen.reading, .screen.job, .screen.login { animation-name: fade-in; }
 }
-::view-transition-old(root), ::view-transition-new(root) { animation-duration: .2s; }
 
 /* A tap answers at once: the installed app has no browser chrome, and the next screen or sheet takes a round
    trip to the server. app.js shows a thin line at the top while the next screen loads (html.nav-pending). */
@@ -228,6 +240,9 @@ body.graffiti-off .graffiti { display: none !important; }
 .pill-input .q-field__control:before, .pill-input .q-field__control:after { display: none; }
 .pill-input textarea, .pill-input input { font-family: 'Onest', sans-serif; font-size: 16px !important; line-height: 1.4 !important;
         color: var(--paper) !important; padding: 11px 0 !important; max-height: 132px; resize: none; }
+/* At least one line: Quasar's autogrow measures the textarea when it mounts, and in a section of the tab bar's page
+   that is hidden then (tabs.py) it measured 0 px, which hid the field and its placeholder. */
+.pill-input textarea.q-field__native { min-height: 1.4em !important; }  /* beats the min-height: 0 above */
 .pill-input textarea::placeholder, .pill-input input::placeholder { color: var(--muted) !important; opacity: 1; }
 .pill-opt { flex: none; height: 48px; padding: 0 10px; background: none; border: 0; cursor: pointer; color: var(--amber); font: 500 15px 'Onest', sans-serif; }
 .pill .send { width: 48px; height: 48px; background: var(--amber); color: var(--night); }

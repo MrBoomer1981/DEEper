@@ -11,6 +11,7 @@ import html
 import json
 import os
 import re
+import weakref
 from datetime import datetime
 from urllib.parse import urlencode, urlparse
 
@@ -48,6 +49,7 @@ NAV = [  # (section, route, Material icon, label for screen readers)
     ("library", "/library", "bookmark_border", "Библиотека"),
     ("focus", "/focus", "tune", "Фокус"),
 ]
+TAB_TITLES = {"search": "DEEper", "radar": "Радар — DEEper", "library": "Библиотека — DEEper", "focus": "Фокус — DEEper"}
 DEFAULT_PREFS = {
     "mode": "detailed", "sources": DEFAULT_SOURCES, "writer": DEFAULT_WRITER,
     "factcheck": None,  # None: as the mode has it (common.settings.FACTCHECK_MODES)
@@ -60,8 +62,19 @@ def prefs() -> dict:
     return {**DEFAULT_PREFS, **app.storage.user.get("prefs", {})}
 
 
+# The four sections of the tab bar are one page (tabs.py): «Поиск», built once, has to follow what «Фокус» changes.
+_prefs_listeners: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()  # client -> callbacks
+
+
+def on_prefs_change(callback) -> None:
+    """Call `callback` when this page changes the user's defaults (save_prefs)."""
+    _prefs_listeners.setdefault(ui.context.client, []).append(callback)
+
+
 def save_prefs(**values) -> None:
     app.storage.user["prefs"] = {**app.storage.user.get("prefs", {}), **values}
+    for callback in _prefs_listeners.get(ui.context.client, []):
+        callback()
 
 
 def shell(title: str, active: str | None = None) -> None:
@@ -69,7 +82,7 @@ def shell(title: str, active: str | None = None) -> None:
 
     The navigation is a bar at the bottom on phones and a column of icons on the left from 1024 px.
     """
-    ui.page_title(title if title == "DEEper" else f"{title} — DEEper")
+    ui.page_title(title if title.endswith("DEEper") else f"{title} — DEEper")
     ui.colors(**BRAND_COLORS)
     if not prefs()["graffiti"]:
         ui.query("body").classes("graffiti-off")
@@ -79,7 +92,9 @@ def shell(title: str, active: str | None = None) -> None:
     with ui.element("nav").classes("tabbar").props('aria-label="Разделы"'):
         for key, route, icon, label in NAV:
             current = ' aria-current="page"' if key == active else ""
-            with ui.link(target=route).classes("tab" + (" active" if key == active else "")).props(f'aria-label="{label}"{current}'):
+            # data-tab and data-title let app.js switch sections without a new page (tabs.py)
+            with ui.link(target=route).classes("tab" + (" active" if key == active else "")) \
+                    .props(f'aria-label="{label}" data-tab="{key}" data-title="{TAB_TITLES[key]}"{current}'):
                 ui.icon(icon)
                 ui.element("span").classes("dot")
     watch_jobs()

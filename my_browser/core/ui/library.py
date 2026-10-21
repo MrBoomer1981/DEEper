@@ -1,4 +1,5 @@
-"""«Библиотека» (/library): reports (running researches first), bookmarks, watched topics.
+"""«Библиотека» (/library, a section of the tab bar's page, tabs.py): reports (running researches first),
+bookmarks, watched topics.
 
 The search icon turns the title into a search field (Library.search: every word as a prefix, so Russian
 word forms match). The tab is kept in the address (?tab=) so that «Назад» from a report comes back to it.
@@ -16,10 +17,15 @@ from my_browser.core.ui import kit, progress
 TABS = {"reports": "Отчёты", "bookmarks": "Закладки", "watching": "Слежу"}
 
 
-@ui.page("/library")
-def library_page(tab: str = "reports", q: str = "") -> None:
-    kit.shell("Библиотека", active="library")
-    state = {"tab": tab if tab in TABS else "reports", "q": q, "searching": bool(q)}
+def snapshot() -> tuple:
+    """What the reports tab shows: when it changed since the section was drawn, showing it again redraws it."""
+    return (tuple(e.id for e in Library().recent(200)),
+            tuple((j["id"], j["status"], progress.percent(j)) for j in jobs.active()), len(bookmarks.load()))
+
+
+def library_screen(tab: str = "reports", q: str = ""):
+    """The section «Библиотека» of the tab bar's page (tabs.py); returns what to call when it is shown again."""
+    state = {"tab": tab if tab in TABS else "reports", "q": q, "searching": bool(q), "drawn": None}
 
     def switch(key: str) -> None:
         state["tab"] = key
@@ -107,6 +113,7 @@ def library_page(tab: str = "reports", q: str = "") -> None:
 
         @ui.refreshable
         def content() -> None:
+            state["drawn"] = snapshot()
             if state["searching"]:
                 reports(state["q"])
             elif state["tab"] == "bookmarks":
@@ -119,3 +126,9 @@ def library_page(tab: str = "reports", q: str = "") -> None:
                 reports()
 
         content()
+
+    def on_show() -> None:  # a finished research or a new report since; redrawn only then, so the list does not blink
+        if not state["searching"] and snapshot() != state["drawn"]:
+            content.refresh()
+
+    return on_show

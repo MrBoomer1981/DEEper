@@ -1,6 +1,7 @@
 """«Поиск» (/): what to dig into. The topic goes into the pill at the bottom; its «Подробно» opens a sheet
-with how to dig (mode, sources, model, fact-check, «Уточнить тему»). Defaults come from «Фокус»; follow-up
-links pre-fill the topic, the mode and the report the new research continues (`parent`)."""
+with how to dig (mode, sources, model, fact-check, «Уточнить тему»). Defaults come from «Фокус» and follow it
+while the page is open (the tab bar's sections are one page, tabs.py); follow-up links pre-fill the topic, the
+mode and the report the new research continues (`parent`)."""
 
 from nicegui import ui
 
@@ -14,9 +15,8 @@ from my_browser.core.ui import kit, progress
 TOGGLE = "no-caps rounded unelevated dense color=night text-color=paper toggle-color=bordo toggle-text-color=paper"
 
 
-@ui.page("/")
-def search_page(topic: str = "", mode: str = "", parent: int | None = None) -> None:
-    kit.shell("DEEper", active="search")
+def search_screen(topic: str = "", mode: str = "", parent: int | None = None) -> None:
+    """The section «Поиск» of the tab bar's page (tabs.py)."""
     settings = kit.prefs()
     choice = {"mode": mode if mode in kit.MODES else settings["mode"], "sources": settings["sources"],
               "writer": settings["writer"], "factcheck": settings["factcheck"]}  # factcheck None: as the mode has it
@@ -130,7 +130,7 @@ def search_page(topic: str = "", mode: str = "", parent: int | None = None) -> N
                 kit.graffiti("crown", "logo-crown")
                 ui.html('DEE<span class="amber">per</span>', sanitize=False).classes("logo")
             with ui.link(target="/focus").classes("avatar").props('aria-label="Фокус и профиль"'):
-                ui.label((settings.get("name") or "Я")[:1].upper())
+                avatar = ui.label((settings.get("name") or "Я")[:1].upper())
         with ui.element("div").classes("home-hero"):
             with ui.element("div").classes("dip-row"):
                 kit.mascot("hello", 110)
@@ -172,3 +172,12 @@ def search_page(topic: str = "", mode: str = "", parent: int | None = None) -> N
             mode_label = ui.label(kit.MODES[choice["mode"]])
         opt.on("click", options)
         kit.icon_button("arrow_upward", "Исследовать", start).classes("send")
+
+    def defaults_changed() -> None:
+        """«Фокус» changed the defaults: the next research takes them, as a new page of «Поиск» would."""
+        current = kit.prefs()
+        choice.update(mode=current["mode"], sources=current["sources"], writer=current["writer"], factcheck=current["factcheck"])
+        mode_label.set_text(kit.MODES[choice["mode"]])
+        avatar.set_text((current.get("name") or "Я")[:1].upper())
+
+    kit.on_prefs_change(defaults_changed)

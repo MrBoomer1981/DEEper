@@ -1,4 +1,4 @@
-"""«Радар» (/radar): what to dig into next. News and topic watching do not exist yet (plan stages «Новости» and
+"""«Радар» (/radar, a section of the tab bar's page, tabs.py): what to dig into next. News and topic watching do not exist yet (plan stages «Новости» and
 4), so for now the feed is the «Что исследовать дальше» topics of recent reports, minus the ones already
 researched as their continuations: the freshest one as the card, the rest as rows."""
 
@@ -29,14 +29,14 @@ def feed(limit: int = 12) -> list[dict]:
     return topics[:limit]
 
 
-@ui.page("/radar")
-def radar_page() -> None:
-    kit.shell("Радар", active="radar")
-    topics = feed()
-    with kit.screen():
-        with ui.element("div").classes("title-row"):
-            ui.label("Радар").classes("h1")
-            kit.graffiti("cross", "title-cross")
+def radar_screen():
+    """The section «Радар» of the tab bar's page (tabs.py); returns what to call when it is shown again."""
+    shown: list[str] = []
+
+    @ui.refreshable
+    def topics_view() -> None:
+        topics = feed()
+        shown[:] = [t["query"] for t in topics]
         if not topics:
             with ui.element("div").classes("empty"):
                 kit.mascot("sleep", 120)
@@ -57,3 +57,15 @@ def radar_page() -> None:
                     kit.row(t["query"], f"{KINDS[t['kind']].lower()} · отчёт #{t['report'].id} · {kit.day(t['report'].created)}",
                             target=kit.follow_up_url(t["query"], t["mode"], t["report"].id), lines=3)
         ui.label("Новости и слежка за темами появятся здесь позже.").classes("mono-label made-by")
+
+    with kit.screen():
+        with ui.element("div").classes("title-row"):
+            ui.label("Радар").classes("h1")
+            kit.graffiti("cross", "title-cross")
+        topics_view()
+
+    def on_show() -> None:  # new reports bring new topics; redrawn only when they did, so the list does not blink
+        if [t["query"] for t in feed()] != shown:
+            topics_view.refresh()
+
+    return on_show

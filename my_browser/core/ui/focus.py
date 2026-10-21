@@ -61,9 +61,8 @@ def logout() -> None:
     ui.navigate.to("/login")
 
 
-@ui.page("/focus")
-def focus_page() -> None:
-    kit.shell("Фокус", active="focus")
+def focus_screen() -> None:
+    """The section «Фокус» of the tab bar's page (tabs.py). Its changes reach «Поиск» on the same page (kit.save_prefs)."""
 
     def set_rule(**values) -> None:
         kit.save_prefs(preset="mine", **values)

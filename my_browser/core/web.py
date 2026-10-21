@@ -32,8 +32,8 @@ from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from my_browser.core.api import router  # noqa: E402
 from my_browser.core.library import Library  # noqa: E402
 from my_browser.core.ui import kit  # noqa: E402
-# each screen module registers its page
-from my_browser.core.ui import focus, job, library, login, radar, report, search  # noqa: E402,F401
+# tabs registers the tab bar's page (/, /radar, /library, /focus); the other screens register their own
+from my_browser.core.ui import job, login, report, tabs  # noqa: E402,F401
 
 OPEN_PATHS = ("/login", "/static/", "/_nicegui", "/favicon", "/api/")  # /api checks the service token itself
 
@@ -68,6 +68,7 @@ ui.add_head_html(f"""
 <link rel="preload" href="/static/fonts/Unbounded.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/JetBrainsMono.woff2" as="font" type="font/woff2" crossorigin>
 {f'<link rel="preload" href="{ICON_FONT}" as="font" type="font/woff2" crossorigin>' if ICON_FONT else ''}
+<script>addEventListener('pagereveal', e => {{ if (e.viewTransition) document.documentElement.classList.add('vt'); }});</script>
 <link rel="stylesheet" href="/static/app.css?v={VERSION}">
 <script defer src="/static/app.js?v={VERSION}"></script>
 """, shared=True)
