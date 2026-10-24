@@ -29,6 +29,8 @@ async def add(text: str) -> dict:
     async with httpx.AsyncClient(headers={"User-Agent": loop.USER_AGENT}, timeout=loop.TIMEOUT, follow_redirects=True) as client:
         if match := CHANNEL.match(text):
             name = match.group(1)
+            if known := _channel(name):  # channel names are case-insensitive: @Gonzo_ML is gonzo_ML
+                return switch(known["id"], True)
             try:
                 fetched = await telegram.fetch({"url": name}, client)
             except Exception:
@@ -57,6 +59,12 @@ async def add(text: str) -> dict:
             "INSERT INTO sources (kind, url, name, category, lang, owner, interval, added) VALUES (?, ?, ?, 'media', ?, ?, ?, ?) "
             "ON CONFLICT (kind, url) DO UPDATE SET enabled = 1", (kind, url, title, lang, owner, sources.INTERVALS["media"], time.time()))
         return dict(conn.execute("SELECT * FROM sources WHERE kind = ? AND url = ?", (kind, url)).fetchone())
+
+
+def _channel(name: str) -> dict | None:
+    with db.connect() as conn:
+        row = conn.execute("SELECT * FROM sources WHERE kind = 'telegram' AND lower(url) = lower(?)", (name,)).fetchone()
+    return dict(row) if row else None
 
 
 def find(text: str) -> list[dict]:
