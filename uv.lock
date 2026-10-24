@@ -3067,6 +3067,8 @@ news = [
     { name = "fastapi" },
     { name = "fastembed" },
     { name = "feedparser" },
+    { name = "gpt-researcher" },
+    { name = "json-repair" },
     { name = "tzdata" },
     { name = "uvicorn" },
 ]
@@ -3100,6 +3102,8 @@ news = [
     { name = "fastapi", specifier = ">=0.143.3" },
     { name = "fastembed", specifier = ">=0.9.1" },
     { name = "feedparser", specifier = ">=6.0.14" },
+    { name = "gpt-researcher", specifier = ">=0.16.1" },
+    { name = "json-repair", specifier = ">=0.64.0" },
     { name = "tzdata", specifier = ">=2026.5" },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]

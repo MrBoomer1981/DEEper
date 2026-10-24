@@ -102,7 +102,7 @@ def run() -> dict:
             touched.add(story)
             conn.execute("UPDATE items SET story_id = ?, embedding = ? WHERE id = ?", (story, vector, item))
         for story in touched:
-            _refresh(conn, story)
+            refresh(conn, story)
     logger.info("News: %d posts merged into %d stories, %d of them new", len(assignments), len(touched), new_stories)
     return {"posts": len(assignments), "stories": len(touched), "new": new_stories}
 
@@ -124,7 +124,7 @@ def _closest(similarity: np.ndarray, index_story: list[int], seeds: dict, vector
     return best
 
 
-def _refresh(conn, story: int) -> None:
+def refresh(conn, story: int) -> None:
     """A story's counts and its provisional title (the first-hand post's, else the earliest of the best kind)."""
     rows = conn.execute(
         "SELECT i.title, i.published, i.seen, s.owner, s.is_primary, s.category FROM items i "
@@ -141,7 +141,8 @@ def stories(limit: int = 30, hours: int = 48) -> list[dict]:
     since = time.time() - hours * 3600
     with db.connect() as conn:
         rows = [dict(row) for row in conn.execute(
-            "SELECT * FROM stories WHERE last_updated > ? ORDER BY source_count DESC, last_updated DESC LIMIT ?",
+            "SELECT * FROM stories WHERE last_updated > ? AND status != 'merged' "
+            "ORDER BY source_count DESC, last_updated DESC LIMIT ?",
             (since, limit))]
         for story in rows:
             story["posts"] = [dict(p) for p in conn.execute(

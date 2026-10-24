@@ -9,7 +9,7 @@ Point a run at it with environment variables, which beat config.json and the wri
     OPENAI_BASE_URL=http://127.0.0.1:8765/v1 OPENAI_API_KEY=mock uv run app.py
 
 It answers by phrases of the prompts it gets (gpt-researcher's and ours: sub-queries, source rating,
-subtopics, draft titles, sections, fact-check, follow-ups, clarification, questions) with answers of
+subtopics, draft titles, sections, fact-check, follow-ups, clarification, questions, news scoring and summaries) with answers of
 the shape the caller parses. Anything else gets a short report section citing two URLs from the prompt,
 with a figure the fact-check «corrects» (12,5 -> 11,9) and one it cannot find, so a run also exercises the
 check's fixes. If a prompt's wording changes, its answer falls back to that section: a run still ends,
@@ -45,6 +45,15 @@ def answer(prompt: str) -> str:
         urls = [u for u in dict.fromkeys(re.findall(r"https?://[^\s)\]'\"<>]+", prompt))][:2] or ["https://www.iea.org"]
         return ("# Краткая версия\n\n## Главное\n\nКороткий вывод из отчёта со ссылкой на источник "
                 + "".join(f"([{i}]({u}))" for i, u in enumerate(urls, 1)) + ". Свои выводы — без ссылок.\n")
+    if "Ты редактор ленты новостей об искусственном интеллекте" in prompt:  # news/scoring.py: the first story urgent
+        ids = [int(n) for n in re.findall(r"^\[id (\d+)\]", prompt, re.M)]
+        return json.dumps([{"id": n, "is_ai": True, "topic": "models", "importance": 9 if n == 1 else 6 if n % 3 else 2,
+                            "reason": "тестовая оценка", "title_ru": f"Тестовый сюжет {n}", "primary_url": None}
+                           for n in ids], ensure_ascii=False)
+    if "Напиши по-русски резюме каждого сюжета" in prompt:  # news/scoring.py: summaries
+        ids = [int(n) for n in re.findall(r"^\[id (\d+)\]", prompt, re.M)]
+        return json.dumps([{"id": n, "summary": f"Тестовое резюме сюжета {n}: что произошло и кто это сделал."} for n in ids],
+                          ensure_ascii=False)
     if "=== ОТЧЁТ ===" in prompt:  # worker/ask.py
         return "В отчёте нет данных о ценах в России.\n\n**ИССЛЕДОВАТЬ:** Цены на натрий-ионные аккумуляторы в России в 2026 году"
     if "Translate each numbered statement" in prompt:  # worker/factcheck.py

@@ -4,7 +4,7 @@ News is DEEper's news radar: it reads AI news from many independent sources, mer
 
 ## What news does
 
-Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories).
+Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories), stage 5 (scoring and summaries by the LLM).
 - `news/db.py`: everything news keeps, in `REPORTS_DIR/news.sqlite` (WAL): `sources`, `items`, `stories`, `feedback`, `settings`, `state`, `spend`. Columns newer than a table go into `ADDED_COLUMNS`, so an older file on the volume gets them.
 - `news/sources.py`: the sources table and the starting list (`DEFAULTS`).
   - The list mixes kinds of sources: labs' own blogs (first-hand, `is_primary`), papers, independent media, analysts, communities, Russian sites and 26 public Telegram channels (`owner` `tg:<channel>`). Each was checked on 24.10.2026 (`PLAN_News.md`, «Решения»).
@@ -31,11 +31,18 @@ Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collecti
   - A story that has a post of the same owner takes another one only by a shared link or when it is very close: an outlet's different articles on one theme are alike.
   - `source_count` counts distinct owners; `has_primary` a first-hand source; `title` is the first-hand post's, else the earliest of the best kind (`RANK`), until stage 5 writes `title_ru`.
   - On the collection of 24.10.2026: 287 posts made 218 stories, among them Kimi K3.1 with 14 independent sources, OpenAI's offline training with 7 and the first-hand post.
+- `news/scoring.py`: the LLM, after each merging run, within the budget.
+  - Flash scores the stories that wait (never scored, or grown by `RESCORE_GROWTH` sources), `SCORE_BATCH` (12) a call: `is_ai`, `topic` (`config.TOPICS`), `importance` 0–10 with a reason, `title_ru`, `primary_url` (a first-hand link among the posts', which also sets `has_primary`).
+  - Not about AI, or below `MIN_IMPORTANCE` (4): `dropped` with `drop_reason`; else `queued`. A sent story stays `sent`.
+  - `same_as`: each story comes with the `SIMILAR_REFS` (3) scored stories closest to it by post embeddings (`_similar()`, from `SIMILAR_FLOOR` 0.45); when the model names one, or an earlier story of the batch, the story is merged into it (`merge_into()`: posts moved, status `merged`). It catches what embeddings alone could not: two stories about one OpenAI round were 0.72 apart, two different ones 0.67.
+  - Summaries in Russian, one or two sentences: Pro from `PRO_FROM` (7), Flash below, `SUMMARY_BATCH` (6) a call.
+  - Every call is metered (`common/costs.py`) into `spend` by day in the settings' time zone; `within_budget()` stops calls at the day's limit (a thirtieth of `budget_month_rub`, 100 ₽) or the month's. `paused` stops them too.
+  - Measured on the collection of 24.10.2026 (218 stories, off-peak): the whole backlog cost 2.8 ₽ in 41 calls, 113 stories queued, 105 dropped (opinions, ads, tutorials, not AI), 4 merged by `same_as`. A day's new stories should cost about 1–1.5 ₽.
 - `news/loop.py`: the news loop, a plain thread that ticks every minute and marks each tick (`state.loop_tick`).
   - Each tick polls the due sources, at most `CONCURRENCY` (6) at once and one request per host at a time, `HOST_GAP_SEC` (2 s) apart: Reddit answers 429 to quicker ones.
   - A failing source waits twice its interval after one failure, four times after two, eight times after three or more (`sources.due()`).
   - `collect()` is shared with `POST /collect` and never runs twice at once (`_collecting`).
-- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/stories`, `/collect`, `/dedup`, `/settings` (GET, PUT), `/health`.
+- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/stories`, `/collect`, `/dedup`, `/score`, `/settings` (GET, PUT), `/health`.
 
 ## Run and check it alone
 
@@ -46,6 +53,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 - With a throwaway `REPORTS_DIR` and your own `NEWS_PORT`, call it with the service token of that directory: `curl -s localhost:<port>/status -H "Authorization: Bearer $(cat <REPORTS_DIR>/.service_token)"`.
 - A wrong setting: `curl -X PUT .../settings -d '{"digest_times": ["25:00"]}'` answers 422 with the message the bot will show.
 - **Collection.** The loop polls every source at its first tick (60 sources in about 30 s on 24.10.2026: 224 fresh posts of the last 48 hours, 5 147 rows with backfill). `curl -X POST '.../collect?everything=true'` polls them all again: it should store only what is really new. `/items` lists the latest fresh posts, `/sources` each source's `last_error` and `fails`.
+- **Scoring.** `curl -X POST .../score` scores and summarizes what waits, with the real LLM unless the mock's environment is set; `dev/mock_llm.py` answers both prompts (the first story gets 9, so a free run reaches urgent delivery). To see real quality, run `scoring.run()` on a copy of a real `news.sqlite` with a raised `budget_month_rub` on the copy: the whole backlog of a day costs about 3 ₽.
 - **Merging.** `curl -X POST .../dedup` merges the waiting posts now, `/stories` lists the stories with their posts. `uv run eval/news/run_dedup.py` measures merging on `eval/news/pairs.jsonl`, for free (it downloads the models into `eval/reports/.models` the first time); see `eval/CLAUDE.md`.
 - From a Mac the requests go out through the VPN, and Railway's address is a data center's: a source may answer differently there (Reddit limits data centers). `/news` in the bot names the failing sources.
 - The all-in-one app starts the loop too; `NEWS_LOOP=0` keeps it off there (the API still answers).
@@ -62,6 +70,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 
 - **`common`**: `settings` (`REPORTS_DIR`, `NEWS_URL`), `auth`, `clients`. News imports no module of core, the worker, search or the bot.
 - **The bot's token variables**: `/status` reports `telegram` from `TELEGRAM_BOT_TOKEN` / `TELEGRAM_TOKEN`, the same variables `bot/telegram.token()` reads.
+- **DeepSeek**, through gpt-researcher's `create_chat_completion` with `Config(CONFIG_PATH)` (`FAST_LLM`, `SMART_LLM`, `LLM_KWARGS`), like search's rating; `common/costs.py` patches it when imported, which is what meters the calls. The writer toggle of researches does not reach news.
 - **The sources themselves**: their feeds' addresses and formats. Sites without RSS come through github.com/Olshansk/rss-feeds, whose generators can stop (Meta AI's was 90 days old). Hugging Face's `/api/daily_papers` fields: `paper.id`, `title`, `summary`, `upvotes`, `submittedOnDailyAt`, `githubRepo`, `projectPage`.
 
 ## State news owns
@@ -81,5 +90,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 | `link_key()` or `usable_key()` | merging changes: rerun `eval/news/run_dedup.py`; keys already stored keep the old form |
 | the embedding model or `embed.text()` | rerun the eval and choose `dedup_threshold` again: similarities of another model are not comparable; stored embeddings of open stories are of the old model until the window passes |
 | a merging rule in `dedup.py` | run it on a copy of a real `news.sqlite` and read the biggest stories (`dedup.stories()`) |
+| a scoring or summary prompt | `dev/mock_llm.py` recognizes them by «Ты редактор ленты новостей об искусственном интеллекте» and «Напиши по-русски резюме каждого сюжета»; check quality on a copy of real data |
+| a story status | `delivery.py` and `/status` read `queued`, `sent`, `dropped`, `merged` |
 | a kind of source | a module in `collectors/` and its entry in `collectors.fetch()` |
 | the Telegram selectors | check a channel's page by hand first: `telegram._parse()` on a saved `t.me/s/<channel>` |

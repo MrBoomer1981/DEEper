@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from fastapi import Depends, FastAPI, HTTPException
 
 from my_browser.common.auth import require_token
-from my_browser.news import config, db, dedup, items, loop, sources
+from my_browser.news import config, db, dedup, items, loop, scoring, sources
 
 _seeded = False
 
@@ -47,8 +47,9 @@ def status() -> dict:
             "ORDER BY fails DESC, name")]
         items_day = conn.execute("SELECT COUNT(*) FROM items WHERE backfill = 0 AND seen > ?", (now - 86400,)).fetchone()[0]
         items_total = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
-        stories_day = conn.execute("SELECT COUNT(*) FROM stories WHERE first_seen > ?", (now - 86400,)).fetchone()[0]
-        stories_total = conn.execute("SELECT COUNT(*) FROM stories").fetchone()[0]
+        stories_day = conn.execute("SELECT COUNT(*) FROM stories WHERE first_seen > ? AND status != 'merged'",
+                                   (now - 86400,)).fetchone()[0]
+        stories_total = conn.execute("SELECT COUNT(*) FROM stories WHERE status != 'merged'").fetchone()[0]
         spent_today = conn.execute("SELECT COALESCE(SUM(rub), 0) FROM spend WHERE day = ?", (today,)).fetchone()[0]
         spent_month = conn.execute("SELECT COALESCE(SUM(rub), 0) FROM spend WHERE day LIKE ?", (today[:7] + "%",)).fetchone()[0]
     last = db.get_state("last_collect")
@@ -93,6 +94,12 @@ async def get_stories(limit: int = 30, hours: int = 48) -> list[dict]:
 def post_dedup() -> dict:
     """Merge the waiting posts now (a plain def: FastAPI runs it in a thread, the embedding takes seconds)."""
     return dedup.run()
+
+
+@app.post("/score")
+async def post_score() -> dict:
+    """Score and summarize the waiting stories now (LLM calls, within the budget)."""
+    return await scoring.run()
 
 
 @app.post("/collect")

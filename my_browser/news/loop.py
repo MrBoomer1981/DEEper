@@ -1,7 +1,7 @@
 """The news loop: a plain thread that wakes every minute and does what is due.
 
 Each tick polls the sources whose interval has passed and stores their new posts; every few minutes it merges
-the new posts into stories (dedup.py); later stages add scoring and delivery to the same tick. One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
+the new posts into stories (dedup.py) and has the LLM score them (scoring.py); stage 6 adds delivery. One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
 worker's job loop (NEWS_LOOP=0 turns it off), `python -m my_browser.news` next to its API. Every tick is marked
 in the state table, so /status can tell whether a loop runs.
 """
@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from my_browser.news import collectors, config, db, dedup, items, sources
+from my_browser.news import collectors, config, db, dedup, items, scoring, sources
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,11 @@ def tick() -> None:
             logger.info("News: %(polled)d sources polled, %(new)d new posts, %(failed)d failed, %(seconds)s s", summary)
     if now - (db.get_state("dedup_at") or 0) >= DEDUP_EVERY_SEC:
         db.set_state("dedup_at", now)  # before the run: a failing model does not retry every minute
-        dedup.run()
+        try:
+            dedup.run()
+        except Exception:
+            logger.exception("News loop: merging failed")
+        asyncio.run(scoring.run())  # stories merged before still get scored when merging failed
     if now - (db.get_state("slimmed_at") or 0) > SLIM_EVERY_SEC:
         items.slim()
         db.set_state("slimmed_at", now)
