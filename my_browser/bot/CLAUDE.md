@@ -4,7 +4,7 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
 
 ## What the bot does
 
-`bot/telegram.py` (aiogram 3) uses core's API only; report files are downloaded from core and sent as `BufferedInputFile`.
+`bot/telegram.py` (aiogram 3) uses core's API, and the news part's for `/news`; report files are downloaded from core and sent as `BufferedInputFile`.
 - Access is limited to `TELEGRAM_ALLOWED_USERS` through an outer middleware; anyone else is only told their ID. `TELEGRAM_TOKEN` (the DEEper v1 name) works as a fallback for `TELEGRAM_BOT_TOKEN`.
 - A plain-text message is treated as a topic and answered with mode and source buttons. A research is a job in core; a status message follows it every few seconds and shows the worker's phase line as it is.
 - Replying to any message that contains `#N`, or using `/ask N`, answers from report N's text.
@@ -18,6 +18,7 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
 
   Topics are read back through the API, because Telegram limits callback data to 64 bytes. `pending` holds the offered topics, keyed by the message that offered them.
 - Every minute it looks for Telegram jobs interrupted by a restart and edits their status message to offer a restart.
+- `/news` shows the news part's status (`news_text()`): sources and their health, posts and stories of the last day, LLM spend, the schedule. Digests, urgent news and their buttons come at the news part's stage 6 (`PLAN_News.md`).
 
 ## Run and check it alone
 
@@ -34,10 +35,11 @@ uv run python -m my_browser.bot       # needs core at CORE_URL and a bot token; 
 
 ## What the bot relies on
 
-- **Core's API only**: `call("core", ...)` at `CORE_URL` with the service token.
+- **Core's API**: `call("core", ...)` at `CORE_URL` with the service token.
   - `core/CLAUDE.md` lists the fields the bot reads and the order core keeps for follow-ups and Q&A.
-  - The bot imports no module of core, the worker or search, so it can run alone with the `bot` group (aiogram, httpx, python-dotenv). Keep it that way.
-- **`common`**: `clients.call`, `report.KINDS` and `ANY_ANSWER`, `settings.DEFAULT_SOURCES` and `FACTCHECK_MODES`, `text.rub_text`.
+  - The bot imports no module of core, the worker, search or news, so it can run alone with the `bot` group (aiogram, httpx, python-dotenv). Keep it that way.
+- **The news part's API**: `call("news", "GET", "/status")` for `/news`; `news/CLAUDE.md` lists the fields. With `NEWS_URL` unset the call runs in-process and imports `my_browser.news.api`, so a bot installed alone (`--group bot`) needs `NEWS_URL`; without it `/news` answers «Новости сейчас недоступны».
+- **`common`**: `clients.call`, `report.KINDS` and `ANY_ANSWER`, `settings.DEFAULT_SOURCES` and `FACTCHECK_MODES`, `text.rub_text` and `plural`.
   - It must not import `common.costs`, `common.gptr` or `common.auth`: they pull in gpt-researcher and fastapi.
 - **Its own copies of what lives elsewhere**:
   - `MODE_BUTTONS` and `SOURCE_BUTTONS`, whose keys come from `common/settings.py`;
@@ -75,3 +77,4 @@ uv run python -m my_browser.bot       # needs core at CORE_URL and a bot token; 
 | a callback prefix | keep the data within 64 bytes; the prefix list above |
 | the fields read from core | check them in `core/service.py` and `core/jobs.py`, not only here |
 | a mode or source | the table in `core/CLAUDE.md` |
+| what `/news` shows | the fields of the news part's `/status` (`news/CLAUDE.md`) |

@@ -1,7 +1,8 @@
-"""Telegram bot: send a topic, pick a mode, get the report as PDF, DOCX and Markdown.
+"""Telegram bot: send a topic, pick a mode, get the report as PDF, DOCX and Markdown; /news for the news radar.
 
-It talks to core's API only (CORE_URL with the service token). The all-in-one app.py starts it;
-on its own: uv run python -m my_browser.bot (needs TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS).
+It talks to core's API (CORE_URL with the service token) and, for news, to the news part's (NEWS_URL, in-process
+when unset). The all-in-one app.py starts it; on its own: uv run python -m my_browser.bot (needs
+TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS).
 """
 
 import asyncio
@@ -32,7 +33,7 @@ from aiogram.types import (
 from my_browser.common.clients import call
 from my_browser.common.report import ANY_ANSWER, KINDS
 from my_browser.common.settings import DEFAULT_SOURCES, FACTCHECK_MODES
-from my_browser.common.text import rub_text
+from my_browser.common.text import plural, rub_text
 
 MODE_BUTTONS = {"detailed": "📄 Подробный", "deep": "🔬 Глубокий", "quick": "⚡ Быстрый"}
 SOURCE_BUTTONS = {"web": "🌐 Веб", "academic": "🎓 Наука", "all": "🌐+🎓 Всё"}
@@ -59,7 +60,8 @@ HELP = """<b>Глубокие исследования</b>
 /search текст — поиск по всем отчётам
 /ask N вопрос — вопрос по отчёту N
 /delete N — удалить отчёт N
-/block домен — не использовать сайт как источник (/unblock, /blocked)"""
+/block домен — не использовать сайт как источник (/unblock, /blocked)
+/news — новости об ИИ: источники, сбор, расход"""
 
 dp = Dispatcher()
 pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the message that offered it
@@ -386,6 +388,48 @@ async def cmd_blocked(message: Message) -> None:
     )
 
 
+@dp.message(Command("news"))
+async def cmd_news(message: Message) -> None:
+    try:
+        status = (await call("news", "GET", "/status")).json()
+    except Exception as e:  # the news part runs elsewhere (NEWS_URL) and does not answer, or is not installed here
+        logging.warning("News status unavailable: %r", e)
+        await message.answer("Новости сейчас недоступны.")
+        return
+    await message.answer(news_text(status))
+
+
+def news_text(status: dict) -> str:
+    """/news: the news part's sources and their health, the last day, LLM spend and the schedule."""
+    sources, settings, spend = status["sources"], status["settings"], status["spend"]
+    lines = ["📡 <b>Новости об ИИ</b>"]
+    if sources["pending"] == sources["enabled"]:
+        lines.append(f"Источники: {sources['enabled']}, ещё не опрашивались")
+    else:
+        lines.append(f"Источники: {sources['enabled']}, работают {sources['ok']}")
+    if failing := sources["failing"]:
+        names = ", ".join(html.escape(f["name"]) for f in failing[:3])
+        more = f" и ещё {len(failing) - 3}" if len(failing) > 3 else ""
+        lines.append(f"⚠️ С ошибкой {len(failing)}: {names}{more}")
+    posts, stories = status["items"]["day"], status["stories"]["day"]
+    lines.append(f"За сутки: {posts} {plural(posts, 'пост', 'поста', 'постов')}, "
+                 + (f"{stories} {plural(stories, 'сюжет', 'сюжета', 'сюжетов')}" if stories else "сюжетов пока нет"))
+    lines.append(f"LLM: сегодня {rub_text(spend['today_rub'])}, за месяц {rub_text(spend['month_rub'])} "
+                 f"из {spend['budget_month_rub']:g}\u00a0₽")
+    digest = ", ".join(settings["digest_times"]) or "выключен"
+    urgent = f"срочное от {settings['urgent_min_importance']}/10" if settings["urgent_enabled"] else "срочное выключено"
+    quiet = (f"тихие часы {settings['quiet_start']}–{settings['quiet_end']}"
+             if settings["quiet_start"] != settings["quiet_end"] else "без тихих часов")
+    lines.append(f"Дайджест: {digest} ({html.escape(settings['timezone'])}), {urgent}, {quiet}")
+    if last := status.get("last_collect"):
+        lines.append(f"Последний сбор: {last['at'][11:16]}, новых постов {last['new']}")
+    if settings["paused"]:
+        lines.append("⏸ На паузе")
+    elif not status["loop_alive"]:
+        lines.append("⏸ Цикл новостей не запущен")
+    return "\n".join(lines)
+
+
 @dp.callback_query(F.data.startswith("del:"))
 async def on_delete(callback: CallbackQuery) -> None:
     deleted = (await core("DELETE", f"/api/reports/{int(callback.data.split(':')[1])}"))["deleted"]
@@ -624,6 +668,7 @@ async def start(handle_signals: bool = True) -> None:
         BotCommand(command="delete", description="Удалить отчёт N"),
         BotCommand(command="block", description="Не брать сайт в источники"),
         BotCommand(command="blocked", description="Заблокированные сайты"),
+        BotCommand(command="news", description="Новости об ИИ: статус"),
         BotCommand(command="help", description="Как пользоваться"),
     ])
     me = await bot.get_me()

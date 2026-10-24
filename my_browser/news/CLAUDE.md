@@ -4,7 +4,7 @@ News is DEEper's news radar: it reads AI news from many independent sources, mer
 
 ## What news does
 
-Done: stage 0 (the part itself).
+Done: stage 0 (the part itself), stage 1 (`/news` in the bot).
 - `news/db.py`: everything news keeps, in `REPORTS_DIR/news.sqlite` (WAL): `sources`, `items`, `stories`, `feedback`, `settings`, `state`, `spend`. Columns newer than a table go into `ADDED_COLUMNS`, so an older file on the volume gets them.
 - `news/sources.py`: the sources table and the starting list (`DEFAULTS`).
   - The list mixes kinds of sources: labs' own blogs (first-hand, `is_primary`), papers, independent media, analysts, communities and Russian sites. Each was checked on 24.10.2026 (`PLAN_News.md`, «Решения»).
@@ -32,7 +32,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 
 - `app.py` and `news/__main__.py` start `loop.run_forever()` in a thread.
 - `common/clients.call("news", ...)` reaches the API in-process unless `NEWS_URL` is set.
-- `/status` → `sources` (`total`, `enabled`, `ok`, `pending`, `failing` with `name`, `error`, `fails`), `items` and `stories` (`day`, `total`), `spend` (`today_rub`, `month_rub`, `budget_month_rub`, `daily_budget_rub`), `last_collect` (or null), `loop_alive`, `telegram`, `settings`.
+- `/status` → `sources` (`total`, `enabled`, `ok`, `pending`, `failing` with `name`, `error`, `fails`), `items` and `stories` (`day`, `total`), `spend` (`today_rub`, `month_rub`, `budget_month_rub`, `daily_budget_rub`), `last_collect` (or null; `at` in the settings' time zone, `new`), `loop_alive`, `telegram`, `settings`. The bot's `/news` (`bot/telegram.news_text()`) reads all of them but `total`, `telegram` and `daily_budget_rub`.
 - `PUT /settings {key: value}` → the settings, or 422 with `detail` in Russian, one line per refused value.
 
 ## What news relies on
@@ -49,7 +49,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 
 | Change | Also update |
 |---|---|
-| a field of `/status` | the bot's `/news` (stage 1) |
+| a field of `/status` | the bot's `news_text()` |
 | a setting | `LABELS` in `config.py`; the bot's commands and the app once they change it (stage 7) |
 | the starting sources | `PLAN_News.md`, «Решения», if the mix of kinds changes |
 | a table or column | `ADDED_COLUMNS` for databases already on the volume |
