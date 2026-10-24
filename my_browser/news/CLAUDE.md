@@ -4,10 +4,10 @@ News is DEEper's news radar: it reads AI news from many independent sources, mer
 
 ## What news does
 
-Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers).
+Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels).
 - `news/db.py`: everything news keeps, in `REPORTS_DIR/news.sqlite` (WAL): `sources`, `items`, `stories`, `feedback`, `settings`, `state`, `spend`. Columns newer than a table go into `ADDED_COLUMNS`, so an older file on the volume gets them.
 - `news/sources.py`: the sources table and the starting list (`DEFAULTS`).
-  - The list mixes kinds of sources: labs' own blogs (first-hand, `is_primary`), papers, independent media, analysts, communities and Russian sites. Each was checked on 24.10.2026 (`PLAN_News.md`, «Решения»).
+  - The list mixes kinds of sources: labs' own blogs (first-hand, `is_primary`), papers, independent media, analysts, communities, Russian sites and 26 public Telegram channels (`owner` `tg:<channel>`). Each was checked on 24.10.2026 (`PLAN_News.md`, «Решения»).
   - Each source has an `owner`, the organization behind it. Four Anthropic feeds or two Habr hubs are one owner, so a story counts independent owners, not feeds.
   - `ai_filter` marks a general feed (Techmeme, NVIDIA, 3DNews); only its posts about AI will be kept.
   - `interval` is minutes between polls, by category (`INTERVALS`); Reddit gets 60, since it answers 429 to frequent requests.
@@ -17,6 +17,7 @@ Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collecti
 - `news/collectors/`: one module per kind of source, `async fetch(source, client) -> Fetched`.
   - `rss.py`: RSS and Atom (feedparser, parsed in a thread), with conditional GET (`etag`, `modified`): an unchanged feed answers 304.
   - `hf_papers.py`: the official Daily Papers API, papers with `MIN_UPVOTES` (20) or more, linked to arXiv. The whole arXiv cs.CL feed was left out: 183 papers a day.
+  - `telegram.py`: public channels through the web preview `t.me/s/<channel>` (the last ~20 posts, no account). The first line stands in for a title; links come from the text, the link preview and a forward's original, so one news item reposted by several channels shares a key. The selectors are the page's HTML of 24.10.2026: if Telegram changes it, every channel fails at once with «no public preview» or yields no posts.
   - `__init__.py`: `Post`, `text_and_links()` and `link_key()`. A post keeps the keys of the pages it links to, without the scheme, `www.`, tracking parameters, share buttons and its own site's pages; arXiv's abs, pdf and html pages are one key. Stage 4 merges posts that share a key.
 - `news/items.py`: storing posts. `(source_id, external_id)` is unique, so a poll never stores a post twice.
   - Backfill: a source's first poll brings its whole history (OpenAI lists 1 300 posts). Posts older than the dedup window, and undated posts of the first poll, are stored as `backfill`: known, so they never come back as new, and never news.
@@ -70,3 +71,4 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 | a table or column | `ADDED_COLUMNS` for databases already on the volume |
 | `link_key()` | stage 4 merges by these keys; keys already stored keep the old form |
 | a kind of source | a module in `collectors/` and its entry in `collectors.fetch()` |
+| the Telegram selectors | check a channel's page by hand first: `telegram._parse()` on a saved `t.me/s/<channel>` |

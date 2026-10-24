@@ -2,8 +2,8 @@
 
 The list was found and checked on 24.10.2026: every feed answered, parsed and had posts from the last days
 (`PLAN_News.md`, «Решения», has the survey). It mixes independent kinds of sources, so that a story is seen from
-several sides: the labs' own blogs (first-hand), papers, independent media, analysts, communities and Russian
-sites. Telegram channels come at stage 3. Sources added later by the user go to the same table (stage 7).
+several sides: the labs' own blogs (first-hand), papers, independent media, analysts, communities, Russian
+sites and public Telegram channels. Sources added later by the user go to the same table (stage 7).
 
 Defaults are offered once: a source the user removed does not come back, and a source added to DEFAULTS later
 reaches existing databases on the next start.
@@ -34,6 +34,11 @@ class Source:
 
 def _lab(name, url, owner, **kw) -> Source:
     return Source(name, url, "lab", owner, primary=True, **kw)
+
+
+def _tg(channel, title, category, **kw) -> Source:
+    """A public channel read through t.me/s (collectors/telegram.py); each channel is its own owner."""
+    return Source(f"Telegram: {title}", channel, category, f"tg:{channel}", lang="ru", kind="telegram", **kw)
 
 
 DEFAULTS = [
@@ -107,6 +112,34 @@ DEFAULTS = [
            lang="ru"),
     Source("3DNews", "https://3dnews.ru/news/rss/", "media", "3dnews", lang="ru", ai_filter=True),
     Source("Хайтек+", "https://hightech.plus/feed.rss", "media", "hightech-plus", lang="ru", ai_filter=True),
+    # Telegram: channels with public previews and posts in the last days on 24.10.2026, from about 45 checked.
+    # News channels are polled every 15 minutes; authors' every hour, personal ones only for posts about AI.
+    _tg("ai_newz", "эйай ньюз", "media"),
+    _tg("data_secrets", "Data Secrets", "media"),
+    _tg("ai_machinelearning_big_data", "Machinelearning", "media"),
+    _tg("cgevent", "Метаверсище и ИИще", "media"),
+    _tg("aioftheday", "GPT/ChatGPT/AI Central", "media"),
+    _tg("machinelearning_ru", "Машинное обучение RU", "media"),
+    _tg("blognot", "БлоGнот", "media", ai_filter=True),
+    _tg("techsparks", "TechSparks", "media", ai_filter=True),
+    _tg("seeallochnaya", "Сиолошная", "analyst"),
+    _tg("gonzo_ML", "gonzo-обзоры ML статей", "analyst"),
+    _tg("denissexy", "Denis Sexy IT", "analyst"),
+    _tg("lovedeathtransformers", "Love. Death. Transformers.", "analyst"),
+    _tg("llm_under_hood", "LLM под капотом", "analyst"),
+    _tg("rybolos_channel", "Kali Novskaya", "analyst"),
+    _tg("nn_for_science", "AI для всех", "analyst"),
+    _tg("partially_unsupervised", "partially unsupervised", "analyst"),
+    _tg("doomgrad", "Градиент обреченный", "analyst"),
+    _tg("dealerAI", "Dealer.AI", "analyst"),
+    _tg("aihappens", "AI Happens", "analyst"),
+    _tg("epsiloncorrect", "epsilon correct", "analyst"),
+    _tg("opendatascience", "Data Science by ODS.ai", "community"),
+    _tg("boris_again", "Борис опять", "analyst", ai_filter=True),
+    _tg("tech_priestess", "Техножрица", "analyst", ai_filter=True),
+    _tg("theworldisnoteasy", "Малоизвестное интересное", "analyst", ai_filter=True),
+    _tg("singularityfm", "Витя Тарнавский", "analyst", ai_filter=True),
+    _tg("vikhrlabs", "Vikhr models", "lab", primary=True),
 ]
 
 

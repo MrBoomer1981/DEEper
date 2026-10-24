@@ -15,7 +15,8 @@ from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)  # a summary that is only a URL is fine
 
 TEXT_CHARS = 4000  # enough for an embedding and a summary; the rest of a long post adds nothing to either
-TRACKING = re.compile(r"^(utm_\w+|ref|ref_src|fbclid|gclid|mc_cid|mc_eid|igshid|si|source)$")
+# Tracking and referral parameters: Substack adds ?r=, X ?s= and ?t=, YouTube ?si= and ?feature=.
+TRACKING = re.compile(r"^(utm_\w+|ref|ref_src|fbclid|gclid|mc_cid|mc_eid|igshid|si|source|r|s|t|feature|triedRedirect|isFreemail|publication_id|post_id)$")
 SHARE = re.compile(r"/(intent|sharer?|submit)\b|/share\?")  # share buttons carry the post's own address
 ARXIV = re.compile(r"^arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?$")
 
@@ -74,9 +75,9 @@ def text_and_links(html: str, own_host: str) -> tuple[str, list[str]]:
 
 
 async def fetch(source: dict, client: httpx.AsyncClient) -> Fetched:
-    from my_browser.news.collectors import hf_papers, rss
+    from my_browser.news.collectors import hf_papers, rss, telegram
 
-    collectors = {"rss": rss.fetch, "hf_papers": hf_papers.fetch}
+    collectors = {"rss": rss.fetch, "hf_papers": hf_papers.fetch, "telegram": telegram.fetch}
     if source["kind"] not in collectors:
         raise ValueError(f"no collector for {source['kind']!r} yet")
     return await collectors[source["kind"]](source, client)
