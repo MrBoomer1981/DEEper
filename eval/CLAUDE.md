@@ -48,4 +48,10 @@ eval imports the parts' internals in its own process, so a change there can chan
 - **core**: `library.Library`, which stores eval's reports in its own library.
 - **common**: `costs` (the meter, `is_peak`), `settings` (`MODES`, `ROOT`, `SOURCES`, `WRITERS`), `text.host`.
 
+## eval/news: merging news into stories
+
+- `uv run eval/news/run_dedup.py` measures the news part's merging (`my_browser/news/dedup.py`) on `eval/news/pairs.jsonl`: 103 pairs of posts from a live collection, labeled «same event» or not (digest posts null, kept out). It prints precision, recall and F1 per threshold for each model in `MODELS`, with and without shared links, and the best threshold at precision ≥ 0.95; results go to `eval/news/results/`.
+- It costs nothing: no LLM, the embedding models run locally (downloaded once into `eval/reports/.models`: MiniLM 220 MB, mpnet 1 GB).
+- After changing `embed.MODEL`, `embed.text()`, `collectors.link_key()` or `usable_key()`, rerun it and set `config.Settings.dedup_threshold` by the numbers. The pairs measure pairwise merging only; a merging rule that works on whole stories (`dedup._closest()`) is checked on a copy of a real `news.sqlite` instead.
+
 When the citation judge's inputs change (`factcheck.claims`, `Passages`, `translate`, `common.text.MARKDOWN_LINK`), bump `JUDGE` and rejudge the last run (`--rejudge`) so that the numbers stay comparable.

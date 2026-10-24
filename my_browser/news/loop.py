@@ -1,7 +1,7 @@
 """The news loop: a plain thread that wakes every minute and does what is due.
 
-Each tick polls the sources whose interval has passed and stores their new posts; later stages add merging,
-scoring and delivery to the same tick. One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
+Each tick polls the sources whose interval has passed and stores their new posts; every few minutes it merges
+the new posts into stories (dedup.py); later stages add scoring and delivery to the same tick. One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
 worker's job loop (NEWS_LOOP=0 turns it off), `python -m my_browser.news` next to its API. Every tick is marked
 in the state table, so /status can tell whether a loop runs.
 """
@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from my_browser.news import collectors, config, db, items, sources
+from my_browser.news import collectors, config, db, dedup, items, sources
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ TIMEOUT = httpx.Timeout(25, connect=10)
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) "
               "Version/17.0 Safari/605.1.15")
 SLIM_EVERY_SEC = 86400
+DEDUP_EVERY_SEC = 300  # an embedding run starts a child process and loads the model: a few seconds
 
 _collecting = threading.Lock()  # the loop and POST /collect never poll at once
 
@@ -90,6 +91,9 @@ def tick() -> None:
         summary = asyncio.run(collect())
         if summary.get("new") or summary.get("failed"):
             logger.info("News: %(polled)d sources polled, %(new)d new posts, %(failed)d failed, %(seconds)s s", summary)
+    if now - (db.get_state("dedup_at") or 0) >= DEDUP_EVERY_SEC:
+        db.set_state("dedup_at", now)  # before the run: a failing model does not retry every minute
+        dedup.run()
     if now - (db.get_state("slimmed_at") or 0) > SLIM_EVERY_SEC:
         items.slim()
         db.set_state("slimmed_at", now)

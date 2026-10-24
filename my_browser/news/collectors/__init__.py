@@ -19,6 +19,9 @@ TEXT_CHARS = 4000  # enough for an embedding and a summary; the rest of a long p
 TRACKING = re.compile(r"^(utm_\w+|ref|ref_src|fbclid|gclid|mc_cid|mc_eid|igshid|si|source|r|s|t|feature|triedRedirect|isFreemail|publication_id|post_id)$")
 SHARE = re.compile(r"/(intent|sharer?|submit)\b|/share\?")  # share buttons carry the post's own address
 ARXIV = re.compile(r"^arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?$")
+# How many path segments make a page specific on hosts where shorter paths are profiles or sections.
+SEGMENTS = {"github.com": 2, "huggingface.co": 2, "t.me": 2, "reddit.com": 4, "linkedin.com": 2}
+SLUG = re.compile(r"[-_\d]")  # a single segment counts only when it looks like a page's slug, not like /news or /blog
 
 
 @dataclass
@@ -29,6 +32,7 @@ class Post:
     text: str
     links: list[str] = field(default_factory=list)  # link_key() of the pages the post links to
     published: float | None = None  # seconds since the epoch; None when the source gives no date
+    digest: bool = False  # several stories in one post: kept, but out of merging and scoring
 
 
 @dataclass
@@ -54,6 +58,20 @@ def link_key(url: str) -> str:
     if match := ARXIV.match(key):
         return f"arxiv.org/abs/{match.group(1)}"
     return key
+
+
+def usable_key(key: str) -> bool:
+    """Whether two posts sharing this key report the same story: a specific page, not a site's front page, a section
+    such as /news, a profile or a repository's owner. On 24.10.2026 a shared bare «z.ai» joined two unrelated posts."""
+    host, _, path = key.partition("/")
+    segments = [s for s in path.split("?")[0].split("/") if s]
+    if host in ("x.com", "twitter.com"):
+        return "status" in segments
+    if host == "youtube.com":
+        return "v=" in key
+    if host in SEGMENTS:
+        return len(segments) >= SEGMENTS[host]
+    return len(segments) >= 2 or (len(segments) == 1 and len(segments[0]) >= 6 and bool(SLUG.search(segments[0])))
 
 
 def host(url: str) -> str:

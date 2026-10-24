@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from fastapi import Depends, FastAPI, HTTPException
 
 from my_browser.common.auth import require_token
-from my_browser.news import config, db, items, loop, sources
+from my_browser.news import config, db, dedup, items, loop, sources
 
 _seeded = False
 
@@ -81,6 +81,18 @@ async def get_sources() -> list[dict]:
 async def get_items(limit: int = 50) -> list[dict]:
     """The latest fresh posts, newest first."""
     return items.recent(limit)
+
+
+@app.get("/stories")
+async def get_stories(limit: int = 30, hours: int = 48) -> list[dict]:
+    """Recent stories, the most independent sources first, each with its posts."""
+    return dedup.stories(limit, hours)
+
+
+@app.post("/dedup")
+def post_dedup() -> dict:
+    """Merge the waiting posts now (a plain def: FastAPI runs it in a thread, the embedding takes seconds)."""
+    return dedup.run()
 
 
 @app.post("/collect")

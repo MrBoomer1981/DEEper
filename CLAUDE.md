@@ -22,6 +22,7 @@ FAST_LLM=openai:mock SMART_LLM=openai:mock STRATEGIC_LLM=openai:mock OPENAI_API_
   OPENAI_BASE_URL=http://127.0.0.1:8765/v1 uv run research.py "тема" --mode quick
 uv add --group worker <pkg>                # uv, Python 3.12: shared deps in [project], each part's in its dependency group
 uv run eval/run.py                         # quality measurement on eval/topics.txt -> eval/results/ (≈10 ₽); see eval/CLAUDE.md
+uv run eval/news/run_dedup.py              # news merging measured on labeled pairs (free, local models)
 ```
 
 The commands work from any folder of the repository: uv finds the project upward, `my_browser` is installed into the environment as an editable package, and `docker compose` finds its file upward too. Root scripts take a path from elsewhere (`uv run ../../research.py` from a part's folder). Don't name a module after a stdlib one (core's job queue is `jobs.py`, not `queue.py`): `python -m` and `python -c` put the current folder first on `sys.path`, so a `queue.py` there shadowed the stdlib's and core did not start from its own folder.

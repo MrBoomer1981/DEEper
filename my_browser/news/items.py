@@ -20,8 +20,8 @@ WORDS = re.compile(
     r"Perplexity|Midjourney|Sora|GigaChat|YandexGPT|Kandinsky|Алис[аеуы] AI)\b|"
     r"искусственн\w* интеллект|нейросет|нейронн\w* сет|машинн\w* обучени|языков\w* модел|чат-?бот|генеративн",
     re.IGNORECASE)
-INSERT = ("INSERT OR IGNORE INTO items (source_id, external_id, url, title, text, links, published, seen, lang, backfill) "
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+INSERT = ("INSERT OR IGNORE INTO items (source_id, external_id, url, title, text, links, published, seen, lang, backfill, "
+          "digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 
 
 def is_about_ai(text: str) -> bool:
@@ -45,7 +45,8 @@ def store(source: dict, posts: list[Post], window_hours: int) -> tuple[int, int]
         published = min(post.published, now) if post.published else None
         backfill = now - published > window_hours * 3600 if published else first_poll
         row = (source["id"], post.external_id, post.url, post.title, post.text[:300] if backfill else post.text,
-               json.dumps(post.links), published or now, now, language(f"{post.title} {post.text[:500]}"), int(backfill))
+               json.dumps(post.links), published or now, now, language(f"{post.title} {post.text[:500]}"), int(backfill),
+               int(post.digest))
         (old_rows if backfill else fresh_rows).append(row)
     with db.transaction() as conn:
         start = conn.total_changes

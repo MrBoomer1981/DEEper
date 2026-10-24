@@ -14,7 +14,8 @@ core = ["nicegui>=3.18.0", "markdown2>=2.5"]  # markdown2 comes with NiceGUI; co
 worker = ["gpt-researcher>=0.16.1", "langchain-mcp-adapters>=0.3.2", "fastapi>=0.143.3", "uvicorn>=0.54.0"]
 search = ["gpt-researcher>=0.16.1", "json-repair>=0.64.0", "fastapi>=0.143.3", "uvicorn>=0.54.0"]
 bot = ["aiogram>=3.31.0"]
-news = ["feedparser>=6.0.14", "beautifulsoup4>=4.15.0", "tzdata>=2026.5", "fastapi>=0.143.3", "uvicorn>=0.54.0"]  # tzdata: zoneinfo on slim images
+news = ["feedparser>=6.0.14", "beautifulsoup4>=4.15.0", "tzdata>=2026.5", "fastapi>=0.143.3", "uvicorn>=0.54.0",
+        "fastembed>=0.9.1"]  # tzdata: zoneinfo on slim images; fastembed: stage 4, in a child process
 
 [tool.uv]
 # app.py runs every part in one process, so `uv run` installs all groups; an image for a single

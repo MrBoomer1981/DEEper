@@ -44,7 +44,7 @@ class Settings(BaseModel):
     quiet_start: str = "23:00"  # urgent news waits for the morning in between; equal times: no quiet hours
     quiet_end: str = "08:00"
     dedup_window_hours: int = Field(48, ge=6, le=168)
-    dedup_threshold: float = Field(0.82, gt=0, lt=1)  # chosen by the eval at stage 4
+    dedup_threshold: float = Field(0.66, gt=0, lt=1)  # eval/news, 24.10.2026: P 0.98, R 0.96 with links
     topics: list[str] = list(TOPICS)
     budget_month_rub: float = Field(100, ge=0, le=300)  # the daily limit is a thirtieth of it
     paused: bool = False

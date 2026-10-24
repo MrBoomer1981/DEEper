@@ -6,6 +6,7 @@ news in several channels shares a link_key() at stage 4.
 """
 
 import asyncio
+import re
 from datetime import datetime
 
 import httpx
@@ -14,6 +15,8 @@ from bs4 import BeautifulSoup
 from my_browser.news.collectors import SHARE, TEXT_CHARS, Fetched, Post, link_key
 
 TITLE_CHARS = 160
+WORDS = re.compile(r"\w{2,}")
+DIGEST_LINKS = 4  # a channel's roundup links every story it retells; one story rarely needs four links
 
 
 async def fetch(source: dict, client: httpx.AsyncClient) -> Fetched:
@@ -33,10 +36,14 @@ def _parse(html: str, name: str) -> list[Post]:
         body = message.select_one(".tgme_widget_message_text")
         if body is None:  # a photo or a video without a caption
             continue
-        lines = [line.strip() for line in body.get_text("\n").splitlines() if line.strip()]
-        text = " ".join(" ".join(lines).split())[:TEXT_CHARS]
+        for br in body.find_all("br"):
+            br.replace_with("\n")
+        raw = body.get_text("")  # inline links and bold stay inside their line
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        text = " ".join(raw.split())[:TEXT_CHARS]
         if not text:
             continue
+        title = next((line for line in lines if len(WORDS.findall(line)) >= 2), lines[0])  # not a lone «✔️»
         links = []
         anchors = body.select("a[href]") + message.select("a.tgme_widget_message_link_preview[href]")
         anchors += message.select("a.tgme_widget_message_forwarded_from_name[href]")
@@ -50,5 +57,6 @@ def _parse(html: str, name: str) -> list[Post]:
         stamp = message.select_one(".tgme_widget_message_date time[datetime]")
         published = datetime.fromisoformat(stamp["datetime"]).timestamp() if stamp else None
         post_id = message["data-post"]  # "channel/123"
-        posts.append(Post(post_id, f"https://t.me/{post_id}", lines[0][:TITLE_CHARS], text, links[:30], published))
+        posts.append(Post(post_id, f"https://t.me/{post_id}", title[:TITLE_CHARS], text, links[:30], published,
+                          digest=len(links) >= DIGEST_LINKS))
     return posts

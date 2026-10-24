@@ -26,12 +26,13 @@ R=$(git rev-parse --show-toplevel)
 uv run "$R/dev/mock_llm.py" --port <mock> > "$D/mock.log" 2>&1 &
 FAST_LLM=openai:mock SMART_LLM=openai:mock STRATEGIC_LLM=openai:mock OPENAI_API_KEY=mock \
 OPENAI_BASE_URL=http://127.0.0.1:<mock>/v1 REPORTS_DIR="$D/reports" PORT=<port> PUBLIC=0 \
-TELEGRAM_BOT_TOKEN= TELEGRAM_TOKEN= uv run "$R/app.py" > "$D/app.log" 2>&1 &
+NEWS_MODELS_DIR="$R/reports/.models" TELEGRAM_BOT_TOKEN= TELEGRAM_TOKEN= uv run "$R/app.py" > "$D/app.log" 2>&1 &
 ```
 
 - `PUBLIC=0` keeps it on 127.0.0.1 without a password, whatever the port.
 - Empty Telegram tokens: a second bot poller would break the bot on Railway.
 - The mock's address goes through environment variables, which beat `config.json` and the writer toggle.
+- `NEWS_MODELS_DIR`: the news part's embedding model (220 MB) is downloaded once into the local `reports/.models`, not into every throwaway directory.
 
 When `curl -s localhost:<port>/login` answers, submit a research through core's API, as the bot does:
 

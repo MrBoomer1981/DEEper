@@ -4,7 +4,7 @@ News is DEEper's news radar: it reads AI news from many independent sources, mer
 
 ## What news does
 
-Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels).
+Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories).
 - `news/db.py`: everything news keeps, in `REPORTS_DIR/news.sqlite` (WAL): `sources`, `items`, `stories`, `feedback`, `settings`, `state`, `spend`. Columns newer than a table go into `ADDED_COLUMNS`, so an older file on the volume gets them.
 - `news/sources.py`: the sources table and the starting list (`DEFAULTS`).
   - The list mixes kinds of sources: labs' own blogs (first-hand, `is_primary`), papers, independent media, analysts, communities, Russian sites and 26 public Telegram channels (`owner` `tg:<channel>`). Each was checked on 24.10.2026 (`PLAN_News.md`, «Решения»).
@@ -18,16 +18,24 @@ Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collecti
   - `rss.py`: RSS and Atom (feedparser, parsed in a thread), with conditional GET (`etag`, `modified`): an unchanged feed answers 304.
   - `hf_papers.py`: the official Daily Papers API, papers with `MIN_UPVOTES` (20) or more, linked to arXiv. The whole arXiv cs.CL feed was left out: 183 papers a day.
   - `telegram.py`: public channels through the web preview `t.me/s/<channel>` (the last ~20 posts, no account). The first line stands in for a title; links come from the text, the link preview and a forward's original, so one news item reposted by several channels shares a key. The selectors are the page's HTML of 24.10.2026: if Telegram changes it, every channel fails at once with «no public preview» or yields no posts.
-  - `__init__.py`: `Post`, `text_and_links()` and `link_key()`. A post keeps the keys of the pages it links to, without the scheme, `www.`, tracking parameters, share buttons and its own site's pages; arXiv's abs, pdf and html pages are one key. Stage 4 merges posts that share a key.
+  - `__init__.py`: `Post`, `text_and_links()`, `link_key()` and `usable_key()`. A post keeps the keys of the pages it links to, without the scheme, `www.`, tracking and referral parameters, share buttons and its own site's pages; arXiv's abs, pdf and html pages are one key. `usable_key()` says which keys may merge posts: a specific page, not a front page (a shared bare `z.ai` once joined two unrelated posts), a section like `/news`, a profile or a repository's owner.
+  - A Telegram post with 4 or more links is a digest (`Post.digest`): a channel's roundup of several stories, stored but kept out of merging. Linking every story it retells, it would glue them together.
 - `news/items.py`: storing posts. `(source_id, external_id)` is unique, so a poll never stores a post twice.
   - Backfill: a source's first poll brings its whole history (OpenAI lists 1 300 posts). Posts older than the dedup window, and undated posts of the first poll, are stored as `backfill`: known, so they never come back as new, and never news.
   - `ai_filter` sources keep only posts that name AI (`is_about_ai()`: acronyms in capitals, words and model names in both languages).
   - `slim()`, daily: posts older than 30 days lose their text and embedding but keep their rows, so a feed that still lists them does not bring them back.
+- `news/embed.py`: sentence embeddings (fastembed, `MODEL` = paraphrase-multilingual-MiniLM-L12-v2, 384 dimensions) in a child process (`python -m my_browser.news.embed`), so the model's few hundred megabytes go back after each batch. It is downloaded once (220 MB) into `REPORTS_DIR/.models`, or `NEWS_MODELS_DIR`. About 8 s for 300 posts on the Mac once downloaded.
+- `news/dedup.py`: merging posts into stories, every 5 minutes (`loop.DEDUP_EVERY_SEC`), oldest post first.
+  - A usable link shared with a post of an open story (one with a post in the dedup window) merges, if the two are not unrelated (`LINK_FLOOR` 0.35).
+  - Otherwise by meaning: the story whose first post is as close as `dedup_threshold` (0.66, chosen by `eval/news`), or whose closest post is `CHAIN_MARGIN` (0.08) closer still. Measuring from the first post keeps a story from drifting through a chain of posts each like the one before.
+  - A story that has a post of the same owner takes another one only by a shared link or when it is very close: an outlet's different articles on one theme are alike.
+  - `source_count` counts distinct owners; `has_primary` a first-hand source; `title` is the first-hand post's, else the earliest of the best kind (`RANK`), until stage 5 writes `title_ru`.
+  - On the collection of 24.10.2026: 287 posts made 218 stories, among them Kimi K3.1 with 14 independent sources, OpenAI's offline training with 7 and the first-hand post.
 - `news/loop.py`: the news loop, a plain thread that ticks every minute and marks each tick (`state.loop_tick`).
   - Each tick polls the due sources, at most `CONCURRENCY` (6) at once and one request per host at a time, `HOST_GAP_SEC` (2 s) apart: Reddit answers 429 to quicker ones.
   - A failing source waits twice its interval after one failure, four times after two, eight times after three or more (`sources.due()`).
   - `collect()` is shared with `POST /collect` and never runs twice at once (`_collecting`).
-- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/collect`, `/settings` (GET, PUT), `/health`.
+- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/stories`, `/collect`, `/dedup`, `/settings` (GET, PUT), `/health`.
 
 ## Run and check it alone
 
@@ -38,6 +46,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 - With a throwaway `REPORTS_DIR` and your own `NEWS_PORT`, call it with the service token of that directory: `curl -s localhost:<port>/status -H "Authorization: Bearer $(cat <REPORTS_DIR>/.service_token)"`.
 - A wrong setting: `curl -X PUT .../settings -d '{"digest_times": ["25:00"]}'` answers 422 with the message the bot will show.
 - **Collection.** The loop polls every source at its first tick (60 sources in about 30 s on 24.10.2026: 224 fresh posts of the last 48 hours, 5 147 rows with backfill). `curl -X POST '.../collect?everything=true'` polls them all again: it should store only what is really new. `/items` lists the latest fresh posts, `/sources` each source's `last_error` and `fails`.
+- **Merging.** `curl -X POST .../dedup` merges the waiting posts now, `/stories` lists the stories with their posts. `uv run eval/news/run_dedup.py` measures merging on `eval/news/pairs.jsonl`, for free (it downloads the models into `eval/reports/.models` the first time); see `eval/CLAUDE.md`.
 - From a Mac the requests go out through the VPN, and Railway's address is a data center's: a source may answer differently there (Reddit limits data centers). `/news` in the bot names the failing sources.
 - The all-in-one app starts the loop too; `NEWS_LOOP=0` keeps it off there (the API still answers).
 - **The whole project.** Before committing, run the `check-project` skill.
@@ -69,6 +78,8 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 | a setting | `LABELS` in `config.py`; the bot's commands and the app once they change it (stage 7) |
 | the starting sources | `PLAN_News.md`, «Решения», if the mix of kinds changes |
 | a table or column | `ADDED_COLUMNS` for databases already on the volume |
-| `link_key()` | stage 4 merges by these keys; keys already stored keep the old form |
+| `link_key()` or `usable_key()` | merging changes: rerun `eval/news/run_dedup.py`; keys already stored keep the old form |
+| the embedding model or `embed.text()` | rerun the eval and choose `dedup_threshold` again: similarities of another model are not comparable; stored embeddings of open stories are of the old model until the window passes |
+| a merging rule in `dedup.py` | run it on a copy of a real `news.sqlite` and read the biggest stories (`dedup.stories()`) |
 | a kind of source | a module in `collectors/` and its entry in `collectors.fetch()` |
 | the Telegram selectors | check a channel's page by hand first: `telegram._parse()` on a saved `t.me/s/<channel>` |
