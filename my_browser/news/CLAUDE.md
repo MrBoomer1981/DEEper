@@ -4,7 +4,7 @@ News is DEEper's news radar: it reads AI news from many independent sources, mer
 
 ## What news does
 
-Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories), stage 5 (scoring and summaries by the LLM), stage 6 (delivery to the bot and «Радар»).
+Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories), stage 5 (scoring and summaries by the LLM), stage 6 (delivery to the bot and «Радар»), stage 7 (settings and sources from Telegram).
 - `news/db.py`: everything news keeps, in `REPORTS_DIR/news.sqlite` (WAL): `sources`, `items`, `stories`, `feedback`, `settings`, `state`, `spend`. Columns newer than a table go into `ADDED_COLUMNS`, so an older file on the volume gets them.
 - `news/sources.py`: the sources table and the starting list (`DEFAULTS`).
   - The list mixes kinds of sources: labs' own blogs (first-hand, `is_primary`), papers, independent media, analysts, communities, Russian sites and 26 public Telegram channels (`owner` `tg:<channel>`). Each was checked on 24.10.2026 (`PLAN_News.md`, «Решения»).
@@ -45,11 +45,13 @@ Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collecti
   - A sent story that grew to twice its `sent_count` and `UPDATE_MIN` more comes back once in a digest as «🔄 обновление» (`update_sent`).
   - A story: «🟢 первоисточник · 7 источников · модели» (🟡 пересказы without a first-hand source), the Russian title, the summary, «🔗 первоисточник · ещё 6». The app's `header` has no colored marks: green and yellow are not in its brand's palette.
   - Checked with a simulated clock on real scored stories: nothing at 03:00 and 08:30, a digest of 15 at 09:00 (6 000 characters: the bot splits it in two), nothing again at 09:30, an urgent story alone at 12:00, the evening digest of the rest at 18:00.
+- `news/manage.py`: sources the user adds and removes. `add()` checks a feed (it must parse and have posts) or a channel (a public preview with posts) before storing it as `media`, its owner the feed's site or `tg:<channel>`; an existing one is switched back on. `switch()` only switches a source off: its posts stay in their stories, and a starting source switched off is not offered again. Refusals raise `SourceError` with a message for the user.
+- Only the topics on in the settings reach digests, urgent messages and «Радар» (`delivery._topics()`); scoring still scores everything.
 - `news/loop.py`: the news loop, a plain thread that ticks every minute and marks each tick (`state.loop_tick`).
   - Each tick polls the due sources, at most `CONCURRENCY` (6) at once and one request per host at a time, `HOST_GAP_SEC` (2 s) apart: Reddit answers 429 to quicker ones.
   - A failing source waits twice its interval after one failure, four times after two, eight times after three or more (`sources.due()`).
   - `collect()` is shared with `POST /collect` and never runs twice at once (`_collecting`).
-- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/stories`, `/stories/{id}`, `/feed`, `/deliveries`, `/deliveries/{id}/sent`, `/feedback`, `/collect`, `/dedup`, `/score`, `/deliver`, `/settings` (GET, PUT), `/health`.
+- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/sources` (GET, POST), `/sources/find`, `/sources/{id}` (DELETE), `/stories`, `/stories/{id}`, `/feed`, `/deliveries`, `/deliveries/{id}/sent`, `/feedback`, `/collect`, `/dedup`, `/score`, `/deliver`, `/settings` (GET, PUT), `/health`.
 
 ## Run and check it alone
 
@@ -75,6 +77,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 - The bot (`bot/telegram.py`):
   - `deliver_news()` polls `GET /deliveries` → `[{id, kind, created, text, buttons}]` every 30 s, sends `text` (Telegram HTML; each line closes its own tags, so `_chunks()` may split between lines) with `buttons` (rows of `[label, callback data]`) on the last part, then `POST /deliveries/{id}/sent`.
   - Callback data the news part writes: `nr:<story id>` (the bot reads `GET /stories/{id}`: `title_ru`, `title` and offers it as a research topic) and `nf:<story id>:<1|-1>` (`POST /feedback {story_id, value}`). Both stay within Telegram's 64 bytes.
+- The bot's settings commands: `GET /settings` (with `topic_names`) and `PUT /settings` (422 `detail` shown as it is); `/sources` reads `GET /sources` (`id`, `name`, `kind`, `url`, `enabled`, `polled`, `last_ok`, `last_error`, `week`); `/add` posts `{text}` to `POST /sources` (422 `detail` on refusal); `/remove` finds with `GET /sources/find?q=` and switches off with `DELETE /sources/{id}`.
 - Core's «Радар» (`core/ui/radar.py`): `GET /feed?limit=` → stories with `id`, `title_ru`, `title`, `summary_ru`, `header` (no colored marks), `link`, `link_label`, `source_count`, `importance`. `tabs.page()` fetches it before building the page.
 
 ## What news relies on

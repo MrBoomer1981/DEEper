@@ -10,7 +10,8 @@ sends them to TELEGRAM_ALLOWED_USERS and marks them sent (POST /deliveries/{id}/
   not sent yet, the most important first, at most digest_max_stories, with numbered buttons to research any.
 - A sent story that grew to twice its sources at sending, and UPDATE_MIN more, comes back once in a digest as an
   update; never twice.
-Nothing goes out while paused, and a story is never sent twice.
+Nothing goes out while paused, and a story is never sent twice. Only the topics on in the settings go out
+(and into «Радар»).
 """
 
 import html
@@ -28,6 +29,11 @@ DIGEST_HOLD_HOURS = 2
 UPDATE_MIN = 3
 DIGEST_MIN_IMPORTANCE = 4
 KEEP_DELIVERIES_DAYS = 14
+
+
+def _topics(settings: config.Settings) -> tuple[str, list[str]]:
+    """The SQL condition for the topics on, and its parameters."""
+    return f"topic IN ({','.join('?' * len(settings.topics))})" if settings.topics else "0", list(settings.topics)
 
 
 def _local_now(settings: config.Settings) -> datetime:
@@ -88,9 +94,11 @@ def run() -> dict:
         if slot:  # first: a digest due now takes the urgent stories waiting, the most important lead it
             queued["digest"] = _digest(conn, settings, slot)
         if settings.urgent_enabled and not quiet(settings, local) and not _held_for_digest(settings, local):
+            on, topics = _topics(settings)
             urgent = [dict(row) for row in conn.execute(
-                "SELECT * FROM stories WHERE status = 'queued' AND importance >= ? AND first_seen > ? AND summary_ru IS NOT NULL "
-                "ORDER BY importance DESC, source_count DESC", (settings.urgent_min_importance, now - URGENT_HOURS * 3600))]
+                f"SELECT * FROM stories WHERE status = 'queued' AND importance >= ? AND first_seen > ? AND summary_ru IS NOT NULL "
+                f"AND {on} ORDER BY importance DESC, source_count DESC",
+                [settings.urgent_min_importance, now - URGENT_HOURS * 3600, *topics])]
             if urgent:
                 _urgent(conn, urgent)
                 queued["urgent"] = len(urgent)
@@ -142,10 +150,11 @@ def _due_digest(settings: config.Settings, local: datetime) -> str | None:
 
 
 def _digest(conn, settings: config.Settings, slot: str) -> int:
+    on, topics = _topics(settings)
     fresh = [dict(row) for row in conn.execute(
-        "SELECT * FROM stories WHERE status = 'queued' AND importance >= ? AND last_updated > ? "
+        f"SELECT * FROM stories WHERE status = 'queued' AND importance >= ? AND last_updated > ? AND {on} "
         "ORDER BY importance DESC, source_count DESC, last_updated DESC LIMIT ?",
-        (DIGEST_MIN_IMPORTANCE, time.time() - settings.dedup_window_hours * 3600, settings.digest_max_stories))]
+        [DIGEST_MIN_IMPORTANCE, time.time() - settings.dedup_window_hours * 3600, *topics, settings.digest_max_stories])]
     room = settings.digest_max_stories - len(fresh)
     grown = [dict(row) for row in conn.execute(
         "SELECT * FROM stories WHERE status = 'sent' AND update_sent = 0 AND sent_count IS NOT NULL "
@@ -198,11 +207,12 @@ def story(story_id: int) -> dict | None:
 
 def feed(limit: int = 12, hours: int = 36) -> list[dict]:
     """«Радар»: the scored stories of the last hours, the most important first, each with its header and best link."""
+    on, topics = _topics(config.load())
     with db.connect() as conn:
         rows = [dict(row) for row in conn.execute(
-            "SELECT * FROM stories WHERE status IN ('queued', 'sent') AND importance >= ? AND last_updated > ? "
+            f"SELECT * FROM stories WHERE status IN ('queued', 'sent') AND importance >= ? AND last_updated > ? AND {on} "
             "ORDER BY importance DESC, source_count DESC, last_updated DESC LIMIT ?",
-            (DIGEST_MIN_IMPORTANCE, time.time() - hours * 3600, limit))]
+            [DIGEST_MIN_IMPORTANCE, time.time() - hours * 3600, *topics, limit])]
         for row in rows:
             posts = _posts(conn, row["id"])
             first_hand = row["primary_url"] or next((p["url"] for p in posts if p["is_primary"]), None)

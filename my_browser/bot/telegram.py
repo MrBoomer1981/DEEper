@@ -63,8 +63,16 @@ HELP = """<b>Глубокие исследования</b>
 /ask N вопрос — вопрос по отчёту N
 /delete N — удалить отчёт N
 /block домен — не использовать сайт как источник (/unblock, /blocked)
-/news — новости об ИИ: источники, сбор, расход
-Новости об ИИ приходят сами: срочное — сразу (ночью ждёт утра), дайджест — в 09:00 и 18:00. Кнопка 🔎 под сюжетом запускает по нему исследование."""
+
+<b>Новости об ИИ</b> приходят сами: срочное — сразу (ночью ждёт утра), дайджест — в 09:00 и 18:00. Кнопка 🔎 под сюжетом запускает по нему исследование.
+/news — статус: источники, сбор, расход
+/sources — источники и их состояние
+/add ссылка на RSS или @канал — добавить источник; /remove имя — выключить
+/time 09:00 18:00 — время дайджестов (/time off — без них)
+/quiet 23:00 08:00 — тихие часы (/quiet off)
+/urgent 8 — порог срочного, от 1 до 10 (/urgent off)
+/topics — темы кнопками
+/pause, /resume — остановить и продолжить новости"""
 
 dp = Dispatcher()
 pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the message that offered it
@@ -433,6 +441,149 @@ def news_text(status: dict) -> str:
     return "\n".join(lines)
 
 
+async def _news_settings(message: Message, changes: dict, done: str) -> None:
+    """Change the news part's settings; its refusal (in Russian) goes back to the user as it is."""
+    try:
+        await call("news", "PUT", "/settings", json=changes)
+    except httpx.HTTPStatusError as e:
+        detail = e.response.json().get("detail") if e.response.status_code == 422 else None
+        await message.answer(f"Не получилось: {html.escape(detail or str(e)[:200])}")
+        return
+    await message.answer(done)
+
+
+TIME = re.compile(r"^\d{1,2}:\d{2}$")
+
+
+def _times(args: str) -> list[str]:
+    """«9:00 18:00» -> ["09:00", "18:00"]; the news part checks the rest."""
+    return [t.zfill(5) if TIME.match(t) else t for t in args.replace(",", " ").split()]
+
+
+@dp.message(Command("time"))
+async def cmd_time(message: Message, command: CommandObject) -> None:
+    args = (command.args or "").strip()
+    if not args:
+        await message.answer("Формат: /time 09:00 18:00 — до шести дайджестов в день; /time off — без дайджестов")
+        return
+    times = [] if args.lower() in ("off", "нет", "выкл") else _times(args)
+    await _news_settings(message, {"digest_times": times},
+                         f"⏰ Дайджест: {', '.join(times)}" if times else "⏰ Дайджестов не будет, только срочное")
+
+
+@dp.message(Command("quiet"))
+async def cmd_quiet(message: Message, command: CommandObject) -> None:
+    args = (command.args or "").strip()
+    if args.lower() in ("off", "нет", "выкл"):
+        await _news_settings(message, {"quiet_start": "00:00", "quiet_end": "00:00"}, "🔔 Тихих часов нет: срочное приходит в любое время")
+        return
+    times = _times(args)
+    if len(times) != 2:
+        await message.answer("Формат: /quiet 23:00 08:00 — срочное в это время ждёт утра; /quiet off — без тихих часов")
+        return
+    await _news_settings(message, {"quiet_start": times[0], "quiet_end": times[1]}, f"🌙 Тихие часы: {times[0]}–{times[1]}")
+
+
+@dp.message(Command("urgent"))
+async def cmd_urgent(message: Message, command: CommandObject) -> None:
+    args = (command.args or "").strip()
+    if args.lower() in ("off", "нет", "выкл"):
+        await _news_settings(message, {"urgent_enabled": False}, "⚡️ Срочное выключено: всё только в дайджестах")
+        return
+    if not args.isdigit():
+        await message.answer("Формат: /urgent 8 — присылать сразу сюжеты от этой важности (1–10); /urgent off — не присылать")
+        return
+    await _news_settings(message, {"urgent_enabled": True, "urgent_min_importance": int(args)},
+                         f"⚡️ Срочное: от важности {args} из 10")
+
+
+@dp.message(Command("pause"))
+async def cmd_pause(message: Message) -> None:
+    await _news_settings(message, {"paused": True}, "⏸ Новости на паузе: сбор идёт, оценки и сообщения — нет. Продолжить: /resume")
+
+
+@dp.message(Command("resume"))
+async def cmd_resume(message: Message) -> None:
+    await _news_settings(message, {"paused": False}, "▶️ Новости снова идут")
+
+
+def _topics_keyboard(settings: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=("✅ " if key in settings["topics"] else "▫️ ") + name, callback_data=f"nt:{key}")]
+        for key, name in settings["topic_names"].items()])
+
+
+@dp.message(Command("topics"))
+async def cmd_topics(message: Message) -> None:
+    settings = (await call("news", "GET", "/settings")).json()
+    await message.answer("Темы новостей: нажмите, чтобы включить или выключить.", reply_markup=_topics_keyboard(settings))
+
+
+@dp.callback_query(F.data.startswith("nt:"))
+async def on_topic_toggle(callback: CallbackQuery) -> None:
+    topic = callback.data.split(":", 1)[1]
+    settings = (await call("news", "GET", "/settings")).json()
+    topics = [t for t in settings["topics"] if t != topic] if topic in settings["topics"] else settings["topics"] + [topic]
+    try:
+        await call("news", "PUT", "/settings", json={"topics": topics})
+    except httpx.HTTPStatusError:
+        await callback.answer("Не получилось", show_alert=True)
+        return
+    await callback.answer()
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_reply_markup(reply_markup=_topics_keyboard({**settings, "topics": topics}))
+
+
+SOURCE_MARK = {True: "✅", False: "⚠️"}
+
+
+@dp.message(Command("sources"))
+async def cmd_sources(message: Message) -> None:
+    rows = (await call("news", "GET", "/sources")).json()
+    lines = []
+    for row in rows:
+        mark = "⏸" if not row["enabled"] else "🕓" if row["polled"] is None else SOURCE_MARK[not row["last_error"]]
+        note = f" — {html.escape(row['last_error'])}" if row["enabled"] and row["last_error"] else f" — {row['week']} за неделю"
+        lines.append(f"{mark} <b>#{row['id']}</b> {html.escape(row['name'])}{note}")
+    working = sum(1 for r in rows if r["enabled"] and r["last_ok"] and not r["last_error"])
+    header = f"📡 <b>Источники</b>: {sum(1 for r in rows if r['enabled'])}, работают {working}\n✅ работает · ⚠️ ошибка · 🕓 ещё не опрошен · ⏸ выключен\n\n"
+    for part in _chunks(header + "\n".join(lines)):
+        await message.answer(part, link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+
+@dp.message(Command("add"))
+async def cmd_add(message: Message, command: CommandObject) -> None:
+    if not command.args:
+        await message.answer("Формат: /add https://example.com/feed.xml или /add @channel")
+        return
+    progress = await message.answer("⏳ Проверяю источник…")
+    try:
+        source = (await call("news", "POST", "/sources", json={"text": command.args}, timeout=60)).json()
+    except httpx.HTTPStatusError as e:
+        detail = e.response.json().get("detail") if e.response.status_code == 422 else str(e)[:200]
+        await progress.edit_text(f"❌ {html.escape(detail)}")
+        return
+    await progress.edit_text(f"✅ Добавлен <b>#{source['id']}</b> {html.escape(source['name'])}: первый опрос — в течение минуты. "
+                             f"Выключить: /remove {source['id']}")
+
+
+@dp.message(Command("remove"))
+async def cmd_remove(message: Message, command: CommandObject) -> None:
+    if not command.args:
+        await message.answer("Формат: /remove 12 (номер из /sources) или /remove часть названия")
+        return
+    found = (await call("news", "GET", "/sources/find", params={"q": command.args})).json()
+    found = [s for s in found if s["enabled"]] or found
+    if len(found) != 1:
+        listing = "\n".join(f"#{s['id']} {html.escape(s['name'])}" for s in found[:10])
+        await message.answer("Не нашёл такого источника. Номера — в /sources" if not found
+                             else f"Подходит несколько, уточните номером:\n{listing}")
+        return
+    source = (await call("news", "DELETE", f"/sources/{found[0]['id']}")).json()
+    url = source["url"] if source["kind"] != "telegram" else f"@{source['url']}"
+    await message.answer(f"⏸ Выключен #{source['id']} {html.escape(source['name'])}. Вернуть: /add {html.escape(url)}")
+
+
 @dp.callback_query(F.data.startswith("nr:"))
 async def on_news_research(callback: CallbackQuery) -> None:
     """«🔎» under a news story: offer it as a research topic, as follow-up topics are offered."""
@@ -719,6 +870,10 @@ async def start(handle_signals: bool = True) -> None:
         BotCommand(command="block", description="Не брать сайт в источники"),
         BotCommand(command="blocked", description="Заблокированные сайты"),
         BotCommand(command="news", description="Новости об ИИ: статус"),
+        BotCommand(command="sources", description="Источники новостей"),
+        BotCommand(command="topics", description="Темы новостей"),
+        BotCommand(command="pause", description="Новости на паузу"),
+        BotCommand(command="resume", description="Продолжить новости"),
         BotCommand(command="help", description="Как пользоваться"),
     ])
     me = await bot.get_me()

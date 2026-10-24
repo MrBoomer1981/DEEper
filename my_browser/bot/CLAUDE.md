@@ -15,13 +15,15 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
   - `f:<report id>:<index>` a follow-up topic;
   - `r:<report id>:<qa index>` a question's research topic;
   - `x:<job id>` restart a failed or interrupted job;
-  - `nr:<story id>`, `nf:<story id>:<±1>` a news story's research and feedback.
+  - `nr:<story id>`, `nf:<story id>:<±1>` a news story's research and feedback;
+  - `nt:<topic>` a news topic switched on or off.
 
   Topics are read back through the API, because Telegram limits callback data to 64 bytes. `pending` holds the offered topics, keyed by the message that offered them.
 - Every minute it looks for Telegram jobs interrupted by a restart and edits their status message to offer a restart.
 - `/news` shows the news part's status (`news_text()`): sources and their health, posts and stories of the last day, LLM spend, the schedule.
 - `deliver_news()` takes the news part's urgent stories and digests every `NEWS_SEC` (30 s) and sends them to every `TELEGRAM_ALLOWED_USERS` id, text as the news part wrote it (HTML, split by `_chunks()`), buttons on the last part. A message Telegram refuses is logged and given up, so it is not resent every round.
 - `nr:<story id>` offers a news story as a research topic (`_offer()`, as follow-up topics); `nf:<story id>:<±1>` stores 👍/👎 in the news part.
+- News settings: `/time`, `/quiet`, `/urgent` (each with `off`), `/pause`, `/resume` change the news part's settings (`_news_settings()`; a refused value comes back with the news part's message, in Russian); `/topics` toggles topics with buttons (`nt:<topic>`); `/sources` lists the sources with their health, `/add` checks and adds a feed or a channel, `/remove` switches one off by number or name.
 
 ## Run and check it alone
 
@@ -41,7 +43,7 @@ uv run python -m my_browser.bot       # needs core at CORE_URL and a bot token; 
 - **Core's API**: `call("core", ...)` at `CORE_URL` with the service token.
   - `core/CLAUDE.md` lists the fields the bot reads and the order core keeps for follow-ups and Q&A.
   - The bot imports no module of core, the worker, search or news, so it can run alone with the `bot` group (aiogram, httpx, python-dotenv). Keep it that way.
-- **The news part's API**: `/status` for `/news`, `/deliveries` and `/deliveries/{id}/sent` for delivery, `/stories/{id}` and `/feedback` for the buttons; `news/CLAUDE.md` lists the fields. With `NEWS_URL` unset the call runs in-process and imports `my_browser.news.api`, so a bot installed alone (`--group bot`) needs `NEWS_URL`; without it `/news` answers «Новости сейчас недоступны».
+- **The news part's API**: `/status` for `/news`, `/deliveries` and `/deliveries/{id}/sent` for delivery, `/stories/{id}` and `/feedback` for the buttons, `/settings` and `/sources` for the settings commands; `news/CLAUDE.md` lists the fields. With `NEWS_URL` unset the call runs in-process and imports `my_browser.news.api`, so a bot installed alone (`--group bot`) needs `NEWS_URL`; without it `/news` answers «Новости сейчас недоступны».
 - **`common`**: `clients.call`, `report.KINDS` and `ANY_ANSWER`, `settings.DEFAULT_SOURCES` and `FACTCHECK_MODES`, `text.rub_text` and `plural`.
   - It must not import `common.costs`, `common.gptr` or `common.auth`: they pull in gpt-researcher and fastapi.
 - **Its own copies of what lives elsewhere**:

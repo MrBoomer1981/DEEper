@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from my_browser.common.auth import require_token
-from my_browser.news import config, db, dedup, delivery, items, loop, scoring, sources
+from my_browser.news import config, db, dedup, delivery, items, loop, manage, scoring, sources
 
 _seeded = False
 
@@ -77,6 +77,33 @@ async def get_status() -> dict:
 @app.get("/sources")
 async def get_sources() -> list[dict]:
     return sources.listing()
+
+
+class SourceRequest(BaseModel):
+    text: str  # a feed's address or a Telegram channel (@name, t.me/name)
+
+
+@app.post("/sources")
+async def post_source(request: SourceRequest) -> dict:
+    """Check and add a source (or switch an existing one back on); 422 with a message for the user when refused."""
+    try:
+        return await manage.add(request.text)
+    except manage.SourceError as e:
+        raise HTTPException(422, str(e)) from None
+
+
+@app.get("/sources/find")
+async def find_sources(q: str) -> list[dict]:
+    """Sources matching a number, an address or a part of the name."""
+    return manage.find(q)
+
+
+@app.delete("/sources/{source_id}")
+async def delete_source(source_id: int) -> dict:
+    """Switch a source off (its posts stay in their stories)."""
+    if found := manage.switch(source_id, False):
+        return found
+    raise HTTPException(404, "source not found")
 
 
 @app.get("/items")
