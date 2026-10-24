@@ -53,6 +53,7 @@ The check passes when:
 - the job ends `done`;
 - the report's `meta` has `sources`, `followups` and a `factcheck` with `checked` > 0. The mock usually gets a figure corrected (12,5 → 11,9), so expect `rewritten` ≥ 1;
 - every page answers 200 (`-L`: a finished job's page redirects to its report);
+- the news loop collected at start (it polls every source at its first tick, about 30 s): `REPORTS_DIR="$D/reports" uv run python -c 'import asyncio; from my_browser.common.clients import call; print(asyncio.run(call("news", "GET", "/status")).json()["last_collect"])'` shows `polled` near the number of sources and few `failed`;
 - `grep -c Traceback "$D/app.log"` is 0.
 
 If a step fails, read the end of `app.log` and of the job (`phase`, `error`, `log`).

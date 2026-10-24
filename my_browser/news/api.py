@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from fastapi import Depends, FastAPI, HTTPException
 
 from my_browser.common.auth import require_token
-from my_browser.news import config, db, sources
+from my_browser.news import config, db, items, loop, sources
 
 _seeded = False
 
@@ -75,6 +75,18 @@ async def get_status() -> dict:
 @app.get("/sources")
 async def get_sources() -> list[dict]:
     return sources.listing()
+
+
+@app.get("/items")
+async def get_items(limit: int = 50) -> list[dict]:
+    """The latest fresh posts, newest first."""
+    return items.recent(limit)
+
+
+@app.post("/collect")
+async def post_collect(everything: bool = False) -> dict:
+    """Poll the due sources now (every enabled one with everything=true); {"busy": true} while a poll runs."""
+    return await loop.collect(everything)
 
 
 @app.get("/settings")

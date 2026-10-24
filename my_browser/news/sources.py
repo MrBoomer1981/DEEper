@@ -94,11 +94,11 @@ DEFAULTS = [
     Source("AI as Normal Technology", "https://www.normaltech.ai/feed", "analyst", "normal-tech"),
     Source("Gary Marcus", "https://garymarcus.substack.com/feed", "analyst", "gary-marcus"),
     Source("Sebastian Raschka", "https://magazine.sebastianraschka.com/feed", "analyst", "raschka"),
-    # Communities: what people upvote.
+    # Communities: what people upvote (Reddit: the day's top ten, the rest is chatter).
     Source("Hacker News: AI", "https://hnrss.org/newest?q=AI&points=100", "community", "hacker-news"),
     Source("Hacker News: LLM", "https://hnrss.org/newest?q=LLM&points=100", "community", "hacker-news"),
-    Source("Reddit: r/LocalLLaMA", "https://www.reddit.com/r/LocalLLaMA/top/.rss?t=day", "community", "reddit", interval=60),
-    Source("Reddit: r/MachineLearning", "https://www.reddit.com/r/MachineLearning/top/.rss?t=day", "community", "reddit",
+    Source("Reddit: r/LocalLLaMA", "https://www.reddit.com/r/LocalLLaMA/top/.rss?t=day&limit=10", "community", "reddit", interval=60),
+    Source("Reddit: r/MachineLearning", "https://www.reddit.com/r/MachineLearning/top/.rss?t=day&limit=10", "community", "reddit",
            interval=60),
     Source("Lobsters: AI", "https://lobste.rs/t/ai.rss", "community", "lobsters"),
     # Russian sites.
@@ -138,12 +138,20 @@ def listing() -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def enabled() -> list[dict]:
+    with db.connect() as conn:
+        return [dict(row) for row in conn.execute("SELECT * FROM sources WHERE enabled = 1")]
+
+
 def due(now: float | None = None) -> list[dict]:
-    """Enabled sources whose interval has passed since their last poll."""
+    """Enabled sources whose interval has passed since their last poll. A failing source waits longer: twice its
+    interval after one failure, four times after two, eight times after three or more."""
     now = now or time.time()
     with db.connect() as conn:
-        rows = conn.execute("SELECT * FROM sources WHERE enabled = 1 AND (polled IS NULL OR polled + interval * 60 <= ?)",
-                            (now,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM sources WHERE enabled = 1 AND (polled IS NULL OR "
+            "polled + interval * 60 * (CASE WHEN fails >= 3 THEN 8 WHEN fails = 2 THEN 4 WHEN fails = 1 THEN 2 ELSE 1 END) <= ?)",
+            (now,)).fetchall()
     return [dict(row) for row in rows]
 
 
