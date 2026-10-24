@@ -1,10 +1,10 @@
 """Settings shared by every part: paths, research options, and how the parts reach each other.
 
-DEEper runs as four parts: core (web UI, API, report library, job queue), worker (research engine and
-LLM helpers), search (source selection and page reading) and bot (Telegram). Each can run as its own
-process. Unset *_URL variables mean the all-in-one process (Railway, `uv run app.py`): core serves
-HTTP, worker and search are called in-process through their ASGI apps, the bot and the worker's job
-loop reach core over localhost.
+DEEper runs as five parts: core (web UI, API, report library, job queue), worker (research engine and
+LLM helpers), search (source selection and page reading), news (the news radar and its loop) and bot
+(Telegram). Each can run as its own process. Unset *_URL variables mean the all-in-one process (Railway,
+`uv run app.py`): core serves HTTP, worker, search and news are called in-process through their ASGI apps,
+the bot and the worker's job loop reach core over localhost.
 """
 
 import logging
@@ -52,6 +52,7 @@ PORT = int(os.environ.get("PORT", 8501))  # 8080 is the local SearXNG
 CORE_URL = os.environ.get("CORE_URL") or f"http://127.0.0.1:{PORT}"
 WORKER_URL = os.environ.get("WORKER_URL")  # unset: in-process
 SEARCH_URL = os.environ.get("SEARCH_URL")  # unset: in-process
+NEWS_URL = os.environ.get("NEWS_URL")  # unset: in-process
 
 
 def service_token() -> str:

@@ -7,7 +7,7 @@
 - `settings.py`:
   - paths: `ROOT`, `CONFIG_PATH`, `REPORTS_DIR`;
   - research options: `SOURCES`, `WRITERS`, `MODES`, `FACTCHECK_MODES`;
-  - how the parts find each other: `PORT`, `CORE_URL`, `WORKER_URL`, `SEARCH_URL`, `service_token()`;
+  - how the parts find each other: `PORT`, `CORE_URL`, `WORKER_URL`, `SEARCH_URL`, `NEWS_URL`, `service_token()`;
   - `configure_logging()`, which quiets httpx because the job loop polls core every few seconds.
 - `clients.py`: `call(part, method, path)` and the blocking `call_core()`, in-process or over HTTP (see the root CLAUDE.md).
 - `auth.py`: `require_token`, the service token check of the parts' APIs.
@@ -36,17 +36,17 @@ Adding a function, a constant or an optional argument is safe. Renaming or remov
 - Values are computed at import:
   - `.env` is loaded, but real environment variables win;
   - `REPORTS_DIR`: eval sets its own before importing anything from `my_browser`;
-  - `WEB_RETRIEVER`, `PORT`, `CORE_URL` (derived from `PORT`), `WORKER_URL`, `SEARCH_URL`.
+  - `WEB_RETRIEVER`, `PORT`, `CORE_URL` (derived from `PORT`), `WORKER_URL`, `SEARCH_URL`, `NEWS_URL`.
 - The keys of `SOURCES`, `WRITERS` and `MODES` are repeated as labels in `core/ui/kit.py` and the bot. `FACTCHECK_MODES` (modes checked by default) is read by core's service, the search screen's sheet (`core/ui/search.py`), the bot and `research.py`.
 - Each entry point calls `configure_logging()`.
 - `PORT` also makes core public (`core/ui/kit.PUBLIC`, unless `PUBLIC=0`).
 
-**`clients.py`**: used by core (to reach the worker), the worker (core, search) and the bot (core).
+**`clients.py`**: used by core (to reach the worker), the worker (core, search) and the bot (core). `_APPS` also maps `news` (`NEWS_URL`), for the bot and core from the news part's stages 1 and 6.
 - `call()` raises on 4xx and 5xx, and callers rely on it: the bot treats a 404 as "no such report".
 - An in-process call imports the callee's API module (`_APPS`) into the caller's process, with all its dependencies.
 - It opens a new client per call; a shared one would bind to the first event loop.
 
-**`auth.py`**: used by the APIs of core, the worker and search.
+**`auth.py`**: used by the APIs of core, the worker, search and news.
 - They check a bearer service token.
 - `service_token()` is `SERVICE_TOKEN`, or else the `REPORTS_DIR/.service_token` file. Processes on different machines, or with different `REPORTS_DIR`, need `SERVICE_TOKEN`.
 
