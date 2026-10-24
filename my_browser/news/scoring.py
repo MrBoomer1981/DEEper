@@ -6,7 +6,7 @@ the paper), which also counts as a first-hand source. Stories that are not about
 dropped with the reason. The rest get a summary of one or two sentences in Russian: Pro writes it from PRO_FROM up
 (the user's choice: Pro for the main stories), Flash below. A story is scored again only when it gained
 RESCORE_GROWTH more independent sources. Every call is metered (common/costs.py) into the spend table, and the
-day's limit (a thirtieth of the month's budget) and the month's budget stop the calls.
+day's limit (twice an average day's share of the month's budget) and the month's budget stop the calls.
 
 The same call also catches what merging missed: each story comes with up to SIMILAR_REFS scored stories closest to it
 by embeddings, and the model names one in `same_as` when it is the same event (on 24.10.2026 two stories about one

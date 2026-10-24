@@ -14,11 +14,14 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
   - `c:`/`a:` clarification;
   - `f:<report id>:<index>` a follow-up topic;
   - `r:<report id>:<qa index>` a question's research topic;
-  - `x:<job id>` restart a failed or interrupted job.
+  - `x:<job id>` restart a failed or interrupted job;
+  - `nr:<story id>`, `nf:<story id>:<±1>` a news story's research and feedback.
 
   Topics are read back through the API, because Telegram limits callback data to 64 bytes. `pending` holds the offered topics, keyed by the message that offered them.
 - Every minute it looks for Telegram jobs interrupted by a restart and edits their status message to offer a restart.
-- `/news` shows the news part's status (`news_text()`): sources and their health, posts and stories of the last day, LLM spend, the schedule. Digests, urgent news and their buttons come at the news part's stage 6 (`PLAN_News.md`).
+- `/news` shows the news part's status (`news_text()`): sources and their health, posts and stories of the last day, LLM spend, the schedule.
+- `deliver_news()` takes the news part's urgent stories and digests every `NEWS_SEC` (30 s) and sends them to every `TELEGRAM_ALLOWED_USERS` id, text as the news part wrote it (HTML, split by `_chunks()`), buttons on the last part. A message Telegram refuses is logged and given up, so it is not resent every round.
+- `nr:<story id>` offers a news story as a research topic (`_offer()`, as follow-up topics); `nf:<story id>:<±1>` stores 👍/👎 in the news part.
 
 ## Run and check it alone
 
@@ -38,7 +41,7 @@ uv run python -m my_browser.bot       # needs core at CORE_URL and a bot token; 
 - **Core's API**: `call("core", ...)` at `CORE_URL` with the service token.
   - `core/CLAUDE.md` lists the fields the bot reads and the order core keeps for follow-ups and Q&A.
   - The bot imports no module of core, the worker, search or news, so it can run alone with the `bot` group (aiogram, httpx, python-dotenv). Keep it that way.
-- **The news part's API**: `call("news", "GET", "/status")` for `/news`; `news/CLAUDE.md` lists the fields. With `NEWS_URL` unset the call runs in-process and imports `my_browser.news.api`, so a bot installed alone (`--group bot`) needs `NEWS_URL`; without it `/news` answers «Новости сейчас недоступны».
+- **The news part's API**: `/status` for `/news`, `/deliveries` and `/deliveries/{id}/sent` for delivery, `/stories/{id}` and `/feedback` for the buttons; `news/CLAUDE.md` lists the fields. With `NEWS_URL` unset the call runs in-process and imports `my_browser.news.api`, so a bot installed alone (`--group bot`) needs `NEWS_URL`; without it `/news` answers «Новости сейчас недоступны».
 - **`common`**: `clients.call`, `report.KINDS` and `ANY_ANSWER`, `settings.DEFAULT_SOURCES` and `FACTCHECK_MODES`, `text.rub_text` and `plural`.
   - It must not import `common.costs`, `common.gptr` or `common.auth`: they pull in gpt-researcher and fastapi.
 - **Its own copies of what lives elsewhere**:
@@ -78,3 +81,4 @@ uv run python -m my_browser.bot       # needs core at CORE_URL and a bot token; 
 | the fields read from core | check them in `core/service.py` and `core/jobs.py`, not only here |
 | a mode or source | the table in `core/CLAUDE.md` |
 | what `/news` shows | the fields of the news part's `/status` (`news/CLAUDE.md`) |
+| how news messages are sent | the news part writes text and buttons (`news/delivery.py`); the bot sends them as they are |

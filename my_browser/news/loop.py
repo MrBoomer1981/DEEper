@@ -1,7 +1,8 @@
 """The news loop: a plain thread that wakes every minute and does what is due.
 
 Each tick polls the sources whose interval has passed and stores their new posts; every few minutes it merges
-the new posts into stories (dedup.py) and has the LLM score them (scoring.py); stage 6 adds delivery. One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
+the new posts into stories (dedup.py) and has the LLM score them (scoring.py); every tick it queues what is due
+for Telegram (delivery.py: urgent stories, digests). One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
 worker's job loop (NEWS_LOOP=0 turns it off), `python -m my_browser.news` next to its API. Every tick is marked
 in the state table, so /status can tell whether a loop runs.
 """
@@ -13,7 +14,7 @@ import time
 
 import httpx
 
-from my_browser.news import collectors, config, db, dedup, items, scoring, sources
+from my_browser.news import collectors, config, db, dedup, delivery, items, scoring, sources
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ def tick() -> None:
         except Exception:
             logger.exception("News loop: merging failed")
         asyncio.run(scoring.run())  # stories merged before still get scored when merging failed
+    delivery.run()
     if now - (db.get_state("slimmed_at") or 0) > SLIM_EVERY_SEC:
         items.slim()
         db.set_state("slimmed_at", now)

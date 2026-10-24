@@ -131,9 +131,10 @@ def refresh(conn, story: int) -> None:
         "JOIN sources s ON s.id = i.source_id WHERE i.story_id = ?", (story,)).fetchall()
     best = min(rows, key=lambda r: (not r["is_primary"], RANK.get(r["category"], 9), r["published"]))
     conn.execute(
-        "UPDATE stories SET first_seen = ?, last_updated = ?, source_count = ?, has_primary = ?, title = ? WHERE id = ?",
-        (min(r["published"] for r in rows), max(r["seen"] for r in rows), len({r["owner"] for r in rows}),
-         int(any(r["is_primary"] for r in rows)), best["title"], story))
+        "UPDATE stories SET first_seen = ?, last_updated = ?, source_count = ?, title = ?, "
+        "has_primary = MAX(?, primary_url IS NOT NULL) WHERE id = ?",  # a first-hand link the model found stays
+        (min(r["published"] for r in rows), max(r["seen"] for r in rows), len({r["owner"] for r in rows}), best["title"],
+         int(any(r["is_primary"] for r in rows)), story))
 
 
 def stories(limit: int = 30, hours: int = 48) -> list[dict]:

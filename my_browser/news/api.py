@@ -10,9 +10,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
 from my_browser.common.auth import require_token
-from my_browser.news import config, db, dedup, items, loop, scoring, sources
+from my_browser.news import config, db, dedup, delivery, items, loop, scoring, sources
 
 _seeded = False
 
@@ -88,6 +89,48 @@ async def get_items(limit: int = 50) -> list[dict]:
 async def get_stories(limit: int = 30, hours: int = 48) -> list[dict]:
     """Recent stories, the most independent sources first, each with its posts."""
     return dedup.stories(limit, hours)
+
+
+@app.get("/stories/{story_id}")
+async def get_story(story_id: int) -> dict:
+    """One story with its posts; 404 when there is none."""
+    if found := delivery.story(story_id):
+        return found
+    raise HTTPException(404, "story not found")
+
+
+@app.get("/feed")
+async def get_feed(limit: int = 12, hours: int = 36) -> list[dict]:
+    """«Радар»: the scored stories of the last hours, the most important first, with header and best link."""
+    return delivery.feed(limit, hours)
+
+
+@app.get("/deliveries")
+async def get_deliveries() -> list[dict]:
+    """Messages waiting for the bot: {id, kind, created, text (Telegram HTML), buttons: [[label, callback data]]}."""
+    return delivery.pending()
+
+
+@app.post("/deliveries/{delivery_id}/sent")
+async def post_delivered(delivery_id: int) -> dict:
+    return {"ok": delivery.mark_delivered(delivery_id)}
+
+
+@app.post("/deliver")
+async def post_deliver() -> dict:
+    """Queue what is due now (urgent stories, a digest), as the loop does every minute."""
+    return delivery.run()
+
+
+class FeedbackRequest(BaseModel):
+    story_id: int
+    value: int  # +1 or -1
+
+
+@app.post("/feedback")
+async def post_feedback(request: FeedbackRequest) -> dict:
+    delivery.feedback(request.story_id, request.value)
+    return {"ok": True}
 
 
 @app.post("/dedup")

@@ -27,6 +27,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaDocument,
+    LinkPreviewOptions,
     Message,
 )
 
@@ -41,6 +42,7 @@ FACTCHECK_BUTTONS = {None: "🔎 Проверка фактов: как в реж
 TG_LIMIT = 4000
 TICK_SEC = 5  # status refresh; also proves the bot is alive during long runs
 NOTIFY_SEC = 60  # how often to look for researches interrupted by a restart
+NEWS_SEC = 30  # how often to take the news part's urgent stories and digests
 
 HELP = """<b>Глубокие исследования</b>
 
@@ -61,7 +63,8 @@ HELP = """<b>Глубокие исследования</b>
 /ask N вопрос — вопрос по отчёту N
 /delete N — удалить отчёт N
 /block домен — не использовать сайт как источник (/unblock, /blocked)
-/news — новости об ИИ: источники, сбор, расход"""
+/news — новости об ИИ: источники, сбор, расход
+Новости об ИИ приходят сами: срочное — сразу (ночью ждёт утра), дайджест — в 09:00 и 18:00. Кнопка 🔎 под сюжетом запускает по нему исследование."""
 
 dp = Dispatcher()
 pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the message that offered it
@@ -430,6 +433,53 @@ def news_text(status: dict) -> str:
     return "\n".join(lines)
 
 
+@dp.callback_query(F.data.startswith("nr:"))
+async def on_news_research(callback: CallbackQuery) -> None:
+    """«🔎» under a news story: offer it as a research topic, as follow-up topics are offered."""
+    story_id = callback.data.split(":")[1]
+    try:
+        story = (await call("news", "GET", f"/stories/{story_id}")).json()
+    except Exception:
+        await callback.answer("Сюжет не найден", show_alert=True)
+        return
+    await callback.answer()
+    key = f"{callback.message.chat.id}_{callback.message.message_id}_n{story_id}"
+    await _offer(callback.message.answer, key, story["title_ru"] or story["title"], recommended="quick")
+
+
+@dp.callback_query(F.data.startswith("nf:"))
+async def on_news_feedback(callback: CallbackQuery) -> None:
+    _, story_id, value = callback.data.split(":")
+    with suppress(Exception):
+        await call("news", "POST", "/feedback", json={"story_id": int(story_id), "value": int(value)})
+    await callback.answer("Учту: больше такого" if value == "1" else "Учту: меньше такого")
+
+
+def _keyboard(rows: list) -> InlineKeyboardMarkup | None:
+    """The news part's buttons, rows of [label, callback data]."""
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
+                                                 for row in rows]) if rows else None
+
+
+async def deliver_news(bot: Bot, chats: set[int]) -> None:
+    """The news part's urgent stories and digests, sent to every allowed user as soon as the news part queues them."""
+    while True:
+        try:
+            for item in (await call("news", "GET", "/deliveries")).json() if chats else []:
+                parts = _chunks(item["text"])
+                try:
+                    for chat in chats:
+                        for n, part in enumerate(parts):
+                            await bot.send_message(chat, part, reply_markup=_keyboard(item["buttons"]) if n == len(parts) - 1 else None,
+                                                   link_preview_options=LinkPreviewOptions(is_disabled=True))
+                except TelegramBadRequest as e:  # a message Telegram refuses would be refused again: give it up
+                    logging.error("News message %s refused by Telegram: %s", item["id"], e)
+                await call("news", "POST", f"/deliveries/{item['id']}/sent")
+        except Exception as e:  # the news part or Telegram is unreachable: try again on the next round
+            logging.warning("News delivery: %r", e)
+        await asyncio.sleep(NEWS_SEC)
+
+
 @dp.callback_query(F.data.startswith("del:"))
 async def on_delete(callback: CallbackQuery) -> None:
     deleted = (await core("DELETE", f"/api/reports/{int(callback.data.split(':')[1])}"))["deleted"]
@@ -674,4 +724,5 @@ async def start(handle_signals: bool = True) -> None:
     me = await bot.get_me()
     logging.info("Бот @%s запущен, доступ: %s", me.username, sorted(allowed) or "никому")
     _spawn(notify_interrupted(bot))
+    _spawn(deliver_news(bot, allowed))
     await dp.start_polling(bot, handle_signals=handle_signals)

@@ -4,7 +4,7 @@ News is DEEper's news radar: it reads AI news from many independent sources, mer
 
 ## What news does
 
-Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories), stage 5 (scoring and summaries by the LLM).
+Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories), stage 5 (scoring and summaries by the LLM), stage 6 (delivery to the bot and «Радар»).
 - `news/db.py`: everything news keeps, in `REPORTS_DIR/news.sqlite` (WAL): `sources`, `items`, `stories`, `feedback`, `settings`, `state`, `spend`. Columns newer than a table go into `ADDED_COLUMNS`, so an older file on the volume gets them.
 - `news/sources.py`: the sources table and the starting list (`DEFAULTS`).
   - The list mixes kinds of sources: labs' own blogs (first-hand, `is_primary`), papers, independent media, analysts, communities, Russian sites and 26 public Telegram channels (`owner` `tg:<channel>`). Each was checked on 24.10.2026 (`PLAN_News.md`, «Решения»).
@@ -36,13 +36,20 @@ Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collecti
   - Not about AI, or below `MIN_IMPORTANCE` (4): `dropped` with `drop_reason`; else `queued`. A sent story stays `sent`.
   - `same_as`: each story comes with the `SIMILAR_REFS` (3) scored stories closest to it by post embeddings (`_similar()`, from `SIMILAR_FLOOR` 0.45); when the model names one, or an earlier story of the batch, the story is merged into it (`merge_into()`: posts moved, status `merged`). It catches what embeddings alone could not: two stories about one OpenAI round were 0.72 apart, two different ones 0.67.
   - Summaries in Russian, one or two sentences: Pro from `PRO_FROM` (7), Flash below, `SUMMARY_BATCH` (6) a call.
-  - Every call is metered (`common/costs.py`) into `spend` by day in the settings' time zone; `within_budget()` stops calls at the day's limit (a thirtieth of `budget_month_rub`, 100 ₽) or the month's. `paused` stops them too.
+  - Every call is metered (`common/costs.py`) into `spend` by day in the settings' time zone; `within_budget()` stops calls at the day's limit (`daily_budget_rub`: a fifteenth of `budget_month_rub` (100 ₽), twice an average day, so the backlog after a deploy and a day's news both fit) or the month's. `paused` stops them too.
   - Measured on the collection of 24.10.2026 (218 stories, off-peak): the whole backlog cost 2.8 ₽ in 41 calls, 113 stories queued, 105 dropped (opinions, ads, tutorials, not AI), 4 merged by `same_as`. A day's new stories should cost about 1–1.5 ₽.
+- `news/delivery.py`: what goes to Telegram and when; the bot sends it, «Радар» reads stories through `/feed`.
+  - Every tick `run()` queues what is due into `deliveries` (Telegram HTML and buttons), and the bot takes them (`/deliveries`) and marks them (`/deliveries/{id}/sent`).
+  - A digest at each `digest_times` slot (within `DIGEST_LATE_HOURS`, so a restart does not lose it; done slots in `state.digests_done`): the queued stories, the most important first, at most `digest_max_stories`, with «🔎 N» buttons (`nr:<story>`). It is built before the urgent ones, so a due digest takes them.
+  - Urgent: a queued story from `urgent_min_importance` (8), first seen within `URGENT_HOURS` and summarized, at once with «🔎 Исследовать / 👍 / 👎» (`nf:<story>:±1`); several at once in one message. In the quiet hours it waits; right after them, when a digest is due within `DIGEST_HOLD_HOURS` (08:00 → 09:00), it waits for that digest and leads it.
+  - A sent story that grew to twice its `sent_count` and `UPDATE_MIN` more comes back once in a digest as «🔄 обновление» (`update_sent`).
+  - A story: «🟢 первоисточник · 7 источников · модели» (🟡 пересказы without a first-hand source), the Russian title, the summary, «🔗 первоисточник · ещё 6». The app's `header` has no colored marks: green and yellow are not in its brand's palette.
+  - Checked with a simulated clock on real scored stories: nothing at 03:00 and 08:30, a digest of 15 at 09:00 (6 000 characters: the bot splits it in two), nothing again at 09:30, an urgent story alone at 12:00, the evening digest of the rest at 18:00.
 - `news/loop.py`: the news loop, a plain thread that ticks every minute and marks each tick (`state.loop_tick`).
   - Each tick polls the due sources, at most `CONCURRENCY` (6) at once and one request per host at a time, `HOST_GAP_SEC` (2 s) apart: Reddit answers 429 to quicker ones.
   - A failing source waits twice its interval after one failure, four times after two, eight times after three or more (`sources.due()`).
   - `collect()` is shared with `POST /collect` and never runs twice at once (`_collecting`).
-- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/stories`, `/collect`, `/dedup`, `/score`, `/settings` (GET, PUT), `/health`.
+- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/stories`, `/stories/{id}`, `/feed`, `/deliveries`, `/deliveries/{id}/sent`, `/feedback`, `/collect`, `/dedup`, `/score`, `/deliver`, `/settings` (GET, PUT), `/health`.
 
 ## Run and check it alone
 
@@ -65,6 +72,10 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 - `common/clients.call("news", ...)` reaches the API in-process unless `NEWS_URL` is set.
 - `/status` → `sources` (`total`, `enabled`, `ok`, `pending`, `failing` with `name`, `error`, `fails`), `items` and `stories` (`day`, `total`), `spend` (`today_rub`, `month_rub`, `budget_month_rub`, `daily_budget_rub`), `last_collect` (or null; `at` in the settings' time zone, `new`), `loop_alive`, `telegram`, `settings`. The bot's `/news` (`bot/telegram.news_text()`) reads all of them but `total`, `telegram` and `daily_budget_rub`.
 - `PUT /settings {key: value}` → the settings, or 422 with `detail` in Russian, one line per refused value.
+- The bot (`bot/telegram.py`):
+  - `deliver_news()` polls `GET /deliveries` → `[{id, kind, created, text, buttons}]` every 30 s, sends `text` (Telegram HTML; each line closes its own tags, so `_chunks()` may split between lines) with `buttons` (rows of `[label, callback data]`) on the last part, then `POST /deliveries/{id}/sent`.
+  - Callback data the news part writes: `nr:<story id>` (the bot reads `GET /stories/{id}`: `title_ru`, `title` and offers it as a research topic) and `nf:<story id>:<1|-1>` (`POST /feedback {story_id, value}`). Both stay within Telegram's 64 bytes.
+- Core's «Радар» (`core/ui/radar.py`): `GET /feed?limit=` → stories with `id`, `title_ru`, `title`, `summary_ru`, `header` (no colored marks), `link`, `link_label`, `source_count`, `importance`. `tabs.page()` fetches it before building the page.
 
 ## What news relies on
 
@@ -92,5 +103,8 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 | a merging rule in `dedup.py` | run it on a copy of a real `news.sqlite` and read the biggest stories (`dedup.stories()`) |
 | a scoring or summary prompt | `dev/mock_llm.py` recognizes them by «Ты редактор ленты новостей об искусственном интеллекте» and «Напиши по-русски резюме каждого сюжета»; check quality on a copy of real data |
 | a story status | `delivery.py` and `/status` read `queued`, `sent`, `dropped`, `merged` |
+| a delivery's text, buttons or callback data | the bot's `deliver_news()`, `on_news_research()`, `on_news_feedback()` |
+| a field of `/feed` | `core/ui/radar.py` |
+| the digest or urgent rules | rerun the simulated-clock check: quiet hours, the morning hold, a due digest before urgent |
 | a kind of source | a module in `collectors/` and its entry in `collectors.fetch()` |
 | the Telegram selectors | check a channel's page by hand first: `telegram._parse()` on a saved `t.me/s/<channel>` |

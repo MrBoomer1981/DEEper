@@ -7,21 +7,30 @@ proxy, and the transitions between pages, where the browser has them at all, onl
 
 Opening an address of a section (a link, a refresh, the installed app's start) builds the whole page with that
 section shown. When a section is shown again, the server redraws what may have changed since (tab_shown): new
-reports and researches in «Библиотека», new topics in «Радар». «Поиск» follows the defaults «Фокус» changes.
+reports and researches in «Библиотека», new news and topics in «Радар». «Поиск» follows the defaults «Фокус»
+changes. The page is async: it fetches the news part's stories first, so «Радар» has them at the first paint.
 """
+
+import asyncio
+import inspect
 
 from nicegui import ui
 
 from my_browser.core.ui import focus, kit, library, radar, search
 
 SECTIONS = ("search", "radar", "library", "focus")
+NEWS_WAIT_SEC = 1.5  # NiceGUI gives an async page 3 s; without news by then «Радар» gets them when shown
 
 
-def page(active: str, *, topic: str = "", mode: str = "", parent: int | None = None, tab: str = "reports", q: str = "") -> None:
+async def page(active: str, *, topic: str = "", mode: str = "", parent: int | None = None, tab: str = "reports", q: str = "") -> None:
+    try:
+        stories = await asyncio.wait_for(radar.news(), NEWS_WAIT_SEC)
+    except asyncio.TimeoutError:
+        stories = []
     kit.shell(kit.TAB_TITLES[active], active=active)
     builders = {
         "search": lambda: search.search_screen(topic, mode, parent),
-        "radar": radar.radar_screen,
+        "radar": lambda: radar.radar_screen(stories),
         "library": lambda: library.library_screen(tab, q),
         "focus": focus.focus_screen,
     }
@@ -30,28 +39,30 @@ def page(active: str, *, topic: str = "", mode: str = "", parent: int | None = N
         with ui.element("section").classes("tab-screen" + (" on" if key == active else "")).props(f'data-tab="{key}"'):
             on_show[key] = builders[key]()
 
-    def shown(e) -> None:
+    async def shown(e) -> None:
         if callback := on_show.get(e.args.get("tab")):
-            callback()
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
 
     ui.on("tab_shown", shown)
 
 
 @ui.page("/")
-def search_page(topic: str = "", mode: str = "", parent: int | None = None) -> None:
-    page("search", topic=topic, mode=mode, parent=parent)
+async def search_page(topic: str = "", mode: str = "", parent: int | None = None) -> None:
+    await page("search", topic=topic, mode=mode, parent=parent)
 
 
 @ui.page("/radar")
-def radar_page() -> None:
-    page("radar")
+async def radar_page() -> None:
+    await page("radar")
 
 
 @ui.page("/library")
-def library_page(tab: str = "reports", q: str = "") -> None:
-    page("library", tab=tab, q=q)
+async def library_page(tab: str = "reports", q: str = "") -> None:
+    await page("library", tab=tab, q=q)
 
 
 @ui.page("/focus")
-def focus_page() -> None:
-    page("focus")
+async def focus_page() -> None:
+    await page("focus")

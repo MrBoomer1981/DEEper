@@ -37,11 +37,11 @@ There is deliberately no test suite while the project is in active development (
 
 | Part | Package | Owns | Talks to |
 |---|---|---|---|
-| core | `core/` | web UI (NiceGUI), API under `/api`, report library, job queue, blocklist | worker (questions, follow-ups, clarification, short versions) |
+| core | `core/` | web UI (NiceGUI), API under `/api`, report library, job queue, blocklist | worker (questions, follow-ups, clarification, short versions), news («Радар») |
 | worker | `worker/` | the research engine (gpt-researcher + our patches), LLM helpers, DOCX/PDF | core (jobs), search (sources, pages) |
 | search | `search/` | source selection (`/select`) and page reading with fallbacks (`/read`), read stats | — |
 | news | `news/` | the news radar: sources, posts, stories, its settings (`news.sqlite`), the news loop | — (the bot and core read it) |
-| bot | `bot/` | Telegram | core, news (`/news`) |
+| bot | `bot/` | Telegram | core, news (`/news`, digests and urgent stories) |
 
 Each of these folders, and `common/`, `eval/` and `proxy/`, has its own CLAUDE.md. It says what the folder does, how to run and check it alone, what other parts rely on (API fields, files, phase and log lines, gpt-researcher internals), and what else to update when one side changes. Read it before changing the folder; a session started in the folder loads it by itself.
 

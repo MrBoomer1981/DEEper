@@ -46,7 +46,7 @@ class Settings(BaseModel):
     dedup_window_hours: int = Field(48, ge=6, le=168)
     dedup_threshold: float = Field(0.66, gt=0, lt=1)  # eval/news, 24.10.2026: P 0.98, R 0.96 with links
     topics: list[str] = list(TOPICS)
-    budget_month_rub: float = Field(100, ge=0, le=300)  # the daily limit is a thirtieth of it
+    budget_month_rub: float = Field(100, ge=0, le=300)  # the daily limit is a fifteenth of it
     paused: bool = False
 
     @field_validator("timezone")
@@ -82,7 +82,9 @@ class Settings(BaseModel):
 
     @property
     def daily_budget_rub(self) -> float:
-        return self.budget_month_rub / 30
+        """Twice an average day's share: a backlog after a restart or a busy day fits, a runaway loop does not.
+        The month's budget is the real limit."""
+        return self.budget_month_rub / 15
 
 
 def _check_time(value: str) -> str:

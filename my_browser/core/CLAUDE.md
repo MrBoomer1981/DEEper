@@ -38,7 +38,7 @@ Core is DEEper's web app (NiceGUI), its API under `/api`, the report library and
     - «⋯» → «Сократить до 1 500 слов» (for texts over `SHORT_FROM` = 1 800 words): the worker writes a short version once, and the page shows it at `?short=1`. Above it «Краткая версия · N слов · Полная →». The contents, the counter and the source numbers follow the short text; the fact-check's «?» marks and block stay with the full one.
   - `library.py` `/library` (a section): reports (running ones first), bookmarks, «Слежу» (empty until topic watching exists), search.
   - `focus.py` `/focus` (a section): presets and defaults, the blocklist, graffiti, the profile card.
-  - `radar.py` `/radar` (a section): until news and watching exist, the follow-up topics of recent reports that were not researched yet.
+  - `radar.py` `/radar` (a section): the news part's stories of the last day and a half (`/feed`): the most important as the card with «Копнуть глубже» (the story as a research topic) and a link to its best source, the next as rows; below, the follow-up topics of recent reports not researched yet (as the card only while there is no news: one amber action). `tabs.page()` is async and fetches the news first, so the section has them at the first paint; showing it again re-fetches and redraws only on a change. When the news part does not answer, the section shows the topics only.
   - `login.py` `/login`.
 - `core/bookmarks.py`: passages saved from reports, in `REPORTS_DIR/bookmarks.json`, keyed by the report's file name as well as its id.
 - `core/library.py`: SQLite with an FTS5 table. Report files are the source of truth. `sync()` re-indexes `reports/<date>_*.json` (other JSON there, such as `read_stats.json` and `.qa.json` files, is skipped), so the DB can be deleted and rebuilt. Search uses per-word prefix matching so that Russian word forms match.
@@ -92,7 +92,8 @@ uv run ../../app.py                  # core with the worker and the bot in one p
   - The pages read `writer`, `cost`, `followups`, `followups_cost_rub`, `sources` and `factcheck` (`checked`; `doubtful` items with `raw`, `verdict`, `note`). Reports already on the volume predate some fields, so read newer ones with `.get()`.
   - The Markdown ends with «Проверка фактов» (when checked), then «Что исследовать дальше»; `common.report.body()` cuts both off for the page, and `appended()` gives the fact-check text for its block.
   - `mark_doubtful()` finds each doubtful sentence by its `raw` text (whitespace-tolerant) to put the «?» after it, so a worker change to how claims are cut out of the text shows up here as missing marks.
-- **`common`**: `settings`, `auth`, `report`, `text`, `clients`, `phases`. Core imports no module of the worker, search or bot.
+- **The news part's `/feed`** (`ui/radar.py`), through `common.clients.call("news", ...)`, in-process unless `NEWS_URL` is set; the fields are in `news/CLAUDE.md`.
+- **`common`**: `settings`, `auth`, `report`, `text`, `clients`, `phases`. Core imports no module of the worker, search, news or bot.
 
 ## State core owns
 
@@ -142,3 +143,4 @@ All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats
 | what the report page shows of the fact-check | it comes from `worker/factcheck.summary()` and `section()`; the bot's `_factcheck_line()` reads the same counts |
 | the time estimates of the modes | `ui/kit.MODE_HINTS` and the bot's `HELP` |
 | report file naming (`Library.store`, `common.text.slugify`) | `REPORT_NAME` in `library.py`; parents are stored by file name |
+| what «Радар» shows of a story | the fields come from `news/delivery.feed()` |
