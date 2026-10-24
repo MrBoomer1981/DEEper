@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from my_browser.common.auth import require_token
-from my_browser.news import config, db, dedup, delivery, items, loop, manage, scoring, sources
+from my_browser.news import config, db, dedup, delivery, feedback, items, loop, manage, scoring, sources
 
 _seeded = False
 
@@ -156,8 +156,22 @@ class FeedbackRequest(BaseModel):
 
 @app.post("/feedback")
 async def post_feedback(request: FeedbackRequest) -> dict:
-    delivery.feedback(request.story_id, request.value)
+    feedback.record(request.story_id, request.value)
     return {"ok": True}
+
+
+@app.get("/dropped")
+async def get_dropped(hours: int = 24, limit: int = 30) -> list[dict]:
+    """What scoring dropped in the last hours, with the reasons."""
+    return delivery.dropped(hours, limit)
+
+
+@app.post("/stories/{story_id}/restore")
+async def post_restore(story_id: int) -> dict:
+    """«Это было важно»: send a dropped story now; it counts as 👍. 404 when it is not dropped."""
+    if story := delivery.restore(story_id):
+        return story
+    raise HTTPException(404, "no such dropped story")
 
 
 @app.post("/dedup")

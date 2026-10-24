@@ -16,7 +16,8 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
   - `r:<report id>:<qa index>` a question's research topic;
   - `x:<job id>` restart a failed or interrupted job;
   - `nr:<story id>`, `nf:<story id>:<±1>` a news story's research and feedback;
-  - `nt:<topic>` a news topic switched on or off.
+  - `nt:<topic>` a news topic switched on or off;
+  - `nd:<story id>` a dropped news story brought back.
 
   Topics are read back through the API, because Telegram limits callback data to 64 bytes. `pending` holds the offered topics, keyed by the message that offered them.
 - Every minute it looks for Telegram jobs interrupted by a restart and edits their status message to offer a restart.
@@ -24,6 +25,7 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
 - `deliver_news()` takes the news part's urgent stories and digests every `NEWS_SEC` (30 s) and sends them to every `TELEGRAM_ALLOWED_USERS` id, text as the news part wrote it (HTML, split by `_chunks()`), buttons on the last part. A message Telegram refuses is logged and given up, so it is not resent every round.
 - `nr:<story id>` offers a news story as a research topic (`_offer()`, as follow-up topics); `nf:<story id>:<±1>` stores 👍/👎 in the news part.
 - News settings: `/time`, `/quiet`, `/urgent` (each with `off`), `/pause`, `/resume` change the news part's settings (`_news_settings()`; a refused value comes back with the news part's message, in Russian); `/topics` toggles topics with buttons (`nt:<topic>`); `/sources` lists the sources with their health, `/add` checks and adds a feed or a channel, `/remove` switches one off by number or name.
+- `/dropped`: what the news part dropped in the last day, grouped (minor, not about AI) with the reasons; «↩️ N» (`nd:<story id>`) brings a story back: it comes as a message and counts as 👍.
 
 ## Run and check it alone
 

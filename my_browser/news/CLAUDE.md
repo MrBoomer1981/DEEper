@@ -4,7 +4,7 @@ News is DEEper's news radar: it reads AI news from many independent sources, mer
 
 ## What news does
 
-Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories), stage 5 (scoring and summaries by the LLM), stage 6 (delivery to the bot and «Радар»), stage 7 (settings and sources from Telegram).
+Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collection from feeds and Hugging Face Daily Papers), stage 3 (public Telegram channels), stage 4 (merging posts into stories), stage 5 (scoring and summaries by the LLM), stage 6 (delivery to the bot and «Радар»), stage 7 (settings and sources from Telegram), stage 8 (learning from 👍/👎), stage 9 (what was dropped, and bringing it back), stage 10 (a daily copy of the database).
 - `news/db.py`: everything news keeps, in `REPORTS_DIR/news.sqlite` (WAL): `sources`, `items`, `stories`, `feedback`, `settings`, `state`, `spend`. Columns newer than a table go into `ADDED_COLUMNS`, so an older file on the volume gets them.
 - `news/sources.py`: the sources table and the starting list (`DEFAULTS`).
   - The list mixes kinds of sources: labs' own blogs (first-hand, `is_primary`), papers, independent media, analysts, communities, Russian sites and 26 public Telegram channels (`owner` `tg:<channel>`). Each was checked on 24.10.2026 (`PLAN_News.md`, «Решения»).
@@ -30,6 +30,7 @@ Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collecti
   - Otherwise by meaning: the story whose first post is as close as `dedup_threshold` (0.66, chosen by `eval/news`), or whose closest post is `CHAIN_MARGIN` (0.08) closer still. Measuring from the first post keeps a story from drifting through a chain of posts each like the one before.
   - A story that has a post of the same owner takes another one only by a shared link or when it is very close: an outlet's different articles on one theme are alike.
   - `source_count` counts distinct owners; `has_primary` a first-hand source; `title` is the first-hand post's, else the earliest of the best kind (`RANK`), until stage 5 writes `title_ru`.
+  - When the model cannot run (not downloaded, out of memory), posts are merged by shared links only and stored without an embedding: stories and digests go on (284 posts made 248 stories that way on the same collection).
   - On the collection of 24.10.2026: 287 posts made 218 stories, among them Kimi K3.1 with 14 independent sources, OpenAI's offline training with 7 and the first-hand post.
 - `news/scoring.py`: the LLM, after each merging run, within the budget.
   - Flash scores the stories that wait (never scored, or grown by `RESCORE_GROWTH` sources), `SCORE_BATCH` (12) a call: `is_ai`, `topic` (`config.TOPICS`), `importance` 0–10 with a reason, `title_ru`, `primary_url` (a first-hand link among the posts', which also sets `has_primary`).
@@ -47,11 +48,14 @@ Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collecti
   - Checked with a simulated clock on real scored stories: nothing at 03:00 and 08:30, a digest of 15 at 09:00 (6 000 characters: the bot splits it in two), nothing again at 09:30, an urgent story alone at 12:00, the evening digest of the rest at 18:00.
 - `news/manage.py`: sources the user adds and removes. `add()` checks a feed (it must parse and have posts) or a channel (a public preview with posts) before storing it as `media`, its owner the feed's site or `tg:<channel>`; an existing one is switched back on. `switch()` only switches a source off: its posts stay in their stories, and a starting source switched off is not offered again. Refusals raise `SourceError` with a message for the user.
 - Only the topics on in the settings reach digests, urgent messages and «Радар» (`delivery._topics()`); scoring still scores everything.
+- `news/feedback.py`: 👍/👎 of the last `LEARN_DAYS` (30) days summed per topic and per source owner, `STEP` (0.25) importance points a vote, at most `MAX_SHIFT` (2). `rank()` gives each story its `effective` importance (scored + topic's + the mean of its owners'), by which digests, urgent messages and «Радар» order and filter. Computed each time, never written into settings or sources. Four 👎 on «бизнес» moved its stories from places 3, 5, 6 to 14, 13, 16 of the feed (at 0.5 a vote they fell out altogether).
+- `delivery.dropped()` and `restore()`: what scoring dropped, with reasons; a story brought back («Это было важно») goes out at once in a message of its own and counts as 👍.
+- `db.backup()`, daily with `items.slim()`: a copy of `news.sqlite` in `REPORTS_DIR/backups`, the last 7 kept. Same volume: it guards against a broken file or a bad change, not against losing the volume.
 - `news/loop.py`: the news loop, a plain thread that ticks every minute and marks each tick (`state.loop_tick`).
   - Each tick polls the due sources, at most `CONCURRENCY` (6) at once and one request per host at a time, `HOST_GAP_SEC` (2 s) apart: Reddit answers 429 to quicker ones.
   - A failing source waits twice its interval after one failure, four times after two, eight times after three or more (`sources.due()`).
   - `collect()` is shared with `POST /collect` and never runs twice at once (`_collecting`).
-- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/sources` (GET, POST), `/sources/find`, `/sources/{id}` (DELETE), `/stories`, `/stories/{id}`, `/feed`, `/deliveries`, `/deliveries/{id}/sent`, `/feedback`, `/collect`, `/dedup`, `/score`, `/deliver`, `/settings` (GET, PUT), `/health`.
+- `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/sources` (GET, POST), `/sources/find`, `/sources/{id}` (DELETE), `/stories`, `/stories/{id}`, `/feed`, `/deliveries`, `/deliveries/{id}/sent`, `/feedback`, `/dropped`, `/stories/{id}/restore`, `/collect`, `/dedup`, `/score`, `/deliver`, `/settings` (GET, PUT), `/health`.
 
 ## Run and check it alone
 
@@ -76,6 +80,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 - `PUT /settings {key: value}` → the settings, or 422 with `detail` in Russian, one line per refused value.
 - The bot (`bot/telegram.py`):
   - `deliver_news()` polls `GET /deliveries` → `[{id, kind, created, text, buttons}]` every 30 s, sends `text` (Telegram HTML; each line closes its own tags, so `_chunks()` may split between lines) with `buttons` (rows of `[label, callback data]`) on the last part, then `POST /deliveries/{id}/sent`.
+  - `/dropped` reads `GET /dropped?hours=&limit=` (`id`, `title_ru`, `title`, `drop_reason`, `importance`), and its «↩️ N» (`nd:<story id>`) posts `/stories/{id}/restore` (404 when it is not dropped any more).
   - Callback data the news part writes: `nr:<story id>` (the bot reads `GET /stories/{id}`: `title_ru`, `title` and offers it as a research topic) and `nf:<story id>:<1|-1>` (`POST /feedback {story_id, value}`). Both stay within Telegram's 64 bytes.
 - The bot's settings commands: `GET /settings` (with `topic_names`) and `PUT /settings` (422 `detail` shown as it is); `/sources` reads `GET /sources` (`id`, `name`, `kind`, `url`, `enabled`, `polled`, `last_ok`, `last_error`, `week`); `/add` posts `{text}` to `POST /sources` (422 `detail` on refusal); `/remove` finds with `GET /sources/find?q=` and switches off with `DELETE /sources/{id}`.
 - Core's «Радар» (`core/ui/radar.py`): `GET /feed?limit=` → stories with `id`, `title_ru`, `title`, `summary_ru`, `header` (no colored marks), `link`, `link_label`, `source_count`, `importance`. `tabs.page()` fetches it before building the page.
@@ -109,5 +114,6 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 | a delivery's text, buttons or callback data | the bot's `deliver_news()`, `on_news_research()`, `on_news_feedback()` |
 | a field of `/feed` | `core/ui/radar.py` |
 | the digest or urgent rules | rerun the simulated-clock check: quiet hours, the morning hold, a due digest before urgent |
+| `feedback.STEP` or `MAX_SHIFT` | a few votes should move a topic, not remove it: try a series of 👎 on a copy and read the feed |
 | a kind of source | a module in `collectors/` and its entry in `collectors.fetch()` |
 | the Telegram selectors | check a channel's page by hand first: `telegram._parse()` on a saved `t.me/s/<channel>` |

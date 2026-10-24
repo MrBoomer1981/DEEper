@@ -101,8 +101,9 @@ def tick() -> None:
         asyncio.run(scoring.run())  # stories merged before still get scored when merging failed
     delivery.run()
     if now - (db.get_state("slimmed_at") or 0) > SLIM_EVERY_SEC:
-        items.slim()
         db.set_state("slimmed_at", now)
+        items.slim()
+        logger.info("News: database copied to %s", db.backup().name)
 
 
 def run_forever(stop: threading.Event | None = None) -> None:

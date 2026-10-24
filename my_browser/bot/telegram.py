@@ -72,6 +72,7 @@ HELP = """<b>Глубокие исследования</b>
 /quiet 23:00 08:00 — тихие часы (/quiet off)
 /urgent 8 — порог срочного, от 1 до 10 (/urgent off)
 /topics — темы кнопками
+/dropped — что отсеяно за сутки и почему; «↩️» возвращает сюжет
 /pause, /resume — остановить и продолжить новости"""
 
 dp = Dispatcher()
@@ -584,6 +585,43 @@ async def cmd_remove(message: Message, command: CommandObject) -> None:
     await message.answer(f"⏸ Выключен #{source['id']} {html.escape(source['name'])}. Вернуть: /add {html.escape(url)}")
 
 
+@dp.message(Command("dropped"))
+async def cmd_dropped(message: Message) -> None:
+    """What the news part dropped in the last day, grouped by why; «↩️ N» sends a story that mattered after all."""
+    stories = (await call("news", "GET", "/dropped", params={"hours": 24, "limit": 30})).json()
+    if not stories:
+        await message.answer("За сутки ничего не отсеяно.")
+        return
+    off_topic = [s for s in stories if s["drop_reason"] == "не про ИИ"]
+    minor = [s for s in stories if s["drop_reason"] != "не про ИИ"]
+    lines, numbered = [f"🗑 <b>Отсеяно за сутки</b>: {len(stories)}"], []
+    for title, group in (("Мелочи и мнения", minor), ("Не про ИИ", off_topic)):
+        if not group:
+            continue
+        lines.append(f"\n<b>{title}</b> — {len(group)}")
+        for story in group:
+            numbered.append(story["id"])
+            reason = (story["drop_reason"] or "").removeprefix("неважно: ")
+            lines.append(f"{len(numbered)}. {html.escape(story['title_ru'] or story['title'] or '')} — <i>{html.escape(reason)}</i>")
+    lines.append("\nВернуть сюжет, который был важен: кнопка с его номером. Это учтётся как 👍.")
+    buttons = [InlineKeyboardButton(text=f"↩️ {n}", callback_data=f"nd:{sid}") for n, sid in enumerate(numbered[:20], 1)]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 5] for i in range(0, len(buttons), 5)])
+    parts = _chunks("\n".join(lines))
+    for n, part in enumerate(parts):
+        await message.answer(part, reply_markup=keyboard if n == len(parts) - 1 else None)
+
+
+@dp.callback_query(F.data.startswith("nd:"))
+async def on_news_restore(callback: CallbackQuery) -> None:
+    story_id = callback.data.split(":")[1]
+    try:
+        await call("news", "POST", f"/stories/{story_id}/restore")
+    except httpx.HTTPStatusError:
+        await callback.answer("Этот сюжет уже вернули или он не отсеян", show_alert=True)
+        return
+    await callback.answer("Возвращаю: сюжет придёт сообщением, а похожие станут заметнее")
+
+
 @dp.callback_query(F.data.startswith("nr:"))
 async def on_news_research(callback: CallbackQuery) -> None:
     """«🔎» under a news story: offer it as a research topic, as follow-up topics are offered."""
@@ -872,6 +910,7 @@ async def start(handle_signals: bool = True) -> None:
         BotCommand(command="news", description="Новости об ИИ: статус"),
         BotCommand(command="sources", description="Источники новостей"),
         BotCommand(command="topics", description="Темы новостей"),
+        BotCommand(command="dropped", description="Что отсеяно из новостей"),
         BotCommand(command="pause", description="Новости на паузу"),
         BotCommand(command="resume", description="Продолжить новости"),
         BotCommand(command="help", description="Как пользоваться"),

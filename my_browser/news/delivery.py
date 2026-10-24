@@ -11,7 +11,8 @@ sends them to TELEGRAM_ALLOWED_USERS and marks them sent (POST /deliveries/{id}/
 - A sent story that grew to twice its sources at sending, and UPDATE_MIN more, comes back once in a digest as an
   update; never twice.
 Nothing goes out while paused, and a story is never sent twice. Only the topics on in the settings go out
-(and into «Радар»).
+(and into «Радар»). Everything is ordered and filtered by the effective importance: the scored one plus what 👍/👎
+taught (feedback.py). A dropped story the user brings back («Это было важно», /dropped) goes out at once.
 """
 
 import html
@@ -21,7 +22,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from my_browser.common.text import plural
-from my_browser.news import config, db
+from my_browser.news import config, db, feedback
 
 URGENT_HOURS = 12
 DIGEST_LATE_HOURS = 2
@@ -95,10 +96,10 @@ def run() -> dict:
             queued["digest"] = _digest(conn, settings, slot)
         if settings.urgent_enabled and not quiet(settings, local) and not _held_for_digest(settings, local):
             on, topics = _topics(settings)
-            urgent = [dict(row) for row in conn.execute(
+            urgent = [s for s in feedback.rank(conn, [dict(row) for row in conn.execute(
                 f"SELECT * FROM stories WHERE status = 'queued' AND importance >= ? AND first_seen > ? AND summary_ru IS NOT NULL "
-                f"AND {on} ORDER BY importance DESC, source_count DESC",
-                [settings.urgent_min_importance, now - URGENT_HOURS * 3600, *topics])]
+                f"AND {on}", [settings.urgent_min_importance - feedback.MAX_SHIFT, now - URGENT_HOURS * 3600, *topics])])
+                      if s["effective"] >= settings.urgent_min_importance]
             if urgent:
                 _urgent(conn, urgent)
                 queued["urgent"] = len(urgent)
@@ -151,10 +152,10 @@ def _due_digest(settings: config.Settings, local: datetime) -> str | None:
 
 def _digest(conn, settings: config.Settings, slot: str) -> int:
     on, topics = _topics(settings)
-    fresh = [dict(row) for row in conn.execute(
-        f"SELECT * FROM stories WHERE status = 'queued' AND importance >= ? AND last_updated > ? AND {on} "
-        "ORDER BY importance DESC, source_count DESC, last_updated DESC LIMIT ?",
-        [DIGEST_MIN_IMPORTANCE, time.time() - settings.dedup_window_hours * 3600, *topics, settings.digest_max_stories])]
+    fresh = [s for s in feedback.rank(conn, [dict(row) for row in conn.execute(
+        f"SELECT * FROM stories WHERE status = 'queued' AND importance >= ? AND last_updated > ? AND {on}",
+        [DIGEST_MIN_IMPORTANCE - feedback.MAX_SHIFT, time.time() - settings.dedup_window_hours * 3600, *topics])])
+             if s["effective"] >= DIGEST_MIN_IMPORTANCE][:settings.digest_max_stories]
     room = settings.digest_max_stories - len(fresh)
     grown = [dict(row) for row in conn.execute(
         "SELECT * FROM stories WHERE status = 'sent' AND update_sent = 0 AND sent_count IS NOT NULL "
@@ -209,10 +210,10 @@ def feed(limit: int = 12, hours: int = 36) -> list[dict]:
     """«Радар»: the scored stories of the last hours, the most important first, each with its header and best link."""
     on, topics = _topics(config.load())
     with db.connect() as conn:
-        rows = [dict(row) for row in conn.execute(
-            f"SELECT * FROM stories WHERE status IN ('queued', 'sent') AND importance >= ? AND last_updated > ? AND {on} "
-            "ORDER BY importance DESC, source_count DESC, last_updated DESC LIMIT ?",
-            [DIGEST_MIN_IMPORTANCE, time.time() - hours * 3600, *topics, limit])]
+        rows = [s for s in feedback.rank(conn, [dict(row) for row in conn.execute(
+            f"SELECT * FROM stories WHERE status IN ('queued', 'sent') AND importance >= ? AND last_updated > ? AND {on}",
+            [DIGEST_MIN_IMPORTANCE - feedback.MAX_SHIFT, time.time() - hours * 3600, *topics])])
+                if s["effective"] >= DIGEST_MIN_IMPORTANCE][:limit]
         for row in rows:
             posts = _posts(conn, row["id"])
             first_hand = row["primary_url"] or next((p["url"] for p in posts if p["is_primary"]), None)
@@ -222,6 +223,25 @@ def feed(limit: int = 12, hours: int = 36) -> list[dict]:
     return rows
 
 
-def feedback(story_id: int, value: int) -> None:
+def dropped(hours: int = 24, limit: int = 30) -> list[dict]:
+    """What scoring dropped in the last hours, the most important first, each with its reason."""
+    with db.connect() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT id, title_ru, title, importance, topic, drop_reason, source_count FROM stories "
+            "WHERE status = 'dropped' AND scored_at > ? ORDER BY importance DESC, source_count DESC LIMIT ?",
+            (time.time() - hours * 3600, limit))]
+
+
+def restore(story_id: int) -> dict | None:
+    """«Это было важно»: a dropped story goes out now in a message of its own, and it counts as 👍."""
     with db.transaction() as conn:
-        conn.execute("INSERT INTO feedback (story_id, value, created) VALUES (?, ?, ?)", (story_id, 1 if value > 0 else -1, time.time()))
+        row = conn.execute("SELECT * FROM stories WHERE id = ? AND status = 'dropped'", (story_id,)).fetchone()
+        if row is None:
+            return None
+        story = {**dict(row), "importance": max(row["importance"] or 0, DIGEST_MIN_IMPORTANCE)}
+        conn.execute("UPDATE stories SET importance = ?, drop_reason = NULL WHERE id = ?", (story["importance"], story_id))
+        text = "↩️ <b>Вернул отсеянное</b>\n\n" + story_html(story, _posts(conn, story_id))
+        _enqueue(conn, "restored", text, [[["🔎 Исследовать", f"nr:{story_id}"]]], [story_id])
+        _mark_sent(conn, [story])
+    feedback.record(story_id, 1)
+    return story

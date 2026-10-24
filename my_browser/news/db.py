@@ -11,7 +11,9 @@
 import json
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
+from pathlib import Path
 
 from my_browser.common.settings import REPORTS_DIR
 
@@ -134,6 +136,27 @@ def transaction():
     with _write, connect() as db:
         yield db
         db.commit()
+
+
+BACKUPS = REPORTS_DIR / "backups"
+KEEP_BACKUPS = 7
+
+
+def backup() -> Path:
+    """Today's copy of news.sqlite in REPORTS_DIR/backups, made by SQLite while the loop may write; the last
+    KEEP_BACKUPS are kept. They are on the same volume: a copy against a broken file or a bad change, not against
+    losing the volume."""
+    BACKUPS.mkdir(parents=True, exist_ok=True)
+    target = BACKUPS / f"news-{time.strftime('%Y-%m-%d')}.sqlite"
+    with connect() as source:
+        copy = sqlite3.connect(target)
+        try:
+            source.backup(copy)
+        finally:
+            copy.close()
+    for old in sorted(BACKUPS.glob("news-*.sqlite"))[:-KEEP_BACKUPS]:
+        old.unlink()
+    return target
 
 
 def get_state(key: str, default=None):

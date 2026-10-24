@@ -10,7 +10,8 @@ Every few minutes the loop takes the fresh posts without a story (digests aside)
   close enough only to the one before it. A story that already has a post of the same owner takes another of its
   posts by meaning only when it is that much closer too: an outlet's different articles on one theme are alike,
   while its second post on one event (a detail, a follow-up) is very close to the first.
-A story is open while it got a post within the dedup window. It counts its independent sources (distinct owners)
+When the model cannot run (not downloaded, out of memory), posts are merged by shared links only and stored
+without an embedding, so stories and digests go on. A story is open while it got a post within the dedup window. It counts its independent sources (distinct owners)
 and whether a first-hand source is among them; stage 5 scores it and writes its Russian title and summary.
 """
 
@@ -51,7 +52,11 @@ def run() -> dict:
             "SELECT i.story_id, i.url, i.links, i.embedding, src.owner FROM items i JOIN stories s ON s.id = i.story_id "
             "JOIN sources src ON src.id = i.source_id WHERE s.last_updated > ? AND i.embedding IS NOT NULL "
             "ORDER BY i.published", (now - window,))]
-    vectors = embed.vectors([embed.text(p["title"], p["text"]) for p in waiting])
+    try:
+        vectors = embed.vectors([embed.text(p["title"], p["text"]) for p in waiting])
+    except Exception as e:
+        logger.warning("News: embeddings unavailable (%s); merging by shared links only", str(e)[:300])
+        vectors = None
 
     index_vectors = [np.frombuffer(p["embedding"], dtype=np.float32) for p in placed]
     index_story = [p["story_id"] for p in placed]
@@ -67,27 +72,30 @@ def run() -> dict:
 
     assignments: list[tuple[int, int | None, bytes]] = []  # (item, story or None for a new one, embedding)
     new_stories = 0
-    for post, vector in zip(waiting, vectors):
-        matrix = np.vstack(index_vectors) if index_vectors else np.zeros((0, len(vector)), dtype=np.float32)
-        similarity = matrix @ vector if len(matrix) else np.zeros(0)
+    for n, post in enumerate(waiting):
+        vector = vectors[n] if vectors is not None else None
+        similarity = np.vstack(index_vectors) @ vector if vector is not None and index_vectors else None
         story = None
         linked = Counter(key_story[k] for k in _keys(post["url"], post["links"]) if k in key_story)
         for candidate, _ in linked.most_common():
-            closest = max((s for s, sid in zip(similarity, index_story) if sid == candidate), default=0.0)
+            closest = max((s for s, sid in zip(similarity, index_story) if sid == candidate), default=0.0) \
+                if similarity is not None else LINK_FLOOR  # without embeddings a shared link is all there is
             if closest >= LINK_FLOOR:
                 story = candidate
                 break
-        if story is None:
+        if story is None and similarity is not None:
             same_owner = {sid for sid, names in owners.items() if post["owner"] in names}
             story = _closest(similarity, index_story, seeds, vector, settings.dedup_threshold, same_owner)
         if story is None:
             new_stories += 1
             story = -new_stories  # a placeholder until the story row exists
-            seeds[story] = vector
+            if vector is not None:
+                seeds[story] = vector
         owners.setdefault(story, set()).add(post["owner"])
-        assignments.append((post["id"], story, vector.tobytes()))
-        index_vectors.append(vector)
-        index_story.append(story)
+        assignments.append((post["id"], story, vector.tobytes() if vector is not None else None))
+        if vector is not None:
+            index_vectors.append(vector)
+            index_story.append(story)
         for key in _keys(post["url"], post["links"]):
             key_story.setdefault(key, story)
 
