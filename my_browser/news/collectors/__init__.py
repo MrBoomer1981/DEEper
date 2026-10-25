@@ -23,7 +23,8 @@ ARXIV = re.compile(r"^arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.
 SEGMENTS = {"github.com": 2, "huggingface.co": 2, "t.me": 2, "reddit.com": 4, "linkedin.com": 2}
 SLUG = re.compile(r"[-_\d]")  # a single segment counts only when it looks like a page's slug, not like /news or /blog
 # A newsletter's footer, in every post of its source: on 24.10.2026 MarkTechPost's beehiiv form glued 6 of its posts.
-NEWSLETTER = re.compile(r"^(?:magic\.beehiiv\.com|support\.substack\.com)/|[?&]email=")
+# An invitation to a folder of channels or a chat says nothing of a post either (Changellenge's footer, 25.10.2026).
+NEWSLETTER = re.compile(r"^(?:magic\.beehiiv\.com|support\.substack\.com)/|[?&]email=|^t\.me/(?:addlist|joinchat)/")
 
 
 @dataclass
@@ -42,6 +43,8 @@ class Fetched:
     posts: list[Post]
     etag: str | None = None  # for the next conditional GET
     modified: str | None = None
+    page_hash: str | None = None  # a watched page (page.py): its fingerprint and text, compared at the next poll
+    page_text: str | None = None
 
 
 def clean_url(url: str) -> str:
@@ -98,9 +101,10 @@ def text_and_links(html: str, own_host: str) -> tuple[str, list[str]]:
 
 
 async def fetch(source: dict, client: httpx.AsyncClient) -> Fetched:
-    from my_browser.news.collectors import hf_papers, rss, telegram
+    from my_browser.news.collectors import devpost, hf_papers, mlss, page, rss, telegram
 
-    collectors = {"rss": rss.fetch, "hf_papers": hf_papers.fetch, "telegram": telegram.fetch}
+    collectors = {"rss": rss.fetch, "hf_papers": hf_papers.fetch, "telegram": telegram.fetch, "page": page.fetch,
+                  "devpost": devpost.fetch, "mlss": mlss.fetch}
     if source["kind"] not in collectors:
         raise ValueError(f"no collector for {source['kind']!r} yet")
     return await collectors[source["kind"]](source, client)

@@ -106,14 +106,17 @@ async def get_sources() -> list[dict]:
 
 
 class SourceRequest(BaseModel):
-    text: str  # a feed's address or a Telegram channel (@name, t.me/name)
+    text: str  # a feed's address or a Telegram channel (@name, t.me/name); in the opps lane also a program's page
+    lane: str = "news"  # or "opps"
 
 
 @app.post("/sources")
 async def post_source(request: SourceRequest) -> dict:
     """Check and add a source (or switch an existing one back on); 422 with a message for the user when refused."""
+    if request.lane not in ("news", "opps"):
+        raise HTTPException(422, "Полоса — news или opps.")
     try:
-        return await manage.add(request.text)
+        return await manage.add(request.text, request.lane)
     except manage.SourceError as e:
         raise HTTPException(422, str(e)) from None
 

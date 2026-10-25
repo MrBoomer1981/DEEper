@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS sources (
     added REAL,
     polled REAL, last_ok REAL, last_error TEXT, fails INTEGER DEFAULT 0,
     etag TEXT, modified TEXT,        -- conditional GET: an unchanged feed answers 304
-    page_hash TEXT,                  -- a watched page: the fingerprint of its main text at the last poll
+    page_hash TEXT,                  -- a watched page: the fingerprint of its main text at the last poll,
+    page_text TEXT,                  --   and the text, to tell what changed at the next one
     UNIQUE (kind, url)
 );
 CREATE TABLE IF NOT EXISTS items (
@@ -124,7 +125,7 @@ CREATE TABLE IF NOT EXISTS opps_spend (day TEXT PRIMARY KEY, rub REAL DEFAULT 0,
 """
 # Columns newer than a table in an older news.sqlite: {table: {column: type}}, added on first use.
 ADDED_COLUMNS: dict[str, dict[str, str]] = {
-    "sources": {"lane": "TEXT DEFAULT 'news'", "page_hash": "TEXT"},
+    "sources": {"lane": "TEXT DEFAULT 'news'", "page_hash": "TEXT", "page_text": "TEXT"},
     "items": {"digest": "INTEGER DEFAULT 0", "lane": "TEXT DEFAULT 'news'"},
     "stories": {"title_ru": "TEXT", "primary_url": "TEXT", "scored_count": "INTEGER", "scored_at": "REAL",
                 "update_sent": "INTEGER DEFAULT 0", "sent_count": "INTEGER", "lane": "TEXT DEFAULT 'news'"},

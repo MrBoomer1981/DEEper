@@ -16,7 +16,13 @@ and whether a first-hand source is among them; stage 5 scores it and writes its 
 
 Posts merge only within their lane (db.py). An opportunity lives for weeks, not a news cycle: in the opps lane a
 post waits to be merged for items.OPPS_FRESH_DAYS, and a story stays open OPPS_OPEN_DAYS after its last post, or as long
-as its opportunity is open, so a hackathon announced again a month later joins its first announcement.
+as its opportunity is open, so a hackathon announced again a month later joins its first announcement. Announcements
+are written to a template («Открыта регистрация на хакатон…», Devpost's facts), so the lane merges by meaning only
+posts of different owners, from OPPS_THRESHOLD: on 25.10.2026 aggregators' reposts of one announcement were 0.86-1.00
+apart, while unrelated posts reached 0.79 and 69 of Devpost's hackathons had become one story under the news rules.
+A retelling in other words (0.74) is left to the model's same_as (opps.py). A new version of a watched page joins the
+story of its previous one. A link a source puts under most of its posts (its chat, its community) merges nothing in
+the lane (_boilerplate()): ODS Events linked its Mattermost from 9 posts, which would have made them one story.
 """
 
 import json
@@ -37,10 +43,22 @@ CHAIN_MARGIN = 0.08
 RANK = {"lab": 0, "papers": 1, "media": 2, "analyst": 3, "community": 4}  # whose title a story shows until stage 5
 LANES = ("news", "opps")
 OPPS_OPEN_DAYS = 60
+OPPS_THRESHOLD = 0.85
+BOILERPLATE_POSTS = 4
 
 
 def _keys(url: str, links: str | None) -> set[str]:
     return {k for k in {link_key(url) if url else ""} | set(json.loads(links or "[]")) if k and usable_key(k)}
+
+
+def _boilerplate(rows: list[dict]) -> set[str]:
+    """Links a source puts under its posts: in BOILERPLATE_POSTS or more of one source's posts and no other owner's."""
+    per_source, owners_of = Counter(), {}
+    for row in rows:
+        for key in _keys(row["url"], row["links"]):
+            per_source[(row["source_id"], key)] += 1
+            owners_of.setdefault(key, set()).add(row["owner"])
+    return {key for (_, key), n in per_source.items() if n >= BOILERPLATE_POSTS and len(owners_of[key]) == 1}
 
 
 def run() -> dict:
@@ -69,13 +87,14 @@ def _run(lane: str, settings: config.Settings) -> dict:
     since, open_stories, params = _windows(lane, settings, now)
     with db.connect() as conn:
         waiting = [dict(row) for row in conn.execute(
-            "SELECT i.id, i.title, i.text, i.url, i.links, s.owner FROM items i JOIN sources s ON s.id = i.source_id "
+            "SELECT i.id, i.title, i.text, i.url, i.links, i.source_id, s.owner, s.kind FROM items i "
+            "JOIN sources s ON s.id = i.source_id "
             "WHERE i.story_id IS NULL AND i.lane = ? AND i.backfill = 0 AND i.digest = 0 AND i.text IS NOT NULL "
             "AND i.published > ? ORDER BY i.published LIMIT ?", (lane, since, BATCH))]
         if not waiting:
             return {"posts": 0, "stories": 0}
         placed = [dict(row) for row in conn.execute(
-            "SELECT i.story_id, i.url, i.links, i.embedding, src.owner FROM items i JOIN stories s ON s.id = i.story_id "
+            "SELECT i.story_id, i.url, i.links, i.embedding, i.source_id, src.owner FROM items i JOIN stories s ON s.id = i.story_id "
             f"JOIN sources src ON src.id = i.source_id WHERE s.lane = ? AND {open_stories} AND i.embedding IS NOT NULL "
             "ORDER BY i.published", [lane, *params])]
     try:
@@ -91,9 +110,13 @@ def _run(lane: str, settings: config.Settings) -> dict:
     for vector, story, p in zip(index_vectors, index_story, placed):
         seeds.setdefault(story, vector)
         owners.setdefault(story, set()).add(p["owner"])
+    opps = lane == "opps"
+    footer = _boilerplate(placed + waiting) if opps else set()
     key_story: dict[str, int] = {}
+    source_story: dict[int, int] = {}  # each source's latest story: a watched page's next version joins it
     for p in placed:
-        for key in _keys(p["url"], p["links"]):
+        source_story[p["source_id"]] = p["story_id"]
+        for key in _keys(p["url"], p["links"]) - footer:
             key_story.setdefault(key, p["story_id"])
 
     assignments: list[tuple[int, int | None, bytes]] = []  # (item, story or None for a new one, embedding)
@@ -101,8 +124,9 @@ def _run(lane: str, settings: config.Settings) -> dict:
     for n, post in enumerate(waiting):
         vector = vectors[n] if vectors is not None else None
         similarity = np.vstack(index_vectors) @ vector if vector is not None and index_vectors else None
-        story = None
-        linked = Counter(key_story[k] for k in _keys(post["url"], post["links"]) if k in key_story)
+        story = source_story.get(post["source_id"]) if opps and post["kind"] == "page" else None
+        linked = Counter(key_story[k] for k in _keys(post["url"], post["links"]) - footer if k in key_story) \
+            if story is None else {}
         nearest = {candidate: _nearest(similarity, index_story, candidate) for candidate in linked}
         # The most shared links first, then the closest: an order that does not hang on the hash seed of the process.
         for candidate in sorted(linked, key=lambda c: (-linked[c], -nearest[c], c)):
@@ -111,18 +135,20 @@ def _run(lane: str, settings: config.Settings) -> dict:
                 break
         if story is None and similarity is not None:
             same_owner = {sid for sid, names in owners.items() if post["owner"] in names}
-            story = _closest(similarity, index_story, seeds, vector, settings.dedup_threshold, same_owner)
+            story = _closest(similarity, index_story, seeds, vector, OPPS_THRESHOLD if opps else settings.dedup_threshold,
+                             same_owner, chain=not opps)
         if story is None:
             new_stories += 1
             story = -new_stories  # a placeholder until the story row exists
             if vector is not None:
                 seeds[story] = vector
         owners.setdefault(story, set()).add(post["owner"])
+        source_story[post["source_id"]] = story
         assignments.append((post["id"], story, vector.tobytes() if vector is not None else None))
         if vector is not None:
             index_vectors.append(vector)
             index_story.append(story)
-        for key in _keys(post["url"], post["links"]):
+        for key in _keys(post["url"], post["links"]) - footer:
             key_story.setdefault(key, story)
 
     with db.transaction() as conn:
@@ -151,16 +177,16 @@ def _nearest(similarity: np.ndarray | None, index_story: list[int], story: int) 
 
 
 def _closest(similarity: np.ndarray, index_story: list[int], seeds: dict, vector: np.ndarray, threshold: float,
-             same_owner: set[int]) -> int | None:
+             same_owner: set[int], chain: bool = True) -> int | None:
     """The story a post joins by meaning: close to its first post, or very close to one of its posts (only the latter
-    where the post's owner is already in); the closest such."""
+    where the post's owner is already in; never with chain=False, the opps lane's rule); the closest such."""
     nearest: dict[int, float] = {}
     for score, story in zip(similarity, index_story):
         if score > nearest.get(story, -1.0):
             nearest[story] = float(score)
     best, best_score = None, 0.0
     for story, score in nearest.items():
-        very_close = score >= threshold + CHAIN_MARGIN
+        very_close = chain and score >= threshold + CHAIN_MARGIN
         close = score >= threshold and float(seeds[story] @ vector) >= threshold and story not in same_owner
         if (very_close or close) and score > best_score:
             best, best_score = story, score

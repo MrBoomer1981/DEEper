@@ -76,7 +76,8 @@ HELP = """<b>Глубокие исследования</b>
 /pause, /resume — остановить и продолжить новости
 
 <b>Возможности</b>: хакатоны, школы, стажировки, гранты с дедлайнами.
-/profile — профиль: по нему оценивается, что подходит; /profile текст — заменить"""
+/profile — профиль: по нему оценивается, что подходит; /profile текст — заменить
+/add opps @канал, лента или страница программы — источник возможностей"""
 
 dp = Dispatcher()
 pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the message that offered it
@@ -554,34 +555,52 @@ async def cmd_profile(message: Message, command: CommandObject) -> None:
     await _news_settings(message, {"opps_profile": text}, "👤 Профиль сохранён: возможности будут оцениваться по нему")
 
 
+SOURCE_LANES = {"news": "📡 <b>Источники новостей</b>", "opps": "🎯 <b>Источники возможностей</b>"}
+
+
 @dp.message(Command("sources"))
 async def cmd_sources(message: Message) -> None:
     rows = (await call("news", "GET", "/sources")).json()
-    lines = []
-    for row in rows:
-        mark = "⏸" if not row["enabled"] else "🕓" if row["polled"] is None else SOURCE_MARK[not row["last_error"]]
-        note = f" — {html.escape(row['last_error'])}" if row["enabled"] and row["last_error"] else f" — {row['week']} за неделю"
-        lines.append(f"{mark} <b>#{row['id']}</b> {html.escape(row['name'])}{note}")
-    working = sum(1 for r in rows if r["enabled"] and r["last_ok"] and not r["last_error"])
-    header = f"📡 <b>Источники</b>: {sum(1 for r in rows if r['enabled'])}, работают {working}\n✅ работает · ⚠️ ошибка · 🕓 ещё не опрошен · ⏸ выключен\n\n"
-    for part in _chunks(header + "\n".join(lines)):
+    blocks = []
+    for lane, title in SOURCE_LANES.items():
+        group = [r for r in rows if r.get("lane", "news") == lane]
+        if not group:
+            continue
+        lines = []
+        for row in group:
+            mark = "⏸" if not row["enabled"] else "🕓" if row["polled"] is None else SOURCE_MARK[not row["last_error"]]
+            note = f" — {html.escape(row['last_error'])}" if row["enabled"] and row["last_error"] else f" — {row['week']} за неделю"
+            lines.append(f"{mark} <b>#{row['id']}</b> {html.escape(row['name'])}{note}")
+        working = sum(1 for r in group if r["enabled"] and r["last_ok"] and not r["last_error"])
+        blocks.append(f"{title}: {sum(1 for r in group if r['enabled'])}, работают {working}\n" + "\n".join(lines))
+    legend = "✅ работает · ⚠️ ошибка · 🕓 ещё не опрошен · ⏸ выключен\n\n"
+    for part in _chunks(legend + "\n\n".join(blocks)):
         await message.answer(part, link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+
+OPPS_WORDS = ("opps", "возможности")
 
 
 @dp.message(Command("add"))
 async def cmd_add(message: Message, command: CommandObject) -> None:
-    if not command.args:
-        await message.answer("Формат: /add https://example.com/feed.xml или /add @channel")
+    """/add <feed or @channel> adds a news source; /add opps <feed, @channel or a program's page> an opportunities one."""
+    words = (command.args or "").split(maxsplit=1)
+    lane = "opps" if words and words[0].lower() in OPPS_WORDS else "news"
+    text = (words[1] if len(words) > 1 else "") if lane == "opps" else (command.args or "")
+    if not text.strip():
+        await message.answer("Формат: /add https://example.com/feed.xml или /add @channel — в новости;\n"
+                             "/add opps @channel или ссылка на ленту или страницу программы — в возможности")
         return
     progress = await message.answer("⏳ Проверяю источник…")
     try:
-        source = (await call("news", "POST", "/sources", json={"text": command.args}, timeout=60)).json()
+        source = (await call("news", "POST", "/sources", json={"text": text.strip(), "lane": lane}, timeout=60)).json()
     except httpx.HTTPStatusError as e:
         detail = e.response.json().get("detail") if e.response.status_code == 422 else str(e)[:200]
         await progress.edit_text(f"❌ {html.escape(detail)}")
         return
-    await progress.edit_text(f"✅ Добавлен <b>#{source['id']}</b> {html.escape(source['name'])}: первый опрос — в течение минуты. "
-                             f"Выключить: /remove {source['id']}")
+    where = " в возможности" if source.get("lane") == "opps" else ""
+    await progress.edit_text(f"✅ Добавлен{where} <b>#{source['id']}</b> {html.escape(source['name'])}: первый опрос — "
+                             f"в течение минуты. Выключить: /remove {source['id']}")
 
 
 @dp.message(Command("remove"))

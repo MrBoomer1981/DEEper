@@ -67,7 +67,7 @@ async def _poll(source: dict, client: httpx.AsyncClient, semaphore: asyncio.Sema
             try:
                 fetched = await collectors.fetch(source, client)
                 result = items.store(source, fetched.posts, window)
-                sources.mark_ok(source["id"], fetched.etag, fetched.modified)
+                sources.mark_ok(source["id"], fetched.etag, fetched.modified, fetched.page_hash, fetched.page_text)
             except Exception as e:  # one broken source must not stop the others
                 error = _describe(e)
                 logger.warning("News source failed: %s (%s)", source["name"], error)
