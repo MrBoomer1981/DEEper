@@ -30,6 +30,7 @@ OPP_TYPES = {
 }
 WEEKDAYS = {"mon": "понедельник", "tue": "вторник", "wed": "среда", "thu": "четверг", "fri": "пятница",
             "sat": "суббота", "sun": "воскресенье"}
+DAILY = "daily"  # opps_digest_day: a digest every day (the weekly one of stage O3 left new ones waiting up to a week)
 DEFAULT_PROFILE = (
     "Студент технического вуза в России, гражданин РФ. Интересы: искусственный интеллект, машинное обучение, анализ "
     "данных, программирование. Подходит: хакатоны и соревнования по ИИ и ML, школы, стажировки, исследовательские "
@@ -72,7 +73,7 @@ class Settings(BaseModel):
     budget_month_rub: float = Field(100, ge=0, le=300)  # the daily limit is a fifteenth of it
     paused: bool = False  # news only: deadlines keep coming
     opps_enabled: bool = True
-    opps_digest_day: str = "sun"  # the weekly digest of new opportunities
+    opps_digest_day: str = DAILY  # the digest of new opportunities: every day, or one day a week (WEEKDAYS)
     opps_digest_time: str = "18:00"
     opps_hot_days: int = Field(7, ge=1, le=60)  # a deadline closer than this: a new opportunity goes out at once…
     opps_hot_min_fit: int = Field(6, ge=0, le=10)  # …when it fits at least this well
@@ -115,8 +116,8 @@ class Settings(BaseModel):
     @field_validator("opps_digest_day")
     @classmethod
     def _weekday(cls, value: str) -> str:
-        if value not in WEEKDAYS:
-            raise ValueError(f"«{value}» — нужен день недели: {', '.join(WEEKDAYS)}")
+        if value != DAILY and value not in WEEKDAYS:
+            raise ValueError(f"«{value}» — нужен {DAILY} (каждый день) или день недели: {', '.join(WEEKDAYS)}")
         return value
 
     @field_validator("opps_digest_time")

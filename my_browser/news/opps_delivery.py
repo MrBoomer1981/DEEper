@@ -1,14 +1,14 @@
-"""Opportunities to Telegram: the weekly digest, «hot» ones at once, reminders of tracked deadlines.
+"""Opportunities to Telegram: the digest of new ones, «hot» ones at once, reminders of tracked deadlines.
 
 Like the news (delivery.py), messages wait in the deliveries table and the bot sends them; the cards and their
 buttons are written here. Every tick run() queues what is due:
 - Hot: a new open opportunity whose deadline is within opps_hot_days and whose fit is at least opps_hot_min_fit goes
   out at once, several together in one message (HOT_MAX at most); in the quiet hours it waits for their end. Without a
   deadline the event's start stands in (effective()): a hackathon starting in five days is as hot.
-- The weekly digest, on opps_digest_day at opps_digest_time (within DIGEST_LATE_HOURS, so a restart does not lose it):
-  the new open opportunities not sent yet, by how close the deadline is (within two weeks, a month, later, none),
-  within that by fit; low fit and no access from Russia go last; at most DIGEST_MAX, the rest counted. Once a month it
-  also asks about tracked ones without a date: «ещё открыто?».
+- The digest, every day at opps_digest_time, or once a week when opps_digest_day names a day (within
+  DIGEST_LATE_HOURS, so a restart does not lose it): the new open opportunities not sent yet, by how close the deadline
+  is (within two weeks, a month, later, none), within that by fit; low fit and no access from Russia go last; at most
+  DIGEST_MAX, the rest counted. Once a month it also asks about tracked ones without a date: «ещё открыто?».
 - Reminders: a tracked opportunity's deadline opps_reminders days ahead (14, 3, 1 by default), by calendar days in
   the settings' time zone («за 1 день» comes the day before, not the night before at 23:59), each once (opp_reminders);
   when several are due at once (tracked late), one message goes. They wait out the quiet
@@ -21,7 +21,7 @@ Only the types on in opps_types go out (all are read). Buttons: «📌 Отсл�
 import html
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from my_browser.common.text import plural
@@ -30,6 +30,7 @@ from my_browser.news import config, db, delivery
 HOT_MAX = 10
 DIGEST_MAX = 15
 DIGEST_LATE_HOURS = 6
+OVER_DAYS = 30  # «Мои»: an opportunity without the event's dates is past this long after its deadline
 ONE = {"hackathon": "Хакатон", "competition": "Соревнование", "school": "Школа", "internship": "Стажировка",
        "fellowship": "Программа", "education": "Поступление", "conference": "Конференция", "grant": "Грант",
        "talk": "Выступление", "exam": "Экзамен", "other": "Возможность"}
@@ -37,6 +38,7 @@ ICON = {"hackathon": "🏁", "competition": "🏆", "school": "🎓", "internshi
         "conference": "📄", "grant": "💰", "talk": "🎤", "exam": "📝", "other": "✨"}
 ACCESS = {"yes": "✅ из РФ", "unclear": "⚠️ из РФ — неясно", "no": "⛔ не из РФ"}
 PLAIN_ACCESS = {"yes": "из РФ: да", "unclear": "из РФ: неясно", "no": "из РФ: нет"}  # the app: no colored marks
+ACCESS_WORDS = {"yes": "да", "unclear": "неясно", "no": "нет"}
 SHORT = {"hackathon": "хакатоны", "competition": "соревнования", "school": "школы", "internship": "стажировки",
          "fellowship": "программы", "education": "поступление", "conference": "конференции", "grant": "гранты",
          "talk": "выступления", "exam": "экзамены", "other": "другое"}  # the app's filter: a phone's width
@@ -74,11 +76,62 @@ def when(opp: dict, now: float, zone: ZoneInfo) -> str:
     if not opp["deadline_at"]:
         return "дедлайн не указан" + (f" · старт {day(opp['starts'], zone)}" if opp.get("starts") else "")
     moment = datetime.fromtimestamp(opp["deadline_at"], zone)
-    days = (moment.date() - datetime.fromtimestamp(now, zone).date()).days
-    left = "сегодня" if days == 0 else "завтра" if days == 1 else "прошёл" if days < 0 else \
-        f"через {days} {plural(days, 'день', 'дня', 'дней')}"
     mark = "≈ " if opp["deadline_kind"] == "approximate" else ""
-    return f"дедлайн {mark}{moment.day} {MONTHS[moment.month - 1]} ({left})"
+    return f"дедлайн {mark}{moment.day} {MONTHS[moment.month - 1]} ({_left(moment, now, zone)})"
+
+
+def _left(moment: datetime, now: float, zone: ZoneInfo) -> str:
+    """How far a deadline is, by calendar days: «сегодня», «завтра», «через 18 дней», «прошёл»."""
+    days = (moment.date() - datetime.fromtimestamp(now, zone).date()).days
+    return "сегодня" if days == 0 else "завтра" if days == 1 else "прошёл" if days < 0 else \
+        f"через {days} {plural(days, 'день', 'дня', 'дней')}"
+
+
+def _dates(opp: dict) -> tuple[date | None, date | None]:
+    """The event's first and last day, when the source gave them."""
+    try:
+        start = date.fromisoformat(opp["starts"]) if opp.get("starts") else None
+        end = date.fromisoformat(opp["ends"]) if opp.get("ends") else None
+    except ValueError:
+        return None, None
+    return start, (end if start and end and end > start else None)
+
+
+def span(opp: dict) -> str | None:
+    """The event's dates: «6–8 ноя», «30 ноя – 2 дек», «6 ноя»; None without a start."""
+    start, end = _dates(opp)
+    if not start:
+        return None
+    if not end:
+        return f"{start.day} {MONTHS[start.month - 1]}"
+    if (end.year, end.month) == (start.year, start.month):
+        return f"{start.day}–{end.day} {MONTHS[start.month - 1]}"
+    return f"{start.day} {MONTHS[start.month - 1]} – {end.day} {MONTHS[end.month - 1]}"
+
+
+def event_when(opp: dict, now: float, zone: ZoneInfo) -> str | None:
+    """The event itself, which matters once one is registered: «6–8 ноя (через 12 дней)», «(идёт)», «(прошло)»."""
+    start, end = _dates(opp)
+    if not start:
+        return None
+    today = datetime.fromtimestamp(now, zone).date()
+    if today < start:
+        days = (start - today).days
+        left = "завтра" if days == 1 else f"через {days} {plural(days, 'день', 'дня', 'дней')}"
+    elif today <= (end or start):
+        left = "идёт" if end else "сегодня"
+    else:
+        left = "прошло"
+    return f"{span(opp)} ({left})"
+
+
+def over(opp: dict, now: float, zone: ZoneInfo) -> bool:
+    """The event is behind: it ended (or began, when it has no end) before today; without its dates, the deadline
+    passed more than OVER_DAYS ago. The app's «Мои» lists these apart, under «Прошли»."""
+    start, end = _dates(opp)
+    if start:
+        return (end or start) < datetime.fromtimestamp(now, zone).date()
+    return bool(opp["deadline_at"]) and opp["deadline_at"] < now - OVER_DAYS * 86400
 
 
 def card(opp: dict, now: float, zone: ZoneInfo, number: int | None = None) -> str:
@@ -188,11 +241,12 @@ def _hot(conn, settings: config.Settings, now: float, zone: ZoneInfo) -> int:
 
 
 def _due_digest(settings: config.Settings, local: datetime) -> str | None:
-    """The digest's date («2026-10-25») when it is due now and not made yet."""
+    """The digest's date («2026-10-25») when it is due now and not made yet: every day, or on opps_digest_day."""
     hours, minutes = map(int, settings.opps_digest_time.split(":"))
     slot = local.replace(hour=hours, minute=minutes, second=0, microsecond=0)
     key = f"{slot:%Y-%m-%d}"
-    if local.weekday() != WEEKDAY[settings.opps_digest_day] or not slot <= local < slot + timedelta(hours=DIGEST_LATE_HOURS):
+    weekly = settings.opps_digest_day != config.DAILY
+    if (weekly and local.weekday() != WEEKDAY[settings.opps_digest_day]) or not slot <= local < slot + timedelta(hours=DIGEST_LATE_HOURS):
         return None
     return None if key in db.get_state("opps_digests_done", []) else key
 
@@ -207,7 +261,8 @@ def _digest(conn, settings: config.Settings, now: float, zone: ZoneInfo, local: 
         check = _rows(conn, "o.status = 'tracked' AND o.deadline_at IS NULL", [])
     if not shown and not check:
         return 0
-    lines = [f"🎯 <b>Возможности недели</b> · {len(fresh)} {plural(len(fresh), 'новая', 'новых', 'новых')}"]
+    lines = [f"🎯 <b>Новые возможности</b> · {len(fresh)}" if settings.opps_digest_day == config.DAILY else
+             f"🎯 <b>Возможности недели</b> · {len(fresh)} {plural(len(fresh), 'новая', 'новых', 'новых')}"]
     lines += [card(o, now, zone, n) for n, o in enumerate(shown, 1)]
     if rest:
         lines.append(f"…и ещё {len(rest)}: /opps")
@@ -289,17 +344,47 @@ def by_date(rows: list[dict]) -> list[dict]:
 
 
 def meta(opp: dict, now: float, zone: ZoneInfo) -> str:
-    """The app's caption, without the bot's colored marks: «Хакатон · дедлайн 12 ноя (через 18 дней) · онлайн · из РФ: да»."""
-    parts = [ONE.get(opp["opp_type"], "Возможность"), when(opp, now, zone)]
+    """The app's caption, without the bot's colored marks: «Хакатон · дедлайн 12 ноя (через 18 дней) · онлайн · из РФ: да»;
+    once applied, the event's dates instead of the deadline: «Хакатон · 6–8 ноя (через 12 дней) · онлайн · из РФ: да»."""
+    event = event_when(opp, now, zone) if opp["status"] == "applied" else None
+    parts = [ONE.get(opp["opp_type"], "Возможность"), event or when(opp, now, zone)]
     if opp["format"]:
         parts.append(FORMATS.get(opp["format"], opp["format"]))
     parts.append(PLAIN_ACCESS.get(opp["ru_access"] or "unclear", PLAIN_ACCESS["unclear"]))
     return " · ".join(parts)
 
 
+def details(opp: dict, now: float, zone: ZoneInfo) -> list[list[str]]:
+    """The app's sheet of one opportunity: [label, text] pairs of what is known, plain text."""
+    if opp["deadline_kind"] == "rolling":
+        deadline = "приём круглый год"
+    elif opp["deadline_at"]:
+        moment = datetime.fromtimestamp(opp["deadline_at"], zone)
+        approximate = opp["deadline_kind"] == "approximate"
+        deadline = (f"{'≈ ' if approximate else ''}{moment.day} {MONTHS[moment.month - 1]}"
+                    f"{'' if approximate else f', {moment:%H:%M}'} ({_left(moment, now, zone)})")
+    else:
+        deadline = "не указан"
+    facts = [["Дедлайн", deadline]]
+    if opp["deadline_text"]:
+        facts.append(["В анонсе", opp["deadline_text"]])
+    if dates := span(opp):
+        facts.append(["Даты", dates])
+    if place := ", ".join(filter(None, (FORMATS.get(opp["format"] or ""), opp["location"]))):
+        facts.append(["Формат", place])
+    if opp["eligibility"]:
+        facts.append(["Кто может", opp["eligibility"]])
+    facts.append(["Из России", ACCESS_WORDS.get(opp["ru_access"] or "unclear", "неясно")])
+    for label, key in (("Что дают", "reward"), ("Стоимость", "cost"), ("Организатор", "organizer")):
+        if opp[key]:
+            facts.append([label, opp[key]])
+    return facts
+
+
 def dressed(rows: list[dict]) -> list[dict]:
     """Opportunities with what the bot and the app show, written here (they format nothing themselves): `line` and
-    `card` (Telegram HTML), `meta` (plain), `type_name` and `type_short`, `apply` (where to apply, else the latest post)."""
+    `card` (Telegram HTML), `meta` (plain), `type_name` and `type_short`, `apply` (where to apply, else the latest
+    post), and for the app's sheet and «Мои» `details` ([label, text] pairs) and `over` (the event is behind)."""
     zone, now = _zone(config.load()), time.time()
     with db.connect() as conn:
         for row in rows:
@@ -308,4 +393,5 @@ def dressed(rows: list[dict]) -> list[dict]:
             row["type_name"] = config.OPP_TYPES.get(row["opp_type"], row["opp_type"])
             row["type_short"] = SHORT.get(row["opp_type"], row["type_name"])
             row["apply"] = row["apply_url"] or row["link"]
+            row["details"], row["over"] = details(row, now, zone), over(row, now, zone)
     return rows
