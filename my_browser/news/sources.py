@@ -23,6 +23,10 @@ GENERATED = "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/"
 INTERVALS = {"lab": 30, "papers": 120, "media": 15, "analyst": 60, "community": 30}  # minutes between polls
 OPPS_INTERVALS = {"aggregator": 60, "company": 180, "university": 180, "program": 360, "conference": 360, "community": 60}
 PAGE_INTERVAL = 1440  # a watched page: once a day
+# Days without a new post after which a source of the opportunities lane counts as silent (/sources shows it): an
+# aggregator posts every few days, a program's page may rightly stay the same for a season.
+SILENT_DAYS = {"aggregator": 14, "page": 90}
+SILENT_DAYS_OTHER = 45
 
 
 @dataclass
@@ -250,13 +254,22 @@ def seed() -> int:
 
 
 def listing() -> list[dict]:
-    """Every source with its health and how many fresh posts it gave in the last week."""
-    week_ago = time.time() - 7 * 86400
+    """Every source with its health, how many fresh posts it gave in the last week and, in the opportunities lane,
+    `silent_days` when it has been quiet longer than its kind usually is (SILENT_DAYS)."""
+    now = time.time()
     with db.connect() as conn:
-        rows = conn.execute(
-            "SELECT s.*, (SELECT COUNT(*) FROM items i WHERE i.source_id = s.id AND i.backfill = 0 AND i.seen > ?) AS week "
-            "FROM sources s ORDER BY s.lane = 'opps', s.category, s.name", (week_ago,)).fetchall()
-    return [{k: v for k, v in dict(row).items() if k != "page_text"} for row in rows]  # a page's text stays here
+        rows = [{k: v for k, v in dict(row).items() if k != "page_text"} for row in conn.execute(  # a page's text stays here
+            "SELECT s.*, (SELECT COUNT(*) FROM items i WHERE i.source_id = s.id AND i.backfill = 0 AND i.seen > ?) AS week, "
+            "(SELECT MAX(i.seen) FROM items i WHERE i.source_id = s.id) AS last_post "
+            "FROM sources s ORDER BY s.lane = 'opps', s.category, s.name", (now - 7 * 86400,))]
+    for row in rows:
+        row["silent_days"] = None
+        if row["lane"] == "opps" and row["enabled"]:
+            limit = SILENT_DAYS.get("page" if row["kind"] == "page" else row["category"], SILENT_DAYS_OTHER)
+            quiet = (now - (row["last_post"] or row["added"] or now)) / 86400
+            if quiet > limit:
+                row["silent_days"] = int(quiet)
+    return rows
 
 
 def enabled() -> list[dict]:

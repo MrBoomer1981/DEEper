@@ -7,8 +7,9 @@ proxy, and the transitions between pages, where the browser has them at all, onl
 
 Opening an address of a section (a link, a refresh, the installed app's start) builds the whole page with that
 section shown. When a section is shown again, the server redraws what may have changed since (tab_shown): new
-reports and researches in «Библиотека», new news and topics in «Радар». «Поиск» follows the defaults «Фокус»
-changes. The page is async: it fetches the news part's stories first, so «Радар» has them at the first paint.
+reports and researches in «Библиотека», new news, opportunities and topics in «Радар». «Поиск» follows the defaults
+«Фокус» changes. The page is async: it fetches the news part's stories and opportunities first, so «Радар» has them
+at the first paint.
 """
 
 import asyncio
@@ -24,13 +25,13 @@ NEWS_WAIT_SEC = 1.5  # NiceGUI gives an async page 3 s; without news by then «�
 
 async def page(active: str, *, topic: str = "", mode: str = "", parent: int | None = None, tab: str = "reports", q: str = "") -> None:
     try:
-        stories = await asyncio.wait_for(radar.news(), NEWS_WAIT_SEC)
+        stories, opps = await asyncio.wait_for(asyncio.gather(radar.news(), radar.opportunities()), NEWS_WAIT_SEC)
     except asyncio.TimeoutError:
-        stories = []
+        stories, opps = [], []
     kit.shell(kit.TAB_TITLES[active], active=active)
     builders = {
         "search": lambda: search.search_screen(topic, mode, parent),
-        "radar": lambda: radar.radar_screen(stories),
+        "radar": lambda: radar.radar_screen(stories, opps),
         "library": lambda: library.library_screen(tab, q),
         "focus": focus.focus_screen,
     }

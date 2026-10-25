@@ -54,6 +54,7 @@ DEFAULT_PREFS = {
     "mode": "detailed", "sources": DEFAULT_SOURCES, "writer": DEFAULT_WRITER,
     "factcheck": None,  # None: as the mode has it (common.settings.FACTCHECK_MODES)
     "graffiti": True, "preset": "mine", "profile": "", "name": "",
+    "radar_tab": "news",  # «Радар»: news or opportunities, the last one chosen
 }
 
 

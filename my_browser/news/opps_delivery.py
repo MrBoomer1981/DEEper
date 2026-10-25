@@ -36,6 +36,10 @@ ONE = {"hackathon": "Хакатон", "competition": "Соревнование",
 ICON = {"hackathon": "🏁", "competition": "🏆", "school": "🎓", "internship": "💼", "fellowship": "🔬", "education": "📚",
         "conference": "📄", "grant": "💰", "talk": "🎤", "exam": "📝", "other": "✨"}
 ACCESS = {"yes": "✅ из РФ", "unclear": "⚠️ из РФ — неясно", "no": "⛔ не из РФ"}
+PLAIN_ACCESS = {"yes": "из РФ: да", "unclear": "из РФ: неясно", "no": "из РФ: нет"}  # the app: no colored marks
+SHORT = {"hackathon": "хакатоны", "competition": "соревнования", "school": "школы", "internship": "стажировки",
+         "fellowship": "программы", "education": "поступление", "conference": "конференции", "grant": "гранты",
+         "talk": "выступления", "exam": "экзамены", "other": "другое"}  # the app's filter: a phone's width
 FORMATS = {"online": "онлайн", "offline": "офлайн", "hybrid": "гибрид"}
 MONTHS = ("янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
 WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -284,11 +288,24 @@ def by_date(rows: list[dict]) -> list[dict]:
                                        -(o["fit"] or 0)))
 
 
+def meta(opp: dict, now: float, zone: ZoneInfo) -> str:
+    """The app's caption, without the bot's colored marks: «Хакатон · дедлайн 12 ноя (через 18 дней) · онлайн · из РФ: да»."""
+    parts = [ONE.get(opp["opp_type"], "Возможность"), when(opp, now, zone)]
+    if opp["format"]:
+        parts.append(FORMATS.get(opp["format"], opp["format"]))
+    parts.append(PLAIN_ACCESS.get(opp["ru_access"] or "unclear", PLAIN_ACCESS["unclear"]))
+    return " · ".join(parts)
+
+
 def dressed(rows: list[dict]) -> list[dict]:
-    """Opportunities with their `line` and `card` written for the bot (it formats nothing itself)."""
+    """Opportunities with what the bot and the app show, written here (they format nothing themselves): `line` and
+    `card` (Telegram HTML), `meta` (plain), `type_name` and `type_short`, `apply` (where to apply, else the latest post)."""
     zone, now = _zone(config.load()), time.time()
     with db.connect() as conn:
         for row in rows:
             row.setdefault("link", _link(conn, row["story_id"]))
-            row["line"], row["card"] = line(row, now, zone), card(row, now, zone)
+            row["line"], row["card"], row["meta"] = line(row, now, zone), card(row, now, zone), meta(row, now, zone)
+            row["type_name"] = config.OPP_TYPES.get(row["opp_type"], row["opp_type"])
+            row["type_short"] = SHORT.get(row["opp_type"], row["type_name"])
+            row["apply"] = row["apply_url"] or row["link"]
     return rows

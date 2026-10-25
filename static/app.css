@@ -387,6 +387,7 @@ body:not(.graffiti-off) .report.main h2:first-of-type { padding-bottom: 12px; ba
 .story-actions .btn-primary { margin-top: 0; }
 .story-src { font-size: 14px; }
 .news-row { align-items: flex-start; }
+.radar-part { display: flex; flex-direction: column; gap: 16px; }  /* a tab of «Радар»: the screen's own rhythm */
 .news-row a.li-text { color: inherit; text-decoration: none; }
 .li-note { font-size: 14px; line-height: 1.5; color: var(--text-body); overflow: hidden; display: -webkit-box;
            -webkit-box-orient: vertical; -webkit-line-clamp: 3; }

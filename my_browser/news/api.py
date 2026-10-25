@@ -44,12 +44,12 @@ def _sources(conn, lane: str) -> dict:
     return {**dict(counts), "failing": failing}
 
 
-def _deadline(conn, now: float, statuses: tuple[str, ...]) -> dict | None:
-    """The nearest deadline ahead among opportunities of these statuses."""
+def _deadline(conn, now: float, statuses: tuple[str, ...], zone: ZoneInfo) -> dict | None:
+    """The nearest deadline ahead among opportunities of these statuses, with `when` («дедлайн 12 ноя (через 18 дней)»)."""
     row = conn.execute(
-        f"SELECT story_id, title_ru, deadline, deadline_kind, status FROM opportunities WHERE status IN "
+        f"SELECT story_id, title_ru, deadline, deadline_at, deadline_kind, starts, status FROM opportunities WHERE status IN "
         f"({','.join('?' * len(statuses))}) AND deadline_at > ? ORDER BY deadline_at LIMIT 1", (*statuses, now)).fetchone()
-    return dict(row) if row else None
+    return {**dict(row), "when": opps_delivery.when(dict(row), now, zone)} if row else None
 
 
 def status() -> dict:
@@ -69,7 +69,7 @@ def status() -> dict:
         opps_open, opps_tracked = conn.execute(
             "SELECT COALESCE(SUM(status IN ('open', 'tracked')), 0), COALESCE(SUM(status = 'tracked'), 0) "
             "FROM opportunities").fetchone()
-        next_deadline, next_tracked = _deadline(conn, now, ("open", "tracked")), _deadline(conn, now, ("tracked",))
+        next_deadline, next_tracked = _deadline(conn, now, ("open", "tracked"), tz), _deadline(conn, now, ("tracked",), tz)
     spent_today, spent_month = scoring.spent(settings)
     opps_today, opps_month = scoring.spent(settings, "opps")
     last = db.get_state("last_collect")

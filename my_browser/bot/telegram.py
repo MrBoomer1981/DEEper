@@ -447,6 +447,23 @@ def news_text(status: dict) -> str:
         lines.append("⏸ На паузе")
     elif not status["loop_alive"]:
         lines.append("⏸ Цикл новостей не запущен")
+    if opps := status.get("opps"):
+        lines.append("")
+        lines.append(opps_text(opps))
+    return "\n".join(lines)
+
+
+def opps_text(opps: dict) -> str:
+    """/news, the opportunities' lines: what is open and tracked, the nearest tracked deadline, the lane's spend."""
+    if not opps["enabled"]:
+        return "🎯 <b>Возможности</b> выключены"
+    sources, spend = opps["sources"], opps["spend"]
+    lines = [f"🎯 <b>Возможности</b>: открыто {opps['open']}, отслеживаю {opps['tracked']}"]
+    if nearest := opps.get("next_tracked"):
+        lines.append(f"Ближайший дедлайн: {html.escape(nearest['title_ru'] or '')} — {nearest['when']}")
+    failing = f", с ошибкой {len(sources['failing'])}" if sources["failing"] else ""
+    lines.append(f"Источники: {sources['enabled']}, работают {sources['ok']}{failing}")
+    lines.append(f"LLM: за месяц {rub_text(spend['month_rub'])} из {spend['budget_month_rub']:g}\u00a0₽")
     return "\n".join(lines)
 
 
@@ -706,10 +723,12 @@ async def cmd_sources(message: Message) -> None:
         for row in group:
             mark = "⏸" if not row["enabled"] else "🕓" if row["polled"] is None else SOURCE_MARK[not row["last_error"]]
             note = f" — {html.escape(row['last_error'])}" if row["enabled"] and row["last_error"] else f" — {row['week']} за неделю"
+            if row.get("silent_days") and not row["last_error"]:
+                mark, note = "💤", f" — молчит {row['silent_days']} {plural(row['silent_days'], 'день', 'дня', 'дней')}"
             lines.append(f"{mark} <b>#{row['id']}</b> {html.escape(row['name'])}{note}")
         working = sum(1 for r in group if r["enabled"] and r["last_ok"] and not r["last_error"])
         blocks.append(f"{title}: {sum(1 for r in group if r['enabled'])}, работают {working}\n" + "\n".join(lines))
-    legend = "✅ работает · ⚠️ ошибка · 🕓 ещё не опрошен · ⏸ выключен\n\n"
+    legend = "✅ работает · ⚠️ ошибка · 💤 молчит дольше обычного · 🕓 ещё не опрошен · ⏸ выключен\n\n"
     for part in _chunks(legend + "\n\n".join(blocks)):
         await message.answer(part, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
