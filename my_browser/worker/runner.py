@@ -19,7 +19,7 @@ from collections import deque
 
 import gpt_researcher.actions  # noqa: F401  creates the "scraper" logger's console handler first
 
-from my_browser.common import costs, phases
+from my_browser.common import costs, memory, phases
 from my_browser.common.clients import call_core
 from my_browser.worker import factcheck, hooks, suggest
 from my_browser.worker.pipeline import PreflightError, config_file, preflight, render, research, run_settings
@@ -130,6 +130,7 @@ def execute(job: dict) -> None:
         scraper_log.removeHandler(progress)
         costs.current.reset(metering)
         hooks.blocked.reset(blocking)
+        memory.release()  # the research's pages and parse trees: hundreds of MB that glibc would keep
 
 
 def run_forever(stop: threading.Event | None = None) -> None:

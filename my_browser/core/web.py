@@ -13,9 +13,7 @@ import hashlib
 import logging
 import mimetypes
 import os
-import re
 import secrets
-from pathlib import Path
 
 from my_browser.common.settings import PORT, REPORTS_DIR, ROOT, configure_logging
 
@@ -23,7 +21,6 @@ REPORTS_DIR.mkdir(exist_ok=True)
 # Read by NiceGUI at import: keep login sessions on the Railway volume across redeploys.
 os.environ.setdefault("NICEGUI_STORAGE_PATH", str(REPORTS_DIR / ".nicegui"))
 
-import nicegui  # noqa: E402
 from fastapi import Request, Response  # noqa: E402
 from fastapi.responses import FileResponse, RedirectResponse  # noqa: E402
 from nicegui import app, ui  # noqa: E402
@@ -39,23 +36,18 @@ OPEN_PATHS = ("/login", "/static/", "/_nicegui", "/favicon", "/api/")  # /api ch
 
 
 def asset_version() -> str:
-    """Changes with app.css/app.js, so a deploy is not hidden behind the browser cache."""
+    """Changes with app.css, app.js and the icon font, so a deploy is not hidden behind the browser cache."""
     digest = hashlib.sha1()
-    for name in ("app.css", "app.js"):
+    for name in ("app.css", "app.js", "fonts/icons.woff2"):
         digest.update((ROOT / "static" / name).read_bytes())
     return digest.hexdigest()[:10]
 
 
-def icon_font_url() -> str:
-    """NiceGUI's Material Icons font. Icons are ligatures of it, invisible until it loads, and a browser fetches
-    a font only once some text needs it: without a preload every new screen showed its icons a moment late."""
-    css = (Path(nicegui.__file__).parent / "static" / "fonts.css").read_text()
-    found = re.search(r'font-family: "Material Icons";[^}]*?src: url\((fonts/[\w.-]+\.woff2)\)', css)
-    return f"/_nicegui/{nicegui.__version__}/static/{found.group(1)}" if found else ""
-
-
 VERSION = asset_version()
-ICON_FONT = icon_font_url()
+# NiceGUI's Material Icons cut to the icons DEEper shows (dev/icons.py): 5 KB instead of 129 KB on a first visit.
+# Icons are ligatures, invisible until the font loads, and a browser fetches a font only once some text needs it:
+# without the preload every new screen showed its icons a moment late. app.css sends .material-icons here.
+ICON_FONT = f"/static/fonts/icons.woff2?v={VERSION}"
 ui.add_head_html(f"""
 <link rel="manifest" href="/static/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -67,12 +59,14 @@ ui.add_head_html(f"""
 <link rel="preload" href="/static/fonts/Onest.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/Unbounded.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/JetBrainsMono.woff2" as="font" type="font/woff2" crossorigin>
-{f'<link rel="preload" href="{ICON_FONT}" as="font" type="font/woff2" crossorigin>' if ICON_FONT else ''}
+<link rel="preload" href="{ICON_FONT}" as="font" type="font/woff2" crossorigin>
+<style>@font-face {{ font-family: 'DEEper Icons'; src: url('{ICON_FONT}') format('woff2'); font-display: block; }}</style>
 <script>addEventListener('pagereveal', e => {{ if (e.viewTransition) document.documentElement.classList.add('vt'); }});</script>
 <link rel="stylesheet" href="/static/app.css?v={VERSION}">
 <script defer src="/static/app.js?v={VERSION}"></script>
 """, shared=True)
-# app.css and app.js change their address with every change (?v=); fonts, the mascot and icons hardly ever change.
+# app.css, app.js and the icon font change their address with every change (?v=); the other fonts, the mascot and
+# the app icons hardly ever change.
 mimetypes.add_type("font/woff2", ".woff2")  # the slim Docker image does not know it and served the fonts as octet-stream
 app.add_static_files("/static", ROOT / "static", max_cache_age=7 * 24 * 3600)
 app.include_router(router)

@@ -9,6 +9,7 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
   - Per job it sets the cost meter and the blocklist ContextVars (`asyncio.run` copies them into the research), runs `pipeline.research()`, asks for follow-ups, renders the files and hands them in (with retries, since core may be restarting).
   - A handler on gpt-researcher's `scraper` logger collects the planned queries and the `Added source url (score)` lines.
   - A ticker thread sends progress every few seconds when it changed and every 30 s as a heartbeat.
+  - After each research, done or failed, `common.memory.release()` gives its pages and parse trees back to the system: glibc would keep them, and on Railway the process stayed at its peak for hours.
 - `worker/pipeline.py`:
   - `run_settings()` builds config.json plus the run's sources, writer, words and language, and `config_file()` writes it to a temporary file for each run, so nothing process-wide changes during a research.
   - Configuration precedence in gpt-researcher is **env vars > config file > library defaults**. Any key from `config.json` can still be overridden in `.env`, and an environment variable beats the run's choice too.

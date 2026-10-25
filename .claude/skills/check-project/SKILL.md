@@ -14,8 +14,11 @@ Work from any folder of the repository. Shell variables do not survive between c
 ```bash
 R=$(git rev-parse --show-toplevel)
 uv run python -m compileall -q "$R/my_browser" "$R/app.py" "$R/research.py" "$R/eval" "$R/dev" &&
-REPORTS_DIR=$(mktemp -d) uv run python -c "import importlib, pkgutil, my_browser; [importlib.import_module(m.name) for m in pkgutil.walk_packages(my_browser.__path__, 'my_browser.') if not m.name.endswith('__main__')]; print('imports ok')"
+REPORTS_DIR=$(mktemp -d) uv run python -c "import importlib, pkgutil, my_browser; [importlib.import_module(m.name) for m in pkgutil.walk_packages(my_browser.__path__, 'my_browser.') if not m.name.endswith('__main__')]; print('imports ok')" &&
+uv run "$R/dev/icons.py" --check
 ```
+
+The last line checks that the cut icon font (`static/fonts/icons.woff2`) has every icon the web app names; a missing one would show up on screen as its name. `uv run dev/icons.py` cuts it anew.
 
 ## 2. One research end to end, free
 

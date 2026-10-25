@@ -7,6 +7,9 @@
    overlapped the mascot and its neighbours for a moment. */
 @font-face { font-family: 'Permanent Marker'; src: url('fonts/PermanentMarker.woff2') format('woff2'); font-display: block; }
 @font-face { font-family: 'Amatic SC'; src: url('fonts/AmaticSC-Bold.woff2') format('woff2'); font-weight: 700; font-display: block; }
+/* Icons come from NiceGUI's Material Icons cut to DEEper's (dev/icons.py: 5 KB, not 129), declared as «DEEper
+   Icons» in core/web.py with its version in the address. */
+.material-icons { font-family: 'DEEper Icons' !important; }
 
 :root {
   /* бренд AVEN */

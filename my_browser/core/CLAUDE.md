@@ -13,11 +13,12 @@ Core is DEEper's web app (NiceGUI), its API under `/api`, the report library and
   - Columns newer than an existing `jobs` table are added on first use (`ADDED_COLUMNS`).
 - `core/service.py`: operations shared by the pages (direct calls) and `core/api.py` (bot, worker): submit, claim (adds the blocklist), store a finished report (`Library.store`, base64 files from the worker), report view, and the worker-backed `ask` / `followups` / `clarify` / `refine`.
 - `core/web.py` (NiceGUI 3) sets the app up and imports the screens:
-  - the head (manifest, iPhone meta, font preloads, `app.css`/`app.js` with a `?v=` content hash);
+  - the head (manifest, iPhone meta, font preloads, `app.css`/`app.js` and the icon font with a `?v=` content hash of all three, `asset_version()`);
   - static files with a 7-day cache and `/files/{id}/{pdf|docx|md}` for downloads;
   - auth: `AuthMiddleware` is active when it listens publicly (`kit.PUBLIC`: `PORT` is set, as on Railway, unless `PUBLIC=0`) or when `APP_PASSWORD` is set; `/api/` is open to it and checks the service token itself;
   - `NICEGUI_STORAGE_PATH` and the storage secret in `reports/` (the volume), so logins survive redeploys;
-  - font preloads: Onest, Unbounded, JetBrains Mono and NiceGUI's Material Icons (`icon_font_url()` reads its file name from NiceGUI's `fonts.css`). A browser fetches a font only once some text needs it, so without the preload every new screen showed its icons and mono labels a moment late. `.woff2` is registered as `font/woff2`, which the slim Docker image did not know;
+  - font preloads: Onest, Unbounded, JetBrains Mono and the icons. A browser fetches a font only once some text needs it, so without the preload every new screen showed its icons and mono labels a moment late.
+  - the icons: `static/fonts/icons.woff2`, NiceGUI's Material Icons cut by `dev/icons.py` to the icons the code names plus Quasar's own set (98 of 2 229: 5 KB instead of 129 KB, a fifth of a first visit's weight; 25.10.2026). The head declares it as «DEEper Icons» with its `?v=`, and app.css points Quasar's `.material-icons` at it, so NiceGUI's full font is never fetched. An icon is a ligature: a name the cut font lacks shows up as the word itself. `.woff2` is registered as `font/woff2`, which the slim Docker image did not know;
   - `ui.run(tailwind=False, reconnect_timeout=60)`: every screen is styled by `static/app.css`, and a phone that switched apps for a minute comes back to the same page.
 - `core/ui/`: one module per screen, mobile first (`DESIGN_HANDOFF.md`), with a bottom tab bar «Поиск · Радар · Библиотека · Фокус».
   - `tabs.py`: the tab bar's four sections are **one page**, registered at `/`, `/radar`, `/library` and `/focus`. Each address builds all four sections (`search_screen()`, `radar_screen()`, `library_screen()`, `focus_screen()`) with its own one shown.
@@ -145,3 +146,4 @@ All of it is in `REPORTS_DIR` (the Railway volume), next to search's `read_stats
 | report file naming (`Library.store`, `common.text.slugify`) | `REPORT_NAME` in `library.py`; parents are stored by file name |
 | what «Радар» shows of a story | the fields come from `news/delivery.feed()` |
 | what «Радар» shows of an opportunity | the fields come from `news/opps.listing()` and `news/opps_delivery.dressed()` (`meta`, `type_short`, `apply`); tracking and hiding stay in the bot |
+| an icon the app did not show before, or a NiceGUI upgrade | `uv run dev/icons.py` cuts `static/fonts/icons.woff2` anew (the `check-project` skill runs `dev/icons.py --check`); a name built at run time escapes its scan, so write icon names as literals |

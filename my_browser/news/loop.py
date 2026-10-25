@@ -15,6 +15,7 @@ import time
 
 import httpx
 
+from my_browser.common import memory
 from my_browser.news import collectors, config, db, dedup, delivery, items, opps, opps_delivery, scoring, sources
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,7 @@ def tick() -> None:
         summary = asyncio.run(collect())
         if summary.get("new") or summary.get("failed"):
             logger.info("News: %(polled)d sources polled, %(new)d new posts, %(failed)d failed, %(seconds)s s", summary)
+        memory.trim()  # the parsed feeds and pages: free pages back to the system
     if now - (db.get_state("dedup_at") or 0) >= DEDUP_EVERY_SEC:
         db.set_state("dedup_at", now)  # before the run: a failing model does not retry every minute
         try:
@@ -104,6 +106,7 @@ def tick() -> None:
             asyncio.run(opps.run())
         except Exception:  # the opportunities lane must never stop the news
             logger.exception("News loop: opportunities failed")
+        memory.release()  # every few minutes, the parse trees' cycles too (a collection holds the GIL a moment)
     delivery.run()
     try:
         opps_delivery.run()

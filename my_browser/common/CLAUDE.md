@@ -21,6 +21,7 @@
 - `report.py`: the sections appended to a report, «Проверка фактов» and «Что исследовать дальше», with the verdict wording.
 - `phases.py`: a running job's phase, the line in which the worker says what it is doing. The worker writes it and core's job page parses it, both from this module.
 - `gptr.py`: gpt-researcher's unpatched `Scraper.extract_data_from_url`, captured before the worker patches it, so that search can still fetch pages in the same process.
+- `memory.py`: hands freed memory back to the system after heavy work. `trim()` calls glibc's `malloc_trim(0)` (a no-op without glibc, so on macOS); `release()` collects cyclic garbage first. On Railway the process climbed to about 1 GB within hours of a deploy and stayed there: glibc keeps freed pages. On Linux, threads that read page-sized texts and dropped them left a process at 1.2 GB, and `malloc_trim(0)` brought it to 15 MB; `MALLOC_ARENA_MAX=2` alone changed nothing there, so the Dockerfile does not set it.
 
 ## Run and check
 
@@ -76,6 +77,10 @@ Adding a function, a constant or an optional argument is safe. Renaming or remov
 - A phase with a counter has its pattern right under the function that writes it; change both together.
 - A line core cannot read only loses its percent: nothing fails, so check a changed phase through `percent()` and `status()`.
 - Core's own queue states («В очереди», «Прервано», «Готово», «Остановлено») are not phases of the worker; they live in `core/jobs.py`.
+
+**`memory.py`**: used by the worker's job loop (`release()` after each research) and the news loop (`trim()` after a collection, `release()` after the merging and scoring run).
+- `release()`'s `gc.collect()` holds the GIL for a moment, which pauses the web app too: call it after heavy work, not on every small step. `trim()` runs in ctypes without the GIL.
+- It imports only the standard library, so any part may use it.
 
 **`gptr.py`**: used by the worker's hooks and search's reader.
 - It must be imported before anything patches `Scraper.extract_data_from_url`; `worker/hooks.py` imports it first.

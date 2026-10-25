@@ -83,6 +83,7 @@ Done: stage 0 (the part itself), stage 1 (`/news` in the bot), stage 2 (collecti
   - Each tick polls the due sources, at most `CONCURRENCY` (6) at once and one request per host at a time, `HOST_GAP_SEC` (2 s) apart: Reddit answers 429 to quicker ones.
   - A failing source waits twice its interval after one failure, four times after two, eight times after three or more (`sources.due()`).
   - `collect()` is shared with `POST /collect` and never runs twice at once (`_collecting`).
+  - After a collection it calls `common.memory.trim()`, after the merging, scoring and opportunities run (every 5 minutes) `memory.release()`: the parsed feeds and pages would otherwise stay with glibc. Not `release()` every minute: its garbage collection holds the GIL, which pauses the web app.
 - `news/api.py`: the FastAPI app behind the service token: `/status`, `/sources`, `/items`, `/sources` (GET, POST), `/sources/find`, `/sources/{id}` (DELETE), `/stories` (`lane=news|opps`), `/stories/{id}`, `/feed`, `/opps` (`status`, `type`, `limit`), `/opps/run`, `/opps/tracked`, `/opps/{id}`, `/opps/{id}/status`, `/deliveries`, `/deliveries/{id}/sent`, `/feedback`, `/dropped`, `/stories/{id}/restore`, `/collect`, `/dedup`, `/score`, `/deliver`, `/settings` (GET, PUT), `/health`.
 
 ## Run and check it alone
@@ -119,7 +120,7 @@ uv run python -m my_browser.news      # API at 127.0.0.1:8504 (NEWS_PORT) + the 
 
 ## What news relies on
 
-- **`common`**: `settings` (`REPORTS_DIR`, `NEWS_URL`), `auth`, `clients`. News imports no module of core, the worker, search or the bot.
+- **`common`**: `settings` (`REPORTS_DIR`, `NEWS_URL`), `auth`, `clients`, `memory`. News imports no module of core, the worker, search or the bot.
 - **The bot's token variables**: `/status` reports `telegram` from `TELEGRAM_BOT_TOKEN` / `TELEGRAM_TOKEN`, the same variables `bot/telegram.token()` reads.
 - **DeepSeek**, through gpt-researcher's `create_chat_completion` with `Config(CONFIG_PATH)` (`FAST_LLM`, `SMART_LLM`, `LLM_KWARGS`), like search's rating; `common/costs.py` patches it when imported, which is what meters the calls. The writer toggle of researches does not reach news.
 - **The sources themselves**: their feeds' addresses and formats. Sites without RSS come through github.com/Olshansk/rss-feeds, whose generators can stop (Meta AI's was 90 days old). Hugging Face's `/api/daily_papers` fields: `paper.id`, `title`, `summary`, `upvotes`, `submittedOnDailyAt`, `githubRepo`, `projectPage`.
