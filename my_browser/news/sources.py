@@ -1,12 +1,12 @@
 """Where the news comes from: the sources table and the starting list.
 
 The list was found and checked on 24.10.2026: every feed answered, parsed and had posts from the last days
-(`PLAN_News.md`, «Решения», has the survey). It mixes independent kinds of sources, so that a story is seen from
+(news/CLAUDE.md lists the ones refused). It mixes independent kinds of sources, so that a story is seen from
 several sides: the labs' own blogs (first-hand), papers, independent media, analysts, communities, Russian
 sites and public Telegram channels. Sources added later by the user go to the same table (stage 7).
 
-The opportunities lane has its own part of the list (`opps`), checked on 25.10.2026 (`PLAN_Opportunities.md`,
-«Решения»): aggregators of hackathons and competitions, companies' student programs, the university, research
+The opportunities lane has its own part of the list (`opps`), checked on 25.10.2026 (the refused ones are in
+news/CLAUDE.md): aggregators of hackathons and competitions, companies' student programs, the university, research
 programs and schools, conferences and grants. Pages without a feed (kind `page`) are read once a day.
 
 Defaults are offered once: a source the user removed does not come back, and a source added to DEFAULTS later
@@ -40,7 +40,7 @@ class Source:
     ai_filter: bool = False  # a general feed: only posts about AI are kept
     kind: str = "rss"
     interval: int = 0  # 0: the category's interval
-    lane: str = "news"  # or "opps": opportunities (PLAN_Opportunities.md)
+    lane: str = "news"  # or "opps": opportunities
 
 
 def _lab(name, url, owner, **kw) -> Source:
@@ -162,7 +162,7 @@ DEFAULTS = [
     _tg("theworldisnoteasy", "Малоизвестное интересное", "analyst", ai_filter=True),
     _tg("singularityfm", "Витя Тарнавский", "analyst", ai_filter=True),
     _tg("vikhrlabs", "Vikhr models", "lab", primary=True),
-    # Opportunities (PLAN_Opportunities.md): hackathons, competitions, schools, internships, programs, grants.
+    # Opportunities: hackathons, competitions, schools, internships, programs, grants.
     # Aggregators of hackathons and competitions, Russian and international.
     _opp_tg("hackathonsrus", "хакатоны.рус", "aggregator"),
     _opp_tg("hackathons", "Хакатоны || Hackathon list", "aggregator"),

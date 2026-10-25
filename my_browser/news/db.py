@@ -7,7 +7,7 @@
 - feedback: 👍/👎 on stories (stage 8).
 - settings: the user's settings (config.py); state: what the loop remembers; spend: LLM cost per day (stage 5).
 
-Two lanes share the tables (PLAN_Opportunities.md): `news` and `opps`, the opportunities (hackathons, schools,
+Two lanes share the tables: `news` and `opps`, the opportunities (hackathons, schools,
 internships, grants) with their deadlines. A source, its posts and the stories made of them carry the lane; posts
 merge only within their lane. An opportunity's details are in `opportunities` (one row per story of the opps lane),
 the reminders already sent in `opp_reminders`, the lane's LLM cost in `opps_spend`, apart from the news budget.

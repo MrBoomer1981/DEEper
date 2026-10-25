@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Personal deep-research engine that writes long reports: the `gpt-researcher` pip library for orchestration, a local SearXNG (or Tavily on Railway) plus arXiv/OpenAlex for search, and DeepSeek as the LLM (Flash for search and planning, V4 Pro writes the text by default). A news radar (`my_browser/news/`, stages in `PLAN_News.md`) collects AI news from many independent sources for the bot and the app's «Радар»; its second lane collects opportunities with deadlines (hackathons, schools, internships, grants; `PLAN_Opportunities.md`). The user writes in Russian; reports default to Russian. The roadmap is `plan.md` (Russian, checkboxes).
+Personal deep-research engine that writes long reports: the `gpt-researcher` pip library for orchestration, a local SearXNG (or Tavily on Railway) plus arXiv/OpenAlex for search, and DeepSeek as the LLM (Flash for search and planning, V4 Pro writes the text by default). A news radar (`my_browser/news/`) collects AI news from many independent sources for the bot and the app's «Радар»; its second lane collects opportunities with deadlines (hackathons, schools, internships, grants). The user writes in Russian; reports default to Russian. The roadmap is `plan.md` (Russian, checkboxes): one plan for every part, with open work only.
 
 ## Commands
 

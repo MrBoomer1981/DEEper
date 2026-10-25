@@ -11,8 +11,8 @@ A post ends with the page's links and their texts («Ссылки страниц
 the model takes the address to apply from them, and a roundup's split gives each announcement its own. They are
 kept out of the compared text, where an address's parameters could make a change of nothing.
 
-A site that shows its text only through JavaScript has nothing here (MIN_TEXT): it is refused, and PLAN_Opportunities.md
-(«Решения») lists such sites.
+A site that shows its text only through JavaScript has nothing here (MIN_TEXT): it is refused, and news/CLAUDE.md
+(«Sources checked and refused») lists such sites.
 """
 
 import asyncio

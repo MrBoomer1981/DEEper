@@ -3,7 +3,7 @@
 The bot's commands and the app change them through the API (stage 7). A wrong value is refused with a message
 that says what is expected; a stored value that no longer passes falls back to its default.
 
-The `opps_` settings are the opportunities lane's (PLAN_Opportunities.md). Its profile, against which each
+The `opps_` settings are the opportunities lane's. Its profile, against which each
 opportunity's fit is scored, is the user's own text: the default here is deliberately neutral, since the repository
 is public, and the user sets theirs with the bot's /profile. Contacts never reach the prompt (clean_profile()).
 """

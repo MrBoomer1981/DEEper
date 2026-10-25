@@ -19,7 +19,7 @@ import numpy as np
 from my_browser.common.settings import REPORTS_DIR, ROOT
 
 # Multilingual, trained on paraphrases and translations: a Russian retelling lands next to the English original.
-# Chosen by eval/news (PLAN_News.md, «Решения»).
+# Chosen by eval/news (eval/news/results/2026-10-24_2348_minilm.md; mpnet, five times bigger, merged no better).
 MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 CACHE = Path(os.environ.get("NEWS_MODELS_DIR") or REPORTS_DIR / ".models")
 TIMEOUT_SEC = 900  # the first run downloads the model (220 MB)
