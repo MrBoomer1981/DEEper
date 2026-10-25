@@ -2,6 +2,10 @@
 
 The bot's commands and the app change them through the API (stage 7). A wrong value is refused with a message
 that says what is expected; a stored value that no longer passes falls back to its default.
+
+The `opps_` settings are the opportunities lane's (PLAN_Opportunities.md). Its profile, against which each
+opportunity's fit is scored, is the user's own text: the default here is deliberately neutral, since the repository
+is public, and the user sets theirs with the bot's /profile. Contacts never reach the prompt (clean_profile()).
 """
 
 import json
@@ -18,6 +22,20 @@ logger = logging.getLogger(__name__)
 TOPICS = {"models": "модели", "research": "исследования", "tools": "инструменты",
           "safety": "безопасность", "policy": "регулирование", "business": "бизнес"}
 TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+OPP_TYPES = {
+    "hackathon": "хакатоны", "competition": "соревнования и олимпиады", "school": "школы и интенсивы",
+    "internship": "стажировки", "fellowship": "исследовательские программы", "education": "программы с поступлением",
+    "conference": "конференции и call for papers", "grant": "гранты и стипендии", "talk": "выступления",
+    "exam": "экзамены и сертификаты", "other": "другое",
+}
+WEEKDAYS = {"mon": "понедельник", "tue": "вторник", "wed": "среда", "thu": "четверг", "fri": "пятница",
+            "sat": "суббота", "sun": "воскресенье"}
+DEFAULT_PROFILE = (
+    "Студент технического вуза в России, гражданин РФ. Интересы: искусственный интеллект, машинное обучение, анализ "
+    "данных, программирование. Подходит: хакатоны и соревнования по ИИ и ML, школы, стажировки, исследовательские "
+    "программы, конференции с подачей студенческих работ, гранты для студентов. Не подходит: акселераторы, "
+    "стартап-студии, мероприятия без технической части.")
+PROFILE_CHARS = (20, 3000)
 
 # How each setting reads to the user in an error message.
 LABELS = {
@@ -26,6 +44,11 @@ LABELS = {
     "quiet_start": "начало тихих часов", "quiet_end": "конец тихих часов",
     "dedup_window_hours": "окно склейки, часов", "dedup_threshold": "порог склейки",
     "topics": "темы", "budget_month_rub": "бюджет на LLM в месяц, ₽", "paused": "пауза",
+    "opps_enabled": "возможности", "opps_digest_day": "день сводки возможностей",
+    "opps_digest_time": "время сводки возможностей", "opps_hot_days": "срок горящих, дней",
+    "opps_hot_min_fit": "порог соответствия горящих", "opps_reminders": "напоминания о дедлайне",
+    "opps_types": "типы возможностей", "opps_budget_month_rub": "бюджет возможностей на LLM в месяц, ₽",
+    "opps_profile": "профиль",
 }
 
 
@@ -47,7 +70,16 @@ class Settings(BaseModel):
     dedup_threshold: float = Field(0.66, gt=0, lt=1)  # eval/news, 24.10.2026: P 0.98, R 0.96 with links
     topics: list[str] = list(TOPICS)
     budget_month_rub: float = Field(100, ge=0, le=300)  # the daily limit is a fifteenth of it
-    paused: bool = False
+    paused: bool = False  # news only: deadlines keep coming
+    opps_enabled: bool = True
+    opps_digest_day: str = "sun"  # the weekly digest of new opportunities
+    opps_digest_time: str = "18:00"
+    opps_hot_days: int = Field(7, ge=1, le=60)  # a deadline closer than this: a new opportunity goes out at once…
+    opps_hot_min_fit: int = Field(6, ge=0, le=10)  # …when it fits at least this well
+    opps_reminders: list[int] = [14, 3, 1]  # days before a tracked opportunity's deadline
+    opps_types: list[str] = list(OPP_TYPES)  # shown; every type is collected and scored
+    opps_budget_month_rub: float = Field(30, ge=0, le=300)  # apart from the news budget
+    opps_profile: str = DEFAULT_PROFILE
 
     @field_validator("timezone")
     @classmethod
@@ -80,11 +112,70 @@ class Settings(BaseModel):
             raise ValueError(f"нет темы «{unknown[0]}», есть: {', '.join(TOPICS)}")
         return [t for t in TOPICS if t in values]
 
+    @field_validator("opps_digest_day")
+    @classmethod
+    def _weekday(cls, value: str) -> str:
+        if value not in WEEKDAYS:
+            raise ValueError(f"«{value}» — нужен день недели: {', '.join(WEEKDAYS)}")
+        return value
+
+    @field_validator("opps_digest_time")
+    @classmethod
+    def _opps_time(cls, value: str) -> str:
+        return _check_time(value)
+
+    @field_validator("opps_reminders")
+    @classmethod
+    def _reminders(cls, values: list[int]) -> list[int]:
+        if any(not 1 <= v <= 60 for v in values):
+            raise ValueError("за сколько дней — от 1 до 60")
+        if len(set(values)) > 5:
+            raise ValueError("не больше 5 напоминаний")
+        return sorted(set(values), reverse=True)
+
+    @field_validator("opps_types")
+    @classmethod
+    def _types(cls, values: list[str]) -> list[str]:
+        unknown = [v for v in values if v not in OPP_TYPES]
+        if unknown:
+            raise ValueError(f"нет типа «{unknown[0]}», есть: {', '.join(OPP_TYPES)}")
+        return [t for t in OPP_TYPES if t in values]
+
+    @field_validator("opps_profile")
+    @classmethod
+    def _profile(cls, value: str) -> str:
+        value = value.strip()
+        if not PROFILE_CHARS[0] <= len(value) <= PROFILE_CHARS[1]:
+            raise ValueError(f"нужно от {PROFILE_CHARS[0]} до {PROFILE_CHARS[1]} знаков, сейчас {len(value)}")
+        return value
+
     @property
     def daily_budget_rub(self) -> float:
         """Twice an average day's share: a backlog after a restart or a busy day fits, a runaway loop does not.
         The month's budget is the real limit."""
         return self.budget_month_rub / 15
+
+    @property
+    def opps_daily_budget_rub(self) -> float:
+        """A tenth of the lane's month: its first run after a deploy reads a month of announcements."""
+        return self.opps_budget_month_rub / 10
+
+
+CONTACTS = [
+    re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),  # email
+    re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/\S+|https?://\S+"),  # Telegram and other links
+    re.compile(r"(?<!\w)@[A-Za-z][\w]{3,}"),  # a Telegram or other handle
+]
+PHONE = re.compile(r"\+?\d[\d\s()-]{8,}\d")
+
+
+def clean_profile(text: str) -> str:
+    """The profile as it goes into a prompt: without emails, links, handles and phone numbers."""
+    for pattern in CONTACTS:
+        text = pattern.sub("", text)
+    text = PHONE.sub(lambda m: "" if sum(c.isdigit() for c in m.group(0)) >= 10 else m.group(0), text)
+    text = re.sub(r"\s+([,.;:])", r"\1", " ".join(text.split()))  # what a removed contact left: «пишите , ,»
+    return re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", text)
 
 
 def _check_time(value: str) -> str:

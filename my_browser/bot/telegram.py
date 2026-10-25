@@ -73,7 +73,10 @@ HELP = """<b>Глубокие исследования</b>
 /urgent 8 — порог срочного, от 1 до 10 (/urgent off)
 /topics — темы кнопками
 /dropped — что отсеяно за сутки и почему; «↩️» возвращает сюжет
-/pause, /resume — остановить и продолжить новости"""
+/pause, /resume — остановить и продолжить новости
+
+<b>Возможности</b>: хакатоны, школы, стажировки, гранты с дедлайнами.
+/profile — профиль: по нему оценивается, что подходит; /profile текст — заменить"""
 
 dp = Dispatcher()
 pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the message that offered it
@@ -538,6 +541,19 @@ async def on_topic_toggle(callback: CallbackQuery) -> None:
 SOURCE_MARK = {True: "✅", False: "⚠️"}
 
 
+@dp.message(Command("profile"))
+async def cmd_profile(message: Message, command: CommandObject) -> None:
+    """/profile shows the text the opportunities' fit is scored against; /profile <text> replaces it."""
+    text = (command.args or "").strip()
+    if not text:
+        settings = (await call("news", "GET", "/settings")).json()
+        await message.answer(f"👤 <b>Профиль для возможностей</b>\n\n{html.escape(settings['opps_profile'])}\n\n"
+                             "Заменить: /profile и текст о себе — учёба, интересы, цели, что подходит и что нет. "
+                             "Контакты, email и ники в оценку не уходят.")
+        return
+    await _news_settings(message, {"opps_profile": text}, "👤 Профиль сохранён: возможности будут оцениваться по нему")
+
+
 @dp.message(Command("sources"))
 async def cmd_sources(message: Message) -> None:
     rows = (await call("news", "GET", "/sources")).json()
@@ -913,6 +929,7 @@ async def start(handle_signals: bool = True) -> None:
         BotCommand(command="dropped", description="Что отсеяно из новостей"),
         BotCommand(command="pause", description="Новости на паузу"),
         BotCommand(command="resume", description="Продолжить новости"),
+        BotCommand(command="profile", description="Профиль для возможностей"),
         BotCommand(command="help", description="Как пользоваться"),
     ])
     me = await bot.get_me()

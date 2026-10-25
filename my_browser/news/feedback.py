@@ -30,8 +30,8 @@ def _owners(conn, story_id: int) -> list[str]:
 def corrections(conn) -> tuple[dict[str, float], dict[str, float]]:
     """(per topic, per owner) importance corrections from the recent feedback."""
     topics, owners = Counter(), Counter()
-    for row in conn.execute("SELECT f.value, s.id, s.topic FROM feedback f JOIN stories s ON s.id = f.story_id WHERE f.created > ?",
-                            (time.time() - LEARN_DAYS * 86400,)):
+    for row in conn.execute("SELECT f.value, s.id, s.topic FROM feedback f JOIN stories s ON s.id = f.story_id "
+                            "WHERE s.lane = 'news' AND f.created > ?", (time.time() - LEARN_DAYS * 86400,)):
         topics[row["topic"]] += row["value"]
         for owner in _owners(conn, row["id"]):
             owners[owner] += row["value"]

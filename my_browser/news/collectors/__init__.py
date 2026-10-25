@@ -22,6 +22,8 @@ ARXIV = re.compile(r"^arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.
 # How many path segments make a page specific on hosts where shorter paths are profiles or sections.
 SEGMENTS = {"github.com": 2, "huggingface.co": 2, "t.me": 2, "reddit.com": 4, "linkedin.com": 2}
 SLUG = re.compile(r"[-_\d]")  # a single segment counts only when it looks like a page's slug, not like /news or /blog
+# A newsletter's footer, in every post of its source: on 24.10.2026 MarkTechPost's beehiiv form glued 6 of its posts.
+NEWSLETTER = re.compile(r"^(?:magic\.beehiiv\.com|support\.substack\.com)/|[?&]email=")
 
 
 @dataclass
@@ -62,7 +64,10 @@ def link_key(url: str) -> str:
 
 def usable_key(key: str) -> bool:
     """Whether two posts sharing this key report the same story: a specific page, not a site's front page, a section
-    such as /news, a profile or a repository's owner. On 24.10.2026 a shared bare «z.ai» joined two unrelated posts."""
+    such as /news, a profile or a repository's owner, nor a newsletter's subscribe form. On 24.10.2026 a shared bare
+    «z.ai» joined two unrelated posts."""
+    if NEWSLETTER.search(key):
+        return False
     host, _, path = key.partition("/")
     segments = [s for s in path.split("?")[0].split("/") if s]
     if host in ("x.com", "twitter.com"):

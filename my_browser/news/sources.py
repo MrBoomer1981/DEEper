@@ -30,6 +30,7 @@ class Source:
     ai_filter: bool = False  # a general feed: only posts about AI are kept
     kind: str = "rss"
     interval: int = 0  # 0: the category's interval
+    lane: str = "news"  # or "opps": opportunities (PLAN_Opportunities.md)
 
 
 def _lab(name, url, owner, **kw) -> Source:
@@ -153,9 +154,9 @@ def seed() -> int:
     with db.transaction() as conn:
         for s in new:
             conn.execute(
-                "INSERT OR IGNORE INTO sources (kind, url, name, category, lang, owner, is_primary, ai_filter, interval, added) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (s.kind, s.url, s.name, s.category, s.lang, s.owner, int(s.primary), int(s.ai_filter),
+                "INSERT OR IGNORE INTO sources (kind, url, name, lane, category, lang, owner, is_primary, ai_filter, interval, "
+                "added) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (s.kind, s.url, s.name, s.lane, s.category, s.lang, s.owner, int(s.primary), int(s.ai_filter),
                  s.interval or INTERVALS[s.category], now))
     db.set_state("offered_defaults", sorted(offered | {s.url for s in new}))
     return len(new)

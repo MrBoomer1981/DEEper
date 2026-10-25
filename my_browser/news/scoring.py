@@ -68,27 +68,32 @@ def _day(settings: config.Settings) -> str:
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d")
 
 
-def spent(settings: config.Settings) -> tuple[float, float]:
-    """Rubles spent today and this month (days in the settings' time zone)."""
-    day = _day(settings)
+SPEND = {"news": "spend", "opps": "opps_spend"}  # each lane counts against its own budget
+
+
+def spent(settings: config.Settings, lane: str = "news") -> tuple[float, float]:
+    """Rubles a lane spent today and this month (days in the settings' time zone)."""
+    day, table = _day(settings), SPEND[lane]
     with db.connect() as conn:
-        today = conn.execute("SELECT COALESCE(SUM(rub), 0) FROM spend WHERE day = ?", (day,)).fetchone()[0]
-        month = conn.execute("SELECT COALESCE(SUM(rub), 0) FROM spend WHERE day LIKE ?", (day[:7] + "%",)).fetchone()[0]
+        today = conn.execute(f"SELECT COALESCE(SUM(rub), 0) FROM {table} WHERE day = ?", (day,)).fetchone()[0]
+        month = conn.execute(f"SELECT COALESCE(SUM(rub), 0) FROM {table} WHERE day LIKE ?", (day[:7] + "%",)).fetchone()[0]
     return today, month
 
 
-def within_budget(settings: config.Settings) -> bool:
-    today, month = spent(settings)
+def within_budget(settings: config.Settings, lane: str = "news") -> bool:
+    today, month = spent(settings, lane)
+    if lane == "opps":
+        return today < settings.opps_daily_budget_rub and month < settings.opps_budget_month_rub
     return today < settings.daily_budget_rub and month < settings.budget_month_rub
 
 
-def _record(settings: config.Settings, rub: float) -> None:
+def _record(settings: config.Settings, rub: float, lane: str = "news") -> None:
     with db.transaction() as conn:
-        conn.execute("INSERT INTO spend (day, rub, calls) VALUES (?, ?, 1) ON CONFLICT (day) DO UPDATE SET "
+        conn.execute(f"INSERT INTO {SPEND[lane]} (day, rub, calls) VALUES (?, ?, 1) ON CONFLICT (day) DO UPDATE SET "
                      "rub = rub + excluded.rub, calls = calls + 1", (_day(settings), rub))
 
 
-async def _ask(settings: config.Settings, prompt: str, smart: bool = False) -> list:
+async def _ask(settings: config.Settings, prompt: str, smart: bool = False, lane: str = "news") -> list:
     """One metered call; the JSON array of the answer, asked a second time when the first answer is broken."""
     from gpt_researcher.config import Config
     from gpt_researcher.utils.llm import create_chat_completion
@@ -100,7 +105,7 @@ async def _ask(settings: config.Settings, prompt: str, smart: bool = False) -> l
             answer = await create_chat_completion(messages=[{"role": "user", "content": prompt}], model=model,
                                                   llm_provider=provider, temperature=0.2, max_tokens=4000,
                                                   llm_kwargs=cfg.llm_kwargs)
-        _record(settings, meter.rub(fetch=True))
+        _record(settings, meter.rub(fetch=True), lane)
         match = re.search(r"\[.*\]", answer or "", re.S)
         data = json_repair.loads(match.group(0)) if match else None
         if isinstance(data, list) and data:
@@ -151,7 +156,8 @@ def _centroids(conn, story_ids: list[int]) -> dict[int, np.ndarray]:
 def _similar(conn, batch: list[dict], window_start: float) -> dict[int, list[dict]]:
     """Up to SIMILAR_REFS scored stories closest to each story of the batch, for `same_as`."""
     scored = [dict(row) for row in conn.execute(
-        "SELECT id, title_ru FROM stories WHERE status IN ('queued', 'sent') AND title_ru IS NOT NULL AND last_updated > ?",
+        "SELECT id, title_ru FROM stories WHERE lane = 'news' AND status IN ('queued', 'sent') AND title_ru IS NOT NULL "
+        "AND last_updated > ?",
         (window_start,))]
     batch_ids = {s["id"] for s in batch}
     scored = [s for s in scored if s["id"] not in batch_ids]
@@ -181,7 +187,7 @@ async def run() -> dict:
     now, window = time.time(), settings.dedup_window_hours * 3600
     with db.connect() as conn:
         waiting = [dict(row) for row in conn.execute(
-            "SELECT * FROM stories WHERE last_updated > ? AND status != 'merged' "
+            "SELECT * FROM stories WHERE lane = 'news' AND last_updated > ? AND status != 'merged' "
             "AND (scored_at IS NULL OR source_count >= scored_count + ?) "
             "ORDER BY source_count DESC, last_updated DESC LIMIT ?", (now - window, RESCORE_GROWTH, MAX_PER_RUN))]
     scored = merged = 0
@@ -258,7 +264,7 @@ def _apply(conn, story: dict, answer: dict) -> None:
 async def _summarize(settings: config.Settings) -> int:
     with db.connect() as conn:
         waiting = [dict(row) for row in conn.execute(
-            "SELECT * FROM stories WHERE status IN ('queued', 'sent') AND (summary_ru IS NULL OR summary_ru = '') "
+            "SELECT * FROM stories WHERE lane = 'news' AND status IN ('queued', 'sent') AND (summary_ru IS NULL OR summary_ru = '') "
             "AND last_updated > ? ORDER BY importance DESC LIMIT ?", (time.time() - settings.dedup_window_hours * 3600, MAX_PER_RUN))]
     done = 0
     for smart in (True, False):

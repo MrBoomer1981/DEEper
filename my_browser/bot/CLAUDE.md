@@ -26,6 +26,7 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
 - `nr:<story id>` offers a news story as a research topic (`_offer()`, as follow-up topics); `nf:<story id>:<±1>` stores 👍/👎 in the news part.
 - News settings: `/time`, `/quiet`, `/urgent` (each with `off`), `/pause`, `/resume` change the news part's settings (`_news_settings()`; a refused value comes back with the news part's message, in Russian); `/topics` toggles topics with buttons (`nt:<topic>`); `/sources` lists the sources with their health, `/add` checks and adds a feed or a channel, `/remove` switches one off by number or name.
 - `/dropped`: what the news part dropped in the last day, grouped (minor, not about AI) with the reasons; «↩️ N» (`nd:<story id>`) brings a story back: it comes as a message and counts as 👍.
+- `/profile` shows the profile the news part scores opportunities against (`opps_profile` of `GET /settings`); `/profile <text>` replaces it through `_news_settings()` (the news part refuses below 20 or above 3 000 characters). The user's real profile lives only there, never in the repository.
 
 ## Run and check it alone
 

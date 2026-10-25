@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Personal deep-research engine that writes long reports: the `gpt-researcher` pip library for orchestration, a local SearXNG (or Tavily on Railway) plus arXiv/OpenAlex for search, and DeepSeek as the LLM (Flash for search and planning, V4 Pro writes the text by default). A news radar (`my_browser/news/`, stages in `PLAN_News.md`) collects AI news from many independent sources for the bot and the app's «Радар». The user writes in Russian; reports default to Russian. The roadmap is `plan.md` (Russian, checkboxes).
+Personal deep-research engine that writes long reports: the `gpt-researcher` pip library for orchestration, a local SearXNG (or Tavily on Railway) plus arXiv/OpenAlex for search, and DeepSeek as the LLM (Flash for search and planning, V4 Pro writes the text by default). A news radar (`my_browser/news/`, stages in `PLAN_News.md`) collects AI news from many independent sources for the bot and the app's «Радар»; its second lane collects opportunities with deadlines (hackathons, schools, internships, grants; `PLAN_Opportunities.md`). The user writes in Russian; reports default to Russian. The roadmap is `plan.md` (Russian, checkboxes).
 
 ## Commands
 
@@ -40,7 +40,7 @@ There is deliberately no test suite while the project is in active development (
 | core | `core/` | web UI (NiceGUI), API under `/api`, report library, job queue, blocklist | worker (questions, follow-ups, clarification, short versions), news («Радар») |
 | worker | `worker/` | the research engine (gpt-researcher + our patches), LLM helpers, DOCX/PDF | core (jobs), search (sources, pages) |
 | search | `search/` | source selection (`/select`) and page reading with fallbacks (`/read`), read stats | — |
-| news | `news/` | the news radar: sources, posts, stories, its settings (`news.sqlite`), the news loop | — (the bot and core read it) |
+| news | `news/` | the news radar and its opportunities lane: sources, posts, stories, opportunities, its settings (`news.sqlite`), the news loop | — (the bot and core read it) |
 | bot | `bot/` | Telegram | core, news (`/news`, digests and urgent stories) |
 
 Each of these folders, and `common/`, `eval/` and `proxy/`, has its own CLAUDE.md. It says what the folder does, how to run and check it alone, what other parts rely on (API fields, files, phase and log lines, gpt-researcher internals), and what else to update when one side changes. Read it before changing the folder; a session started in the folder loads it by itself.

@@ -33,30 +33,49 @@ def _local(ts: float | None, tz: ZoneInfo) -> str | None:
     return datetime.fromtimestamp(ts, tz).isoformat(timespec="seconds") if ts else None
 
 
+def _sources(conn, lane: str) -> dict:
+    counts = conn.execute(
+        "SELECT COUNT(*) AS total, COALESCE(SUM(enabled), 0) AS enabled, "
+        "COALESCE(SUM(enabled AND last_ok IS NOT NULL AND last_error IS NULL), 0) AS ok, "
+        "COALESCE(SUM(enabled AND polled IS NULL), 0) AS pending FROM sources WHERE lane = ?", (lane,)).fetchone()
+    failing = [dict(row) for row in conn.execute(
+        "SELECT name, last_error AS error, fails FROM sources WHERE lane = ? AND enabled = 1 AND last_error IS NOT NULL "
+        "ORDER BY fails DESC, name", (lane,))]
+    return {**dict(counts), "failing": failing}
+
+
+def _deadline(conn, now: float, statuses: tuple[str, ...]) -> dict | None:
+    """The nearest deadline ahead among opportunities of these statuses."""
+    row = conn.execute(
+        f"SELECT story_id, title_ru, deadline, deadline_kind, status FROM opportunities WHERE status IN "
+        f"({','.join('?' * len(statuses))}) AND deadline_at > ? ORDER BY deadline_at LIMIT 1", (*statuses, now)).fetchone()
+    return dict(row) if row else None
+
+
 def status() -> dict:
-    """What /news in the bot shows: sources and their health, posts and stories of the last day, LLM spend."""
+    """What /news in the bot shows: sources and their health, posts and stories of the last day, LLM spend (all of the
+    news lane); and the opportunities lane's block: its sources, what is open, the nearest deadlines, its spend."""
     settings = config.load()
     tz = ZoneInfo(settings.timezone)
-    now, today = time.time(), datetime.now(tz).strftime("%Y-%m-%d")
+    now = time.time()
     with db.connect() as conn:
-        counts = conn.execute(
-            "SELECT COUNT(*) AS total, COALESCE(SUM(enabled), 0) AS enabled, "
-            "COALESCE(SUM(enabled AND last_ok IS NOT NULL AND last_error IS NULL), 0) AS ok, "
-            "COALESCE(SUM(enabled AND polled IS NULL), 0) AS pending FROM sources").fetchone()
-        failing = [dict(row) for row in conn.execute(
-            "SELECT name, last_error AS error, fails FROM sources WHERE enabled = 1 AND last_error IS NOT NULL "
-            "ORDER BY fails DESC, name")]
-        items_day = conn.execute("SELECT COUNT(*) FROM items WHERE backfill = 0 AND seen > ?", (now - 86400,)).fetchone()[0]
-        items_total = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
-        stories_day = conn.execute("SELECT COUNT(*) FROM stories WHERE first_seen > ? AND status != 'merged'",
+        news_sources, opps_sources = _sources(conn, "news"), _sources(conn, "opps")
+        items_day = conn.execute("SELECT COUNT(*) FROM items WHERE lane = 'news' AND backfill = 0 AND seen > ?",
+                                 (now - 86400,)).fetchone()[0]
+        items_total = conn.execute("SELECT COUNT(*) FROM items WHERE lane = 'news'").fetchone()[0]
+        stories_day = conn.execute("SELECT COUNT(*) FROM stories WHERE lane = 'news' AND first_seen > ? AND status != 'merged'",
                                    (now - 86400,)).fetchone()[0]
-        stories_total = conn.execute("SELECT COUNT(*) FROM stories WHERE status != 'merged'").fetchone()[0]
-        spent_today = conn.execute("SELECT COALESCE(SUM(rub), 0) FROM spend WHERE day = ?", (today,)).fetchone()[0]
-        spent_month = conn.execute("SELECT COALESCE(SUM(rub), 0) FROM spend WHERE day LIKE ?", (today[:7] + "%",)).fetchone()[0]
+        stories_total = conn.execute("SELECT COUNT(*) FROM stories WHERE lane = 'news' AND status != 'merged'").fetchone()[0]
+        opps_open, opps_tracked = conn.execute(
+            "SELECT COALESCE(SUM(status IN ('open', 'tracked')), 0), COALESCE(SUM(status = 'tracked'), 0) "
+            "FROM opportunities").fetchone()
+        next_deadline, next_tracked = _deadline(conn, now, ("open", "tracked")), _deadline(conn, now, ("tracked",))
+    spent_today, spent_month = scoring.spent(settings)
+    opps_today, opps_month = scoring.spent(settings, "opps")
     last = db.get_state("last_collect")
     tick = db.get_state("loop_tick")
     return {
-        "sources": {**dict(counts), "failing": failing},
+        "sources": news_sources,
         "items": {"day": items_day, "total": items_total},
         "stories": {"day": stories_day, "total": stories_total},
         "spend": {"today_rub": round(spent_today, 2), "month_rub": round(spent_month, 2),
@@ -66,6 +85,13 @@ def status() -> dict:
         # The bot delivers; the same variables as bot/telegram.token(), which this part does not import.
         "telegram": bool(os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")),
         "settings": settings.model_dump(),
+        "opps": {
+            "enabled": settings.opps_enabled, "sources": opps_sources, "open": opps_open, "tracked": opps_tracked,
+            "next_deadline": next_deadline, "next_tracked": next_tracked,
+            "spend": {"today_rub": round(opps_today, 2), "month_rub": round(opps_month, 2),
+                      "budget_month_rub": settings.opps_budget_month_rub,
+                      "daily_budget_rub": round(settings.opps_daily_budget_rub, 2)},
+        },
     }
 
 
@@ -113,9 +139,9 @@ async def get_items(limit: int = 50) -> list[dict]:
 
 
 @app.get("/stories")
-async def get_stories(limit: int = 30, hours: int = 48) -> list[dict]:
-    """Recent stories, the most independent sources first, each with its posts."""
-    return dedup.stories(limit, hours)
+async def get_stories(limit: int = 30, hours: int = 48, lane: str = "news") -> list[dict]:
+    """Recent stories of a lane (news or opps), the most independent sources first, each with its posts."""
+    return dedup.stories(limit, hours, lane)
 
 
 @app.get("/stories/{story_id}")
@@ -194,7 +220,8 @@ async def post_collect(everything: bool = False) -> dict:
 
 @app.get("/settings")
 async def get_settings() -> dict:
-    return {**config.load().model_dump(), "topic_names": config.TOPICS}
+    return {**config.load().model_dump(), "topic_names": config.TOPICS, "opp_type_names": config.OPP_TYPES,
+            "weekday_names": config.WEEKDAYS}
 
 
 @app.put("/settings")
