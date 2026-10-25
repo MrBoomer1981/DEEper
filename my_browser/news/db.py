@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS items (
     lane TEXT DEFAULT 'news',        -- its source's lane
     backfill INTEGER DEFAULT 0,      -- an old post found on a source's first poll: known, never news
     digest INTEGER DEFAULT 0,        -- several stories in one post (a channel's roundup): out of merging and scoring
+    split_at REAL,                   -- opps: when a roundup was cut into one post per opportunity (opps.split)
+    copied_from INTEGER,             -- opps: the post this one repeats (a roundup's part, a news story's announcement)
     embedding BLOB,
     story_id INTEGER,
     UNIQUE (source_id, external_id)
@@ -104,6 +106,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     deadline_at REAL,                -- the same in seconds since the epoch, for ordering and reminders
     deadline_kind TEXT,              -- exact | approximate | rolling | unknown
     deadline_text TEXT,              -- as the source writes it
+    tz_assumed INTEGER DEFAULT 0,    -- the text named no time zone: Moscow's for a Russian source, else UTC
     starts TEXT, ends TEXT,          -- the event's dates, if any
     format TEXT,                     -- online | offline | hybrid
     location TEXT,
@@ -126,9 +129,10 @@ CREATE TABLE IF NOT EXISTS opps_spend (day TEXT PRIMARY KEY, rub REAL DEFAULT 0,
 # Columns newer than a table in an older news.sqlite: {table: {column: type}}, added on first use.
 ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "sources": {"lane": "TEXT DEFAULT 'news'", "page_hash": "TEXT", "page_text": "TEXT"},
-    "items": {"digest": "INTEGER DEFAULT 0", "lane": "TEXT DEFAULT 'news'"},
+    "items": {"digest": "INTEGER DEFAULT 0", "lane": "TEXT DEFAULT 'news'", "split_at": "REAL", "copied_from": "INTEGER"},
     "stories": {"title_ru": "TEXT", "primary_url": "TEXT", "scored_count": "INTEGER", "scored_at": "REAL",
                 "update_sent": "INTEGER DEFAULT 0", "sent_count": "INTEGER", "lane": "TEXT DEFAULT 'news'"},
+    "opportunities": {"tz_assumed": "INTEGER DEFAULT 0"},
 }
 
 # Run once when a column is added to an older file: posts stored before digests were recognized get the flag.

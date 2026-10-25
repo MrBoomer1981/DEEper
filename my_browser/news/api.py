@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from my_browser.common.auth import require_token
-from my_browser.news import config, db, dedup, delivery, feedback, items, loop, manage, scoring, sources
+from my_browser.news import config, db, dedup, delivery, feedback, items, loop, manage, opps, scoring, sources
 
 _seeded = False
 
@@ -213,6 +213,19 @@ def post_dedup() -> dict:
 async def post_score() -> dict:
     """Score and summarize the waiting stories now (LLM calls, within the budget)."""
     return await scoring.run()
+
+
+@app.get("/opps")
+async def get_opps(status: str = "", type: str = "", limit: int = 50) -> list[dict]:
+    """Opportunities (open and tracked unless `status` lists others, comma-separated), the tracked first, then by
+    deadline, then by fit; `type` one of config.OPP_TYPES."""
+    return opps.listing(status or None, type or None, limit)
+
+
+@app.post("/opps/run")
+async def post_opps_run() -> dict:
+    """Cut roundups and read the waiting opportunities now (LLM calls, within the lane's budget)."""
+    return await opps.run()
 
 
 @app.post("/collect")

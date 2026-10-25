@@ -45,6 +45,10 @@ LANES = ("news", "opps")
 OPPS_OPEN_DAYS = 60
 OPPS_THRESHOLD = 0.85
 BOILERPLATE_POSTS = 4
+# A part of a roundup (opps.split) without a link of its own carries the roundup's address: not its identity, so
+# the parts of one roundup do not merge by it.
+OWN_URL = ("CASE WHEN i.copied_from IS NOT NULL AND i.url = (SELECT p.url FROM items p WHERE p.id = i.copied_from "
+           "AND p.digest = 1) THEN NULL ELSE i.url END AS url")
 
 
 def _keys(url: str, links: str | None) -> set[str]:
@@ -87,14 +91,15 @@ def _run(lane: str, settings: config.Settings) -> dict:
     since, open_stories, params = _windows(lane, settings, now)
     with db.connect() as conn:
         waiting = [dict(row) for row in conn.execute(
-            "SELECT i.id, i.title, i.text, i.url, i.links, i.source_id, s.owner, s.kind FROM items i "
+            f"SELECT i.id, i.title, i.text, {OWN_URL}, i.links, i.source_id, i.copied_from, s.owner, s.kind FROM items i "
             "JOIN sources s ON s.id = i.source_id "
             "WHERE i.story_id IS NULL AND i.lane = ? AND i.backfill = 0 AND i.digest = 0 AND i.text IS NOT NULL "
             "AND i.published > ? ORDER BY i.published LIMIT ?", (lane, since, BATCH))]
         if not waiting:
             return {"posts": 0, "stories": 0}
         placed = [dict(row) for row in conn.execute(
-            "SELECT i.story_id, i.url, i.links, i.embedding, i.source_id, src.owner FROM items i JOIN stories s ON s.id = i.story_id "
+            f"SELECT i.story_id, {OWN_URL}, i.links, i.embedding, i.source_id, i.copied_from, src.owner FROM items i "
+            "JOIN stories s ON s.id = i.story_id "
             f"JOIN sources src ON src.id = i.source_id WHERE s.lane = ? AND {open_stories} AND i.embedding IS NOT NULL "
             "ORDER BY i.published", [lane, *params])]
     try:
@@ -115,7 +120,8 @@ def _run(lane: str, settings: config.Settings) -> dict:
     key_story: dict[str, int] = {}
     source_story: dict[int, int] = {}  # each source's latest story: a watched page's next version joins it
     for p in placed:
-        source_story[p["source_id"]] = p["story_id"]
+        if p["copied_from"] is None:  # a page's own versions, not the parts of its list
+            source_story[p["source_id"]] = p["story_id"]
         for key in _keys(p["url"], p["links"]) - footer:
             key_story.setdefault(key, p["story_id"])
 
@@ -124,7 +130,8 @@ def _run(lane: str, settings: config.Settings) -> dict:
     for n, post in enumerate(waiting):
         vector = vectors[n] if vectors is not None else None
         similarity = np.vstack(index_vectors) @ vector if vector is not None and index_vectors else None
-        story = source_story.get(post["source_id"]) if opps and post["kind"] == "page" else None
+        version = opps and post["kind"] == "page" and post["copied_from"] is None
+        story = source_story.get(post["source_id"]) if version else None
         linked = Counter(key_story[k] for k in _keys(post["url"], post["links"]) - footer if k in key_story) \
             if story is None else {}
         nearest = {candidate: _nearest(similarity, index_story, candidate) for candidate in linked}
@@ -143,7 +150,8 @@ def _run(lane: str, settings: config.Settings) -> dict:
             if vector is not None:
                 seeds[story] = vector
         owners.setdefault(story, set()).add(post["owner"])
-        source_story[post["source_id"]] = story
+        if post["copied_from"] is None:
+            source_story[post["source_id"]] = story
         assignments.append((post["id"], story, vector.tobytes() if vector is not None else None))
         if vector is not None:
             index_vectors.append(vector)

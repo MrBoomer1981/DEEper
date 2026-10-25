@@ -12,8 +12,13 @@ The same call also catches what merging missed: each story comes with up to SIMI
 by embeddings, and the model names one in `same_as` when it is the same event (on 24.10.2026 two stories about one
 OpenAI round, 0.72 apart, would otherwise both go out, while two different ones were 0.67 apart). Such a story is
 merged into the earlier one (status «merged») instead of being scored.
+
+It also says whether a story announces something to apply to (`is_opportunity`): a news channel's post about a
+hackathon or a school. Its posts are then copied into the opportunities lane (copy_to_opps()), where merging and
+opps.py read them like that lane's own posts; the news story itself is scored as usual.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -39,6 +44,7 @@ RESCORE_GROWTH = 2
 POSTS_PER_STORY = 4
 SIMILAR_REFS = 3
 SIMILAR_FLOOR = 0.45  # stories farther apart than this are not offered as possibly the same event
+ASK_TIMEOUT_SEC = 300  # a call that hangs (a dropped connection) must not hold the loop, and its deliveries, for long
 
 SCORE_PROMPT = """Ты редактор ленты новостей об искусственном интеллекте. Ниже сюжеты: в каждом — посты разных источников об одном событии. Сегодня {today}.
 
@@ -50,9 +56,10 @@ SCORE_PROMPT = """Ты редактор ленты новостей об иск�
 - title_ru: заголовок по-русски до 90 знаков: суть события, без кавычек-ёлочек вокруг всего заголовка и без эмодзи. Названия моделей и компаний — как в оригинале.
 - primary_url: адрес первоисточника (объявление компании, официальный блог, статья исследователей), если он есть среди ссылок или адресов постов сюжета; иначе null. Пересказ в СМИ — не первоисточник.
 - same_as: если сюжет — то же самое событие (тот же релиз, та же сделка, тот же инцидент, то же заявление), что и сюжет из списка «Уже в ленте» под ним, — номер того сюжета, например "S41"; если то же событие, что сюжет этой пачки с меньшим id, — этот id; иначе null. Похожая тема или та же компания — ещё не то же событие.
+- is_opportunity: true, если сюжет — анонс того, куда можно подать заявку или зарегистрироваться для участия: хакатон, соревнование, школа, стажировка, исследовательская программа, грант, конкурс, конференция с приёмом работ; иначе false.
 
 Ответь только JSON-массивом, по объекту на сюжет, с тем же id:
-[{{"id": 1, "is_ai": true, "topic": "models", "importance": 7, "reason": "...", "title_ru": "...", "primary_url": null, "same_as": null}}]
+[{{"id": 1, "is_ai": true, "topic": "models", "importance": 7, "reason": "...", "title_ru": "...", "primary_url": null, "same_as": null, "is_opportunity": false}}]
 
 {stories}"""
 
@@ -93,7 +100,7 @@ def _record(settings: config.Settings, rub: float, lane: str = "news") -> None:
                      "rub = rub + excluded.rub, calls = calls + 1", (_day(settings), rub))
 
 
-async def _ask(settings: config.Settings, prompt: str, smart: bool = False, lane: str = "news") -> list:
+async def _ask(settings: config.Settings, prompt: str, smart: bool = False, lane: str = "news", max_tokens: int = 4000) -> list:
     """One metered call; the JSON array of the answer, asked a second time when the first answer is broken."""
     from gpt_researcher.config import Config
     from gpt_researcher.utils.llm import create_chat_completion
@@ -102,9 +109,13 @@ async def _ask(settings: config.Settings, prompt: str, smart: bool = False, lane
     model, provider = (cfg.smart_llm_model, cfg.smart_llm_provider) if smart else (cfg.fast_llm_model, cfg.fast_llm_provider)
     for attempt in range(2):
         with costs.metered() as meter:
-            answer = await create_chat_completion(messages=[{"role": "user", "content": prompt}], model=model,
-                                                  llm_provider=provider, temperature=0.2, max_tokens=4000,
-                                                  llm_kwargs=cfg.llm_kwargs)
+            try:
+                answer = await asyncio.wait_for(create_chat_completion(
+                    messages=[{"role": "user", "content": prompt}], model=model, llm_provider=provider, temperature=0.2,
+                    max_tokens=max_tokens, llm_kwargs=cfg.llm_kwargs), ASK_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                answer = None
+                logger.warning("News LLM call timed out after %d s (attempt %d)", ASK_TIMEOUT_SEC, attempt + 1)
         _record(settings, meter.rub(fetch=True), lane)
         match = re.search(r"\[.*\]", answer or "", re.S)
         data = json_repair.loads(match.group(0)) if match else None
@@ -190,7 +201,7 @@ async def run() -> dict:
             "SELECT * FROM stories WHERE lane = 'news' AND last_updated > ? AND status != 'merged' "
             "AND (scored_at IS NULL OR source_count >= scored_count + ?) "
             "ORDER BY source_count DESC, last_updated DESC LIMIT ?", (now - window, RESCORE_GROWTH, MAX_PER_RUN))]
-    scored = merged = 0
+    scored = merged = copied = 0
     today = datetime.now(ZoneInfo(settings.timezone)).strftime("%d.%m.%Y")
     for start in range(0, len(waiting), SCORE_BATCH):
         if not within_budget(settings):
@@ -218,12 +229,33 @@ async def run() -> dict:
                     merged += 1
                     continue
                 _apply(conn, story, answer)
+                if answer.get("is_opportunity") is True:
+                    copied += copy_to_opps(conn, story["id"])
                 targets[n + 1] = story["id"]
                 scored += 1
     summarized = await _summarize(settings)
     if scored or summarized or merged:
-        logger.info("News: %d stories scored, %d merged into earlier ones, %d summarized", scored, merged, summarized)
-    return {"scored": scored, "merged": merged, "summarized": summarized}
+        logger.info("News: %d stories scored, %d merged into earlier ones, %d summarized, %d posts copied to opportunities",
+                    scored, merged, summarized, copied)
+    return {"scored": scored, "merged": merged, "summarized": summarized, "copied": copied}
+
+
+def copy_to_opps(conn, story_id: int) -> int:
+    """A news story that announces an opportunity: its posts (one per owner, up to POSTS_PER_STORY) copied into the opps
+    lane, unmerged; each copy points to its post. A post copied before is not copied again."""
+    posts, owners = [], set()
+    for row in conn.execute("SELECT i.id, s.owner FROM items i JOIN sources s ON s.id = i.source_id WHERE i.story_id = ? "
+                            "AND i.lane = 'news' ORDER BY s.is_primary DESC, i.published", (story_id,)):
+        if row["owner"] not in owners:
+            owners.add(row["owner"])
+            posts.append(row["id"])
+    copied = 0
+    for item in posts[:POSTS_PER_STORY]:
+        copied += conn.execute(
+            "INSERT OR IGNORE INTO items (source_id, external_id, url, title, text, links, published, seen, lang, backfill, "
+            "digest, lane, copied_from) SELECT source_id, 'opp:' || external_id, url, title, text, links, published, ?, lang, "
+            "0, 0, 'opps', id FROM items WHERE id = ?", (time.time(), item)).rowcount
+    return copied
 
 
 def _same_as(value, refs: list[dict], targets: dict[int, int], number: int) -> int | None:

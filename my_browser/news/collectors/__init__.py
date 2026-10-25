@@ -86,8 +86,18 @@ def host(url: str) -> str:
     return (urlsplit(url).hostname or "").lower().removeprefix("www.")
 
 
-def text_and_links(html: str, own_host: str) -> tuple[str, list[str]]:
-    """Plain text of a post's HTML, and the keys of the pages it links to, other than its own site's."""
+def inline(anchor, href: str) -> None:
+    """Write a link's address after its text («Регистрация (https://…)»): the opportunities lane's model has to tell
+    which link of a roundup belongs to which announcement."""
+    text = anchor.get_text(" ", strip=True)
+    url = clean_url(href)
+    if text and url.rstrip("/") not in text:
+        anchor.replace_with(f"{text} ({url})")
+
+
+def text_and_links(html: str, own_host: str, inline_links: bool = False) -> tuple[str, list[str]]:
+    """Plain text of a post's HTML, and the keys of the pages it links to, other than its own site's; with
+    inline_links the addresses stay in the text too (the opportunities lane)."""
     soup = BeautifulSoup(html or "", "html.parser")
     links: list[str] = []
     for anchor in soup.find_all("a", href=True):
@@ -97,6 +107,8 @@ def text_and_links(html: str, own_host: str) -> tuple[str, list[str]]:
         key = link_key(href)
         if key.split("/", 1)[0] != own_host and key not in links:
             links.append(key)
+        if inline_links:
+            inline(anchor, href)
     return " ".join(soup.get_text(" ").split())[:TEXT_CHARS], links[:30]
 
 

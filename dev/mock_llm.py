@@ -9,7 +9,8 @@ Point a run at it with environment variables, which beat config.json and the wri
     OPENAI_BASE_URL=http://127.0.0.1:8765/v1 OPENAI_API_KEY=mock uv run app.py
 
 It answers by phrases of the prompts it gets (gpt-researcher's and ours: sub-queries, source rating,
-subtopics, draft titles, sections, fact-check, follow-ups, clarification, questions, news scoring and summaries) with answers of
+subtopics, draft titles, sections, fact-check, follow-ups, clarification, questions, news scoring and summaries,
+opportunities' roundups and extraction) with answers of
 the shape the caller parses. Anything else gets a short report section citing two URLs from the prompt,
 with a figure the fact-check «corrects» (12,5 -> 11,9) and one it cannot find, so a run also exercises the
 check's fixes. If a prompt's wording changes, its answer falls back to that section: a run still ends,
@@ -22,6 +23,7 @@ import argparse
 import json
 import re
 import time
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STEPS = {  # --log: which step a call was, by a phrase of its prompt
@@ -48,8 +50,25 @@ def answer(prompt: str) -> str:
     if "Ты редактор ленты новостей об искусственном интеллекте" in prompt:  # news/scoring.py: the first story urgent
         ids = [int(n) for n in re.findall(r"^\[id (\d+)\]", prompt, re.M)]
         return json.dumps([{"id": n, "is_ai": True, "topic": "models", "importance": 9 if n == 1 else 6 if n % 3 else 2,
-                            "reason": "тестовая оценка", "title_ru": f"Тестовый сюжет {n}", "primary_url": None}
-                           for n in ids], ensure_ascii=False)
+                            "reason": "тестовая оценка", "title_ru": f"Тестовый сюжет {n}", "primary_url": None,
+                            "is_opportunity": n == 2} for n in ids], ensure_ascii=False)  # the second: a copy to opportunities
+    if "Ты разбираешь посты-подборки о возможностях" in prompt:  # news/opps.py: two opportunities in each roundup
+        posts = [int(n) for n in re.findall(r"^\[post (\d+)\]", prompt, re.M)]
+        soon = (date.today() + timedelta(days=10)).isoformat()
+        return json.dumps([{"post": n, "items": [{"title": f"Тестовый хакатон {n}.{k}", "text": f"Онлайн-хакатон по ИИ для "
+                                                  f"студентов, регистрация до {soon}.", "url": None} for k in (1, 2)]}
+                           for n in posts], ensure_ascii=False)
+    if "Ты разбираешь анонсы возможностей для студента" in prompt:  # news/opps.py: the first hot, every fourth not one
+        ids = [int(n) for n in re.findall(r"^\[id (\d+)\]", prompt, re.M)]
+        return json.dumps([{"id": n, "is_opportunity": False, "reason": "тестовая новость"} if n % 4 == 0 else
+                           {"id": n, "is_opportunity": True, "reason": None, "opp_type": "hackathon" if n == 1 else "school",
+                            "title_ru": f"Тестовая возможность {n}", "organizer": "Тестовый организатор",
+                            "summary_ru": "Тестовая возможность: что это и что даёт.", "deadline_text": "тестовый дедлайн",
+                            "deadline": (date.today() + timedelta(days=5 if n == 1 else 30)).isoformat(), "deadline_tz": None,
+                            "deadline_kind": "exact", "starts": None, "ends": None, "format": "online", "location": None,
+                            "eligibility": "студенты", "ru_access": "yes" if n == 1 else "unclear", "cost": "бесплатно",
+                            "reward": None, "apply_url": "https://example.org/apply", "fit": 8 if n == 1 else 5,
+                            "fit_reason": "тестовая причина", "same_as": None} for n in ids], ensure_ascii=False)
     if "Напиши по-русски резюме каждого сюжета" in prompt:  # news/scoring.py: summaries
         ids = [int(n) for n in re.findall(r"^\[id (\d+)\]", prompt, re.M)]
         return json.dumps([{"id": n, "summary": f"Тестовое резюме сюжета {n}: что произошло и кто это сделал."} for n in ids],
