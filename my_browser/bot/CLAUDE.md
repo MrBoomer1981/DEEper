@@ -17,7 +17,8 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
   - `x:<job id>` restart a failed or interrupted job;
   - `nr:<story id>`, `nf:<story id>:<±1>` a news story's research and feedback;
   - `nt:<topic>` a news topic switched on or off;
-  - `nd:<story id>` a dropped news story brought back.
+  - `nd:<story id>` a dropped news story brought back;
+  - `op:<story id>:<t|h|a|o|r>` an opportunity tracked, hidden, applied, untracked or researched; `ot:<type>` the /opps filter; `oy:<type>` a type toggled.
 
   Topics are read back through the API, because Telegram limits callback data to 64 bytes. `pending` holds the offered topics, keyed by the message that offered them.
 - Every minute it looks for Telegram jobs interrupted by a restart and edits their status message to offer a restart.
@@ -26,6 +27,7 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
 - `nr:<story id>` offers a news story as a research topic (`_offer()`, as follow-up topics); `nf:<story id>:<±1>` stores 👍/👎 in the news part.
 - News settings: `/time`, `/quiet`, `/urgent` (each with `off`), `/pause`, `/resume` change the news part's settings (`_news_settings()`; a refused value comes back with the news part's message, in Russian); `/topics` toggles topics with buttons (`nt:<topic>`); `/sources` lists the sources with their health, news and opportunities apart (`SOURCE_LANES`), `/add` checks and adds a feed or a channel (`/add opps …` to the opportunities, where a program's page without a feed may be added too), `/remove` switches one off by number or name.
 - `/dropped`: what the news part dropped in the last day, grouped (minor, not about AI) with the reasons; «↩️ N» (`nd:<story id>`) brings a story back: it comes as a message and counts as 👍.
+- Opportunities: `/opps` lists the open ones (the news part's `line`s), «📌 N» tracks, the type buttons filter (`ot:<type>`, the message is edited); `/deadlines` the tracked by date, «✅ N» marks one applied; `/opptypes` toggles the types sent (`oy:<type>`). `on_opportunity()` handles `op:<story>:t|h|a|o|r` under cards, digests and reminders: track (a message with «✅ Подал» and «↩️ Не отслеживать», saying when it will remind), not mine, applied (the buttons go), stop tracking, research it (offered like a news story's 🔎).
 - `/profile` shows the profile the news part scores opportunities against (`opps_profile` of `GET /settings`); `/profile <text>` replaces it through `_news_settings()` (the news part refuses below 20 or above 3 000 characters). The user's real profile lives only there, never in the repository.
 
 ## Run and check it alone

@@ -15,7 +15,7 @@ import time
 
 import httpx
 
-from my_browser.news import collectors, config, db, dedup, delivery, items, opps, scoring, sources
+from my_browser.news import collectors, config, db, dedup, delivery, items, opps, opps_delivery, scoring, sources
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,10 @@ def tick() -> None:
         except Exception:  # the opportunities lane must never stop the news
             logger.exception("News loop: opportunities failed")
     delivery.run()
+    try:
+        opps_delivery.run()
+    except Exception:  # the opportunities lane must never stop the news
+        logger.exception("News loop: opportunities delivery failed")
     if now - (db.get_state("slimmed_at") or 0) > SLIM_EVERY_SEC:
         db.set_state("slimmed_at", now)
         items.slim()

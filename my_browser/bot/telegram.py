@@ -76,6 +76,10 @@ HELP = """<b>Глубокие исследования</b>
 /pause, /resume — остановить и продолжить новости
 
 <b>Возможности</b>: хакатоны, школы, стажировки, гранты с дедлайнами.
+Новые приходят сводкой раз в неделю (воскресенье, 18:00), горящие — сразу. 📌 — отслеживать: напомню за 14, 3 и 1 день до дедлайна; ✅ — подал заявку; ✖️ — не моё.
+/opps — открытые возможности, ближайшие дедлайны сверху, фильтр по типам
+/deadlines — отслеживаемые по дате
+/opptypes — какие типы присылать
 /profile — профиль: по нему оценивается, что подходит; /profile текст — заменить
 /add opps @канал, лента или страница программы — источник возможностей"""
 
@@ -558,6 +562,138 @@ async def cmd_profile(message: Message, command: CommandObject) -> None:
 SOURCE_LANES = {"news": "📡 <b>Источники новостей</b>", "opps": "🎯 <b>Источники возможностей</b>"}
 
 
+OPPS_PAGE = 12  # opportunities in one /opps message
+
+
+async def _opps_view(type_: str = "") -> tuple[str, InlineKeyboardMarkup | None]:
+    """/opps: open and tracked opportunities, the tracked first, then by deadline; «📌 N» tracks, the type buttons filter."""
+    items = (await call("news", "GET", "/opps", params={"limit": 200})).json()
+    names = (await call("news", "GET", "/settings")).json()["opp_type_names"]
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item["opp_type"]] = counts.get(item["opp_type"], 0) + 1
+    shown = [i for i in items if not type_ or i["opp_type"] == type_]
+    if not items:
+        return "Открытых возможностей пока нет: источники разбираются, первые придут в сводке или сразу, если горят.", None
+    title = names.get(type_, "все") if type_ else "все"
+    lines = [f"🎯 <b>Возможности</b> · {title}: {len(shown)}"]
+    lines += [f"{n}. {'📌 ' if i['status'] == 'tracked' else ''}{i['line']}" for n, i in enumerate(shown[:OPPS_PAGE], 1)]
+    if len(shown) > OPPS_PAGE:
+        lines.append(f"…и ещё {len(shown) - OPPS_PAGE}")
+    track = [InlineKeyboardButton(text=f"📌 {n}", callback_data=f"op:{i['story_id']}:t")
+             for n, i in enumerate(shown[:OPPS_PAGE], 1) if i["status"] != "tracked"]
+    filters = [InlineKeyboardButton(text=("• " if not type_ else "") + f"все {len(items)}", callback_data="ot:")]
+    filters += [InlineKeyboardButton(text=("• " if key == type_ else "") + f"{names.get(key, key)} {count}",
+                                     callback_data=f"ot:{key}") for key, count in sorted(counts.items(), key=lambda kv: -kv[1])]
+    rows = [track[i:i + 6] for i in range(0, len(track), 6)] + [filters[i:i + 2] for i in range(0, len(filters), 2)]
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(Command("opps"))
+async def cmd_opps(message: Message) -> None:
+    text, keyboard = await _opps_view()
+    await message.answer(text, reply_markup=keyboard, link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+
+@dp.callback_query(F.data.startswith("ot:"))
+async def on_opps_filter(callback: CallbackQuery) -> None:
+    text, keyboard = await _opps_view(callback.data.split(":", 1)[1])
+    await callback.answer()
+    with suppress(TelegramBadRequest):  # the same filter again: nothing changed
+        await callback.message.edit_text(text, reply_markup=keyboard, link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+
+@dp.message(Command("deadlines"))
+async def cmd_deadlines(message: Message) -> None:
+    """Tracked opportunities by deadline; «✅ N» marks one applied."""
+    items = (await call("news", "GET", "/opps/tracked")).json()
+    if not items:
+        await message.answer("Ничего не отслеживается. Нажмите 📌 под возможностью в сводке или в /opps.")
+        return
+    lines = ["📌 <b>Отслеживаемые</b>"] + [f"{n}. {i['line']}" for n, i in enumerate(items, 1)]
+    buttons = [InlineKeyboardButton(text=f"✅ {n}", callback_data=f"op:{i['story_id']}:a") for n, i in enumerate(items, 1)]
+    await message.answer("\n".join(lines) + "\n\n✅ N — подал заявку: напоминания прекратятся",
+                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 6] for i in range(0, len(buttons), 6)]),
+                         link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+
+def _opptypes_keyboard(settings: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=("✅ " if key in settings["opps_types"] else "▫️ ") + name, callback_data=f"oy:{key}")]
+        for key, name in settings["opp_type_names"].items()])
+
+
+@dp.message(Command("opptypes"))
+async def cmd_opptypes(message: Message) -> None:
+    settings = (await call("news", "GET", "/settings")).json()
+    await message.answer("Какие возможности присылать: нажмите, чтобы включить или выключить тип. Собираются и оцениваются все.",
+                         reply_markup=_opptypes_keyboard(settings))
+
+
+@dp.callback_query(F.data.startswith("oy:"))
+async def on_opptype_toggle(callback: CallbackQuery) -> None:
+    kind = callback.data.split(":", 1)[1]
+    settings = (await call("news", "GET", "/settings")).json()
+    types = [t for t in settings["opps_types"] if t != kind] if kind in settings["opps_types"] else settings["opps_types"] + [kind]
+    try:
+        await call("news", "PUT", "/settings", json={"opps_types": types})
+    except httpx.HTTPStatusError:
+        await callback.answer("Не получилось", show_alert=True)
+        return
+    await callback.answer()
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_reply_markup(reply_markup=_opptypes_keyboard({**settings, "opps_types": types}))
+
+
+OPP_ACTIONS = {"t": "tracked", "h": "hidden", "a": "applied", "o": "open"}
+
+
+@dp.callback_query(F.data.startswith("op:"))
+async def on_opportunity(callback: CallbackQuery) -> None:
+    """The buttons under an opportunity: 📌 track, ✖️ not mine, ✅ applied, ↩️ stop tracking, 🔎 research it."""
+    _, story_id, action = callback.data.split(":")
+    if action == "r":
+        try:
+            opp = (await call("news", "GET", f"/opps/{story_id}")).json()
+        except Exception:
+            await callback.answer("Возможность не найдена", show_alert=True)
+            return
+        await callback.answer()
+        key = f"{callback.message.chat.id}_{callback.message.message_id}_o{story_id}"
+        topic = f"{opp['title_ru'] or opp['title']}: условия участия, отбор и как подготовиться"
+        await _offer(callback.message.answer, key, topic, recommended="quick")
+        return
+    if action not in OPP_ACTIONS:
+        await callback.answer()
+        return
+    try:
+        opp = (await call("news", "POST", f"/opps/{story_id}/status", json={"status": OPP_ACTIONS[action]})).json()
+    except Exception:
+        await callback.answer("Возможность не найдена", show_alert=True)
+        return
+    title = html.escape(opp["title_ru"] or opp["title"] or "")
+    if action == "t":
+        await callback.answer("📌 Отслеживаю")
+        days = (await call("news", "GET", "/settings")).json()["opps_reminders"]
+        listed = f"{', '.join(map(str, days[:-1]))} и {days[-1]}" if len(days) > 1 else ''.join(map(str, days))
+        when = (f"Напомню за {listed} {plural(days[-1] if days else 0, 'день', 'дня', 'дней')} до дедлайна."
+                if opp["deadline_at"] and opp["deadline_kind"] in ("exact", "approximate") else
+                "Даты нет — напомнить к сроку не смогу; раз в месяц спрошу в сводке, открыт ли ещё приём.")
+        await callback.message.answer(
+            f"📌 Отслеживаю: <b>{title}</b>\n{when}", link_preview_options=LinkPreviewOptions(is_disabled=True),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Подал", callback_data=f"op:{story_id}:a"),
+                InlineKeyboardButton(text="↩️ Не отслеживать", callback_data=f"op:{story_id}:o")]]))
+    elif action == "h":
+        await callback.answer("✖️ Скрыл: больше не покажу")
+    elif action == "a":
+        await callback.answer("✅ Отметил: заявка подана, напоминаний больше не будет")
+        with suppress(TelegramBadRequest):
+            await callback.message.edit_reply_markup(reply_markup=None)
+    else:
+        await callback.answer("Больше не отслеживаю")
+
+
 @dp.message(Command("sources"))
 async def cmd_sources(message: Message) -> None:
     rows = (await call("news", "GET", "/sources")).json()
@@ -948,6 +1084,9 @@ async def start(handle_signals: bool = True) -> None:
         BotCommand(command="dropped", description="Что отсеяно из новостей"),
         BotCommand(command="pause", description="Новости на паузу"),
         BotCommand(command="resume", description="Продолжить новости"),
+        BotCommand(command="opps", description="Возможности: хакатоны, школы, стажировки"),
+        BotCommand(command="deadlines", description="Отслеживаемые дедлайны"),
+        BotCommand(command="opptypes", description="Типы возможностей"),
         BotCommand(command="profile", description="Профиль для возможностей"),
         BotCommand(command="help", description="Как пользоваться"),
     ])

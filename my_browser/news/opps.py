@@ -305,6 +305,7 @@ async def extract(settings: config.Settings) -> dict:
     """Read the waiting stories; a summary of what they turned out to be."""
     counts = {"read": 0, "open": 0, "expired": 0, "dropped": 0, "merged": 0}
     profile = config.clean_profile(settings.opps_profile)
+    zone = ZoneInfo(settings.timezone)
     with db.connect() as conn:
         waiting = _waiting(conn)
     for start in range(0, len(waiting), EXTRACT_BATCH):
@@ -317,7 +318,8 @@ async def extract(settings: config.Settings) -> dict:
         if quiet:  # no sign of an announcement: not worth a call
             with db.transaction() as conn:
                 for story in quiet:
-                    apply(conn, story, {"is_opportunity": False, "reason": "нет признаков анонса"}, _lang(posts[story["id"]]))
+                    apply(conn, story, {"is_opportunity": False, "reason": "нет признаков анонса"}, _lang(posts[story["id"]]),
+                          today=_local_day(time.time(), settings))
             counts["read"] += len(quiet)
             counts["dropped"] += len(quiet)
         batch = [s for s in batch if posts[s["id"]] and s not in quiet]
@@ -341,21 +343,23 @@ async def extract(settings: config.Settings) -> dict:
                     conn.execute("DELETE FROM opportunities WHERE story_id = ?", (story["id"],))
                     counts["merged"] += 1
                     continue
-                status, change = apply(conn, story, answer, _lang(posts[story["id"]]))
+                status, change = apply(conn, story, answer, _lang(posts[story["id"]]), today=_local_day(time.time(), settings))
                 targets[n + 1] = story["id"]
                 counts["read"] += 1
                 counts[status if status in counts else "open"] += 1
                 if change:
                     moved.append(change)
             for change in moved:
-                _deadline_moved(conn, *change)
+                _deadline_moved(conn, zone, *change)
     return counts
 
 
-def apply(conn, story: dict, answer: dict, lang: str, now: float | None = None) -> tuple[str, tuple | None]:
+def apply(conn, story: dict, answer: dict, lang: str, now: float | None = None, today: str | None = None) -> tuple[str, tuple | None]:
     """Store what the model read in a story; (its status, (story, old deadline, new deadline) when a tracked
-    opportunity's deadline moved)."""
+    opportunity's deadline moved). `today` is the ISO date in the settings' time zone: passed in, since loading the
+    settings inside a write would wait on the write itself."""
     now = now or time.time()
+    today = today or datetime.fromtimestamp(now, MOSCOW).date().isoformat()
     kept = story.get("opp_status") if story.get("opp_status") in USER_STATUSES else None
     if not answer.get("is_opportunity"):
         reason = _text(answer.get("reason"), 120) or "не анонс"
@@ -369,10 +373,14 @@ def apply(conn, story: dict, answer: dict, lang: str, now: float | None = None) 
     if kind == "rolling":
         iso = at = None
     status, drop = kept or "open", None
+    starts = _day(answer.get("starts"))
+    started = at is None and kind != "rolling" and starts is not None and starts < today
     if at is not None and at < now and kept != "applied":
         status, drop = ("expired", "дедлайн прошёл") if kept != "hidden" else ("hidden", None)
     elif answer.get("closed") is True and kept is None:  # «applications are closed», with no date given
         status, drop = "expired", "приём закрыт"
+    elif started and kept is None:  # no deadline, and the event has begun: too late to apply
+        status, drop = "expired", "событие уже началось"
     opp_type = answer.get("opp_type") if answer.get("opp_type") in config.OPP_TYPES else "other"
     try:
         fit = max(0, min(10, int(answer.get("fit") or 0)))
@@ -391,7 +399,7 @@ def apply(conn, story: dict, answer: dict, lang: str, now: float | None = None) 
         "status = excluded.status, drop_reason = excluded.drop_reason, checked_at = excluded.checked_at",
         (story["id"], opp_type, _text(answer.get("title_ru"), 200) or story.get("title"), _text(answer.get("organizer"), 200),
          _text(answer.get("summary_ru"), 600), iso, at, kind, _text(answer.get("deadline_text"), 200), int(assumed),
-         _day(answer.get("starts")), _day(answer.get("ends")),
+         starts, _day(answer.get("ends")),
          answer.get("format") if answer.get("format") in FORMATS else None, _text(answer.get("location"), 200),
          _text(answer.get("eligibility"), 300), answer.get("ru_access") if answer.get("ru_access") in ACCESS else "unclear",
          _text(answer.get("cost"), 120), _text(answer.get("reward"), 300), _url(answer.get("apply_url")), fit,
@@ -402,28 +410,38 @@ def apply(conn, story: dict, answer: dict, lang: str, now: float | None = None) 
     return status, None
 
 
-def _deadline_moved(conn, story_id: int, old: str | None, new: str | None) -> None:
-    """«Дедлайн перенесён»: a message about a tracked opportunity, for the bot (stage O3 shapes the cards)."""
-    row = conn.execute("SELECT title_ru, apply_url FROM opportunities WHERE story_id = ?", (story_id,)).fetchone()
-    if row is None:
+def _deadline_moved(conn, zone: ZoneInfo, story_id: int, old: str | None, new: str | None) -> None:
+    """«🗓 Дедлайн перенесён: 15 ноя → 29 ноя» with the opportunity's card, for the bot."""
+    from my_browser.news import opps_delivery  # it imports nothing of this module: no cycle at load
+
+    rows = opps_delivery._rows(conn, "o.story_id = ?", [story_id])
+    if not rows:
         return
-    text = (f"🗓 <b>Дедлайн перенесён</b>\n{_html(row['title_ru'])}\nбыло: {(old or '?')[:10]} → стало: {(new or '?')[:10]}"
-            + (f'\n🔗 <a href="{_html(row["apply_url"])}">подача</a>' if row["apply_url"] else ""))
-    conn.execute("INSERT INTO deliveries (kind, created, text, buttons, story_ids) VALUES ('opp_deadline', ?, ?, '[]', ?)",
-                 (time.time(), text, json.dumps([story_id])))
+    moved = f"{opps_delivery.day(old, zone) if old else '?'} → {opps_delivery.day(new, zone) if new else '?'}"
+    text = f"🗓 <b>Дедлайн перенесён</b>: {moved}\n\n" + opps_delivery.card(rows[0], time.time(), zone)
+    buttons = [[["✅ Подал", f"op:{story_id}:a"], ["↩️ Не отслеживать", f"op:{story_id}:o"]]]
+    conn.execute("INSERT INTO deliveries (kind, created, text, buttons, story_ids) VALUES ('opp_deadline', ?, ?, ?, ?)",
+                 (time.time(), text, json.dumps(buttons, ensure_ascii=False), json.dumps([story_id])))
 
 
-def _html(text: str | None) -> str:
-    import html
-    return html.escape(text or "", quote=True)
+def _local_day(now: float, settings: config.Settings) -> str:
+    """Today's date (ISO) in the settings' time zone."""
+    return datetime.fromtimestamp(now, ZoneInfo(settings.timezone)).date().isoformat()
 
 
 def expire(now: float | None = None) -> int:
-    """Open and tracked opportunities whose deadline has passed become `expired`."""
+    """Open and tracked opportunities whose deadline has passed, or without one whose event has begun, become `expired`."""
+    now = now or time.time()
+    today = _local_day(now, config.load())  # before the write: loading may itself write
     with db.transaction() as conn:
-        return conn.execute(
+        passed = conn.execute(
             "UPDATE opportunities SET status = 'expired', drop_reason = 'дедлайн прошёл' WHERE status IN ('open', 'tracked') "
-            "AND deadline_at IS NOT NULL AND deadline_at < ? AND deadline_kind != 'rolling'", (now or time.time(),)).rowcount
+            "AND deadline_at IS NOT NULL AND deadline_at < ? AND deadline_kind != 'rolling'", (now,)).rowcount
+        begun = conn.execute(
+            "UPDATE opportunities SET status = 'expired', drop_reason = 'событие уже началось' WHERE status = 'open' "
+            "AND deadline_at IS NULL AND deadline_kind != 'rolling' AND starts IS NOT NULL AND starts < ?",
+            (today,)).rowcount
+    return passed + begun
 
 
 async def run() -> dict:

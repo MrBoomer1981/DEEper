@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from my_browser.common.auth import require_token
-from my_browser.news import config, db, dedup, delivery, feedback, items, loop, manage, opps, scoring, sources
+from my_browser.news import config, db, dedup, delivery, feedback, items, loop, manage, opps, opps_delivery, scoring, sources
 
 _seeded = False
 
@@ -218,14 +218,42 @@ async def post_score() -> dict:
 @app.get("/opps")
 async def get_opps(status: str = "", type: str = "", limit: int = 50) -> list[dict]:
     """Opportunities (open and tracked unless `status` lists others, comma-separated), the tracked first, then by
-    deadline, then by fit; `type` one of config.OPP_TYPES."""
-    return opps.listing(status or None, type or None, limit)
+    deadline, then by fit; `type` one of config.OPP_TYPES. Each with `line` and `card` (Telegram HTML) for the bot."""
+    return opps_delivery.dressed(opps_delivery.by_date(opps.listing(status or None, type or None, limit)))
 
 
 @app.post("/opps/run")
 async def post_opps_run() -> dict:
     """Cut roundups and read the waiting opportunities now (LLM calls, within the lane's budget)."""
     return await opps.run()
+
+
+@app.get("/opps/tracked")
+async def get_tracked(limit: int = 30) -> list[dict]:
+    """Tracked opportunities by deadline, those without one last (/deadlines)."""
+    return opps_delivery.tracked(limit)
+
+
+@app.get("/opps/{story_id}")
+async def get_opportunity(story_id: int) -> dict:
+    """One opportunity; 404 when there is none."""
+    if found := opps_delivery.opportunity(story_id):
+        return found
+    raise HTTPException(404, "opportunity not found")
+
+
+class StatusRequest(BaseModel):
+    status: str  # tracked | hidden | applied | open
+
+
+@app.post("/opps/{story_id}/status")
+async def post_opportunity_status(story_id: int, request: StatusRequest) -> dict:
+    """The user's choice (📌, ✖️, ✅, or back to open); 422 for another status, 404 when there is no such opportunity."""
+    if request.status not in opps_delivery.STATUSES.values():
+        raise HTTPException(422, "Статус — tracked, hidden, applied или open.")
+    if found := opps_delivery.set_status(story_id, request.status):
+        return found
+    raise HTTPException(404, "opportunity not found")
 
 
 @app.post("/collect")
