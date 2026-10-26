@@ -1,9 +1,10 @@
 """The news loop: a plain thread that wakes every minute and does what is due.
 
-Each tick polls the sources whose interval has passed and stores their new posts; every few minutes it merges
-the new posts into stories (dedup.py), has the LLM score them (scoring.py) and read the opportunities (opps.py);
-every tick it queues what is due
-for Telegram (delivery.py: urgent stories, digests). One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
+Each tick polls the sources whose interval has passed and stores their new posts, and once a week searches the web
+for opportunities the sources missed (discover.py); every few minutes it merges the new posts into stories (dedup.py),
+has the LLM score them (scoring.py) and read the opportunities (opps.py); every tick it queues what is due for Telegram
+(delivery.py: urgent stories, digests; opps_delivery.py: deadline reminders) and, once a morning, updates the app's
+list of opportunities (opps_delivery.py). One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
 worker's job loop (NEWS_LOOP=0 turns it off), `python -m my_browser.news` next to its API. Every tick is marked
 in the state table, so /status can tell whether a loop runs.
 """
@@ -16,7 +17,7 @@ import time
 import httpx
 
 from my_browser.common import memory
-from my_browser.news import collectors, config, db, dedup, delivery, items, opps, opps_delivery, scoring, sources
+from my_browser.news import collectors, config, db, dedup, delivery, discover, items, opps, opps_delivery, scoring, sources
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,10 @@ def tick() -> None:
         if summary.get("new") or summary.get("failed"):
             logger.info("News: %(polled)d sources polled, %(new)d new posts, %(failed)d failed, %(seconds)s s", summary)
         memory.trim()  # the parsed feeds and pages: free pages back to the system
+    try:
+        asyncio.run(discover.run())  # once a week; its new pages are merged below like any posts
+    except Exception:  # the opportunities lane must never stop the news
+        logger.exception("News loop: web search for opportunities failed")
     if now - (db.get_state("dedup_at") or 0) >= DEDUP_EVERY_SEC:
         db.set_state("dedup_at", now)  # before the run: a failing model does not retry every minute
         try:

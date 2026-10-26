@@ -201,6 +201,7 @@ def _opps_view(board: dict, kind: str, on_kind, on_open) -> None:
             kit.mascot("sleep", 120)
             ui.label("Новых возможностей пока нет. Список обновляется каждое утро"
                      + (f", следующий раз — {board['next']}." if board.get("next") else ".")).classes("sub-text")
+        _awaited(board)
         _later(board)
         return
     if board.get("updated"):  # when the next one comes is said by the empty list: one line on a phone
@@ -212,13 +213,37 @@ def _opps_view(board: dict, kind: str, on_kind, on_open) -> None:
     ui.toggle(options, value=kind if kind in options else "", on_change=lambda e: on_kind(e.value or "")) \
         .props(TOGGLE).classes("seg wrap")
     shown = [item for item in items if not kind or item["opp_type"] == kind]
-    for label, group in (("Новые", [i for i in shown if i.get("new")]), ("Открытые", [i for i in shown if not i.get("new")])):
-        if group:
-            ui.label(f"{label} · {len(group)}").classes("sheet-label")
-            with ui.element("div").classes("list"):
-                for item in group:
-                    _opp_row(item, on_open)
+    _group("Новые", [i for i in shown if i.get("new")], on_open)
+    _awaited(board, kind)  # right after the new ones: a big event not found yet is a miss to notice
+    _group("Открытые", [i for i in shown if not i.get("new")], on_open)
     _later(board)
+
+
+def _group(label: str, items: list[dict], on_open) -> None:
+    if items:
+        ui.label(f"{label} · {len(items)}").classes("sheet-label")
+        with ui.element("div").classes("list"):
+            for item in items:
+                _opp_row(item, on_open)
+
+
+def _awaited(board: dict, kind: str = "") -> None:
+    """Big annual events whose registration usually opens by now and which the radar has not found yet (of the type
+    filtered, if any): a tap opens the search screen with the event as a topic, the arrow its official page."""
+    events = [e for e in board.get("expected") or [] if not kind or e["opp_type"] == kind]
+    if not events:
+        return
+    ui.label(f"Ждём · {len(events)}").classes("sheet-label")
+    with ui.element("div").classes("list"):
+        for event in events:
+            with ui.element("div").classes("li news-row"):
+                topic = f"{event['name']}: сроки регистрации и условия участия"
+                with ui.link(target=kit.follow_up_url(topic, "quick")).classes("li-text"):
+                    ui.label(event["name"]).classes("li-title lines-3")
+                    ui.label(f"{event['when']} · ещё не нашли").classes("li-sub")
+                if event.get("url"):
+                    with ui.link(target=event["url"], new_tab=True).classes("li-src").props('aria-label="Официальная страница"'):
+                        ui.icon("open_in_new")
 
 
 def _later(board: dict) -> None:
@@ -264,7 +289,8 @@ def radar_screen(stories: list[dict] | None = None, board: dict | None = None, o
         return [(o["story_id"], o["status"], o["meta"], o.get("new")) for o in items]
 
     def board_key(board: dict) -> list:
-        return [board.get("updated"), board.get("later"), *opps_key(board.get("items") or [])]
+        return [board.get("updated"), board.get("later"), [e["name"] for e in board.get("expected") or []],
+                *opps_key(board.get("items") or [])]
 
     async def act(opp: dict, status: str) -> None:
         """A status chosen in a sheet or with a circle: the news part stores it, the open tab is drawn anew."""

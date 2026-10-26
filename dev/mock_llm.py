@@ -10,7 +10,7 @@ Point a run at it with environment variables, which beat config.json and the wri
 
 It answers by phrases of the prompts it gets (gpt-researcher's and ours: sub-queries, source rating,
 subtopics, draft titles, sections, the overview, fact-check, follow-ups with a route, clarification, questions, news
-scoring and summaries, opportunities' roundups and extraction) with answers of
+scoring and summaries, opportunities' roundups, extraction and web search queries) with answers of
 the shape the caller parses. Anything else gets a short report section citing two URLs from the prompt,
 with a figure the fact-check «corrects» (12,5 -> 11,9) and one it cannot find, so a run also exercises the
 check's fixes. If a prompt's wording changes, its answer falls back to that section: a run still ends,
@@ -106,6 +106,9 @@ def answer(prompt: str) -> str:
                             "eligibility": "студенты", "ru_access": "yes" if n == 1 else "unclear", "cost": "бесплатно",
                             "reward": None, "apply_url": "https://example.org/apply", "fit": 8 if n == 1 else 5,
                             "fit_reason": "тестовая причина", "major": n == 3, "same_as": None} for n in ids], ensure_ascii=False)
+    if "поисковых запросов для веб-поиска" in prompt:  # news/discover.py: the week's web search for opportunities
+        return json.dumps(["хакатон по искусственному интеллекту для студентов регистрация",
+                           "machine learning summer school applications open"], ensure_ascii=False)
     if "Напиши по-русски резюме каждого сюжета" in prompt:  # news/scoring.py: summaries
         ids = [int(n) for n in re.findall(r"^\[id (\d+)\]", prompt, re.M)]
         return json.dumps([{"id": n, "summary": f"Тестовое резюме сюжета {n}: что произошло и кто это сделал."} for n in ids],

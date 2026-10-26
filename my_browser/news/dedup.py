@@ -33,7 +33,7 @@ from collections import Counter
 import numpy as np
 
 from my_browser.news import config, db, embed, items
-from my_browser.news.collectors import link_key, usable_key
+from my_browser.news.collectors import host, link_key, usable_key
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,12 @@ BOILERPLATE_POSTS = 4
 # the parts of one roundup do not merge by it.
 OWN_URL = ("CASE WHEN i.copied_from IS NOT NULL AND i.url = (SELECT p.url FROM items p WHERE p.id = i.copied_from "
            "AND p.digest = 1) THEN NULL ELSE i.url END AS url")
+
+
+def _owner(row: dict) -> str:
+    """Whose a post is, for merging: its source's owner; a page the web search found (discover.py) is its site's, so
+    pages of one opportunity on different sites merge by meaning like posts of different sources."""
+    return f"site:{host(row['url'])}" if row.get("kind") == "search" and row.get("url") else row["owner"]
 
 
 def _keys(url: str, links: str | None) -> set[str]:
@@ -98,10 +104,12 @@ def _run(lane: str, settings: config.Settings) -> dict:
         if not waiting:
             return {"posts": 0, "stories": 0}
         placed = [dict(row) for row in conn.execute(
-            f"SELECT i.story_id, {OWN_URL}, i.links, i.embedding, i.source_id, i.copied_from, src.owner FROM items i "
+            f"SELECT i.story_id, {OWN_URL}, i.links, i.embedding, i.source_id, i.copied_from, src.owner, src.kind FROM items i "
             "JOIN stories s ON s.id = i.story_id "
             f"JOIN sources src ON src.id = i.source_id WHERE s.lane = ? AND {open_stories} AND i.embedding IS NOT NULL "
             "ORDER BY i.published", [lane, *params])]
+    for row in waiting + placed:
+        row["owner"] = _owner(row)
     try:
         vectors = embed.vectors([embed.text(p["title"], p["text"]) for p in waiting])
     except Exception as e:

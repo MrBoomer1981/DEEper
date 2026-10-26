@@ -489,6 +489,8 @@ def opps_text(opps: dict) -> str:
                  f"{opps['later']}; отслеживаю {opps['tracked']}"]
         if opps.get("updated"):
             lines.append(f"Список обновлён {opps['updated']}, снова {opps['next_update']}")
+        if opps.get("expected"):
+            lines.append("Ждём, ещё не нашли: " + html.escape(", ".join(opps["expected"])))
     else:  # a news part from before the morning updates
         lines = [f"🎯 <b>Возможности</b>: открыто {opps['open']}, отслеживаю {opps['tracked']}"]
     if nearest := opps.get("next_tracked"):

@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from my_browser.common.text import plural
-from my_browser.news import config, db, delivery
+from my_browser.news import annual, config, db, delivery
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +278,7 @@ def board(now: float | None = None) -> dict:
     """«Радар» → «Возможности»: the open ones released by the morning updates and within the window, the new ones
     (released by the latest update) first, by how soon and fit (order()), then the rest by how soon (by_date());
     `later`: open ones beyond the window, which come in when they enter it; `updated` and `next`: when the list was
-    updated and will be, as the app writes it."""
+    updated and will be, as the app writes it; `expected`: the annual events awaited and not found yet (annual.py)."""
     settings = config.load()
     zone, now = _zone(settings), now or time.time()
     at = (db.get_state("opps_update") or {}).get("at")
@@ -293,7 +293,8 @@ def board(now: float | None = None) -> dict:
     return {"items": dressed(items), "new": sum(o["new"] for o in shown), "later": len(rows) - len(inside),
             "updated": _moment(at, now, zone) if at else None,
             "next": _moment(next_update(settings, datetime.fromtimestamp(now, zone)).timestamp(), now, zone),
-            "window_days": settings.opps_window_days, "major_window_days": settings.opps_major_window_days}
+            "window_days": settings.opps_window_days, "major_window_days": settings.opps_major_window_days,
+            "expected": annual.expected(now)}
 
 
 def on_board(rows: list[dict]) -> list[dict]:

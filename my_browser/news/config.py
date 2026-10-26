@@ -47,7 +47,8 @@ LABELS = {
     "topics": "темы", "budget_month_rub": "бюджет на LLM в месяц, ₽", "paused": "пауза",
     "opps_enabled": "возможности", "opps_digest_day": "день обновления возможностей",
     "opps_digest_time": "время обновления возможностей", "opps_window_days": "окно возможностей, дней",
-    "opps_major_window_days": "окно крупных возможностей, дней", "opps_reminders": "напоминания о дедлайне",
+    "opps_major_window_days": "окно крупных возможностей, дней", "opps_search": "поиск возможностей по вебу",
+    "opps_reminders": "напоминания о дедлайне",
     "opps_types": "типы возможностей", "opps_budget_month_rub": "бюджет возможностей на LLM в месяц, ₽",
     "opps_profile": "профиль",
 }
@@ -79,6 +80,7 @@ class Settings(BaseModel):
     opps_digest_time: str = "08:00"
     opps_window_days: int = Field(92, ge=7, le=366)  # the app shows what is due at most this far ahead…
     opps_major_window_days: int = Field(183, ge=7, le=366)  # …an especially big opportunity this far
+    opps_search: bool = True  # once a week the web is searched for what the sources missed (discover.py)
     opps_reminders: list[int] = [14, 3, 1]  # days before a tracked opportunity's deadline, in Telegram
     opps_types: list[str] = list(OPP_TYPES)  # shown in the app; every type is collected and scored
     opps_budget_month_rub: float = Field(30, ge=0, le=300)  # apart from the news budget

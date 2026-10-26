@@ -92,6 +92,7 @@ def status() -> dict:
             # what the app shows: in its list, of them new since the morning update, beyond the window; and when
             "shown": len(board.get("items", [])), "new": board.get("new", 0), "later": board.get("later", 0),
             "updated": board.get("updated"), "next_update": board.get("next"),
+            "expected": [event["name"] for event in board.get("expected", [])],  # annual events not found yet
             "spend": {"today_rub": round(opps_today, 2), "month_rub": round(opps_month, 2),
                       "budget_month_rub": settings.opps_budget_month_rub,
                       "daily_budget_rub": round(settings.opps_daily_budget_rub, 2)},
@@ -233,7 +234,8 @@ async def get_opps(status: str = "", type: str = "", limit: int = 50, shown: boo
 @app.get("/opps/board")
 async def get_board() -> dict:
     """«Радар» → «Возможности»: `items` (as /opps gives them, plus `new`), `new`, `later`, `updated`, `next`,
-    `window_days`, `major_window_days` (opps_delivery.board())."""
+    `window_days`, `major_window_days`, `expected` (annual events not found yet: `key`, `name`, `opp_type`, `url`,
+    `when`) (opps_delivery.board())."""
     return opps_delivery.board()
 
 

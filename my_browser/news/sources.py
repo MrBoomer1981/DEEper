@@ -60,7 +60,7 @@ def _opp(name, url, category, owner, kind="rss", **kw) -> Source:
 
 def _opp_tg(channel, title, category, owner="", **kw) -> Source:
     """A channel of the opportunities lane; several channels of one company share its owner."""
-    return _opp(f"Telegram: {title}", channel, category, owner or f"tg:{channel}", kind="telegram", lang="ru", **kw)
+    return _opp(f"Telegram: {title}", channel, category, owner or f"tg:{channel}", kind="telegram", **{"lang": "ru", **kw})
 
 
 DEFAULTS = [
@@ -210,6 +210,8 @@ DEFAULTS = [
     _opp_tg("itmoru", "Корень из ИТМО", "university", owner="itmo"),
     _opp_tg("itmo_students", "ITMO STUDENTS", "university", owner="itmo"),
     _opp_tg("aitalenthubnews", "AI Talent Hub", "university", owner="itmo"),
+    _opp_tg("careercentreitmo", "Центр карьеры ИТМО", "university", owner="itmo"),
+    _opp_tg("siyanie_itmo", "Сияние ИТМО", "university", owner="itmo"),  # the university's awards and scholarships
     _opp_tg("t_central_university", "Центральный университет", "university"),
     _opp_tg("deep_learning_school_news", "DLS — новости", "program"),
     _opp_tg("skoltech_smiles", "SMILES", "program"),
@@ -232,6 +234,12 @@ DEFAULTS = [
     _opp_tg("scienceslamrussia", "Science Slam Russia", "community"),
     _opp_tg("fondpotanin", "Фонд Потанина", "program"),
     _opp_tg("rosmolodez", "Росмолодёжь", "program"),
+    # Science and young scientists (26.10.2026, after the VI Congress of Young Scientists was found missing):
+    # the Decade of Science's own channel announces the congress, the others conferences and grants.
+    _opp_tg("npnauka", "Наука.рф", "program"),
+    _opp_tg("confsci", "Научные конференции", "conference"),
+    _opp_tg("rosmolodezgrants", "Росмолодёжь.Гранты", "program", owner="tg:rosmolodez"),
+    _opp_tg("icpcnews", "ICPC News", "program", lang="en"),
 ]
 
 
@@ -273,8 +281,9 @@ def listing() -> list[dict]:
 
 
 def enabled() -> list[dict]:
+    """Enabled sources to poll: the web search (kind `search`, discover.py) runs on its own schedule."""
     with db.connect() as conn:
-        return [dict(row) for row in conn.execute("SELECT * FROM sources WHERE enabled = 1")]
+        return [dict(row) for row in conn.execute("SELECT * FROM sources WHERE enabled = 1 AND kind != 'search'")]
 
 
 def due(now: float | None = None) -> list[dict]:
@@ -283,7 +292,7 @@ def due(now: float | None = None) -> list[dict]:
     now = now or time.time()
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM sources WHERE enabled = 1 AND (polled IS NULL OR "
+            "SELECT * FROM sources WHERE enabled = 1 AND kind != 'search' AND (polled IS NULL OR "
             "polled + interval * 60 * (CASE WHEN fails >= 3 THEN 8 WHEN fails = 2 THEN 4 WHEN fails = 1 THEN 2 ELSE 1 END) <= ?)",
             (now,)).fetchall()
     return [dict(row) for row in rows]
