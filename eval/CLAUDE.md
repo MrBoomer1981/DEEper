@@ -18,7 +18,7 @@
 ## Run it
 
 ```bash
-uv run run.py                             # every topic: quick reports, Flash writes the text (≈10 ₽)
+uv run run.py                             # every topic: quick reports (the 5–7 minute overview since 26.10.2026), Flash writes the text (≈10 ₽)
 uv run run.py --topics 1,4 --label exa    # a subset, named; --mode/--writer/--sources/--pairs as in research.py
 uv run run.py --topics 1 --mode detailed --writer pro   # one detailed Pro report, ≈12 ₽
 uv run run.py --factcheck                 # with the fact-check: each report judged before and after its fixes
@@ -28,7 +28,7 @@ uv run run.py --rejudge 2026-10-18_2327_3.1-reader      # a past run's reports j
 - **Cost.** A run spends real money on DeepSeek: the reports plus the judges. Tell the user what a run will cost and ask before starting it; the whole budget is about 300 ₽ a month.
 - **Timing.** Compare runs made off-peak. DeepSeek doubles its price 01–04 and 06–10 UTC on weekdays, and its speed changes over the day too.
 - **One run at a time.** Runs share `eval/reports/`, with its library and `read_stats.json`.
-- **Labels.** Name what changed in `--label`, and read the numbers against the last run made the same way, which the results file prints beside its own.
+- **Labels.** Name what changed in `--label`, and read the numbers against the last run made the same way, which the results file prints beside its own. Quick runs before 26.10.2026 measured the old 2–3.5 thousand-word quick report: its words, time and cost are not comparable with the overview's.
 - **What gets committed.** The results (`eval/results/*.md|json`) are the record behind the numbers in `plan.md`; commit them. `eval/reports/` is gitignored.
 - **Web sources** need the local SearXNG (`docker compose up -d`).
 - **Checking the harness itself.** Use the mock LLM's environment (`dev/mock_llm.py`): every step runs for free, though the numbers then mean nothing.

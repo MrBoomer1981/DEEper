@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from my_browser.common.auth import require_token
-from my_browser.common.settings import DEFAULT_SOURCES, DEFAULT_WRITER
+from my_browser.common.settings import DEFAULT_MODE, DEFAULT_SOURCES, DEFAULT_WRITER
 from my_browser.core import blocklist, jobs, service
 from my_browser.core.library import Entry, Library
 
@@ -27,13 +27,15 @@ def _job(job: dict | None) -> dict:
 
 class JobRequest(BaseModel):
     query: str
-    mode: str = "detailed"
+    mode: str = DEFAULT_MODE
     sources: str = DEFAULT_SOURCES
     writer: str = DEFAULT_WRITER
     parent_id: int | None = None  # the report this research continues
     origin: str = "telegram"
     origin_ref: dict | None = None
     factcheck: bool | None = None  # None: as the mode has it
+    route_step: int | None = None  # the step of the parent's route this research is
+    hold: float = 0  # seconds before the worker may take it: time to cancel (jobs.HOLD_SEC)
 
 
 class WorkerRequest(BaseModel):
@@ -46,6 +48,7 @@ class ProgressRequest(WorkerRequest):
     urls: list = []
     log: list = []
     cost_rub: float | None = None
+    draft: str = ""  # the report's text written so far
 
 
 class ResultRequest(WorkerRequest):
@@ -95,6 +98,12 @@ def restart_job(job_id: str) -> dict:
     return _job(jobs.restart(job_id))
 
 
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict:
+    """{"cancelled": false} when the job has started or is gone."""
+    return {"cancelled": jobs.cancel(job_id)}
+
+
 @router.post("/jobs/{job_id}/notified")
 def job_notified(job_id: str) -> dict:
     jobs.mark_notified(job_id)
@@ -109,8 +118,8 @@ def worker_hello(request: WorkerRequest) -> dict:
 
 
 @router.post("/worker/claim")
-def worker_claim(request: WorkerRequest):
-    return service.claim(request.worker) or Response(status_code=204)
+async def worker_claim(request: WorkerRequest):
+    return await service.claim(request.worker) or Response(status_code=204)
 
 
 @router.post("/worker/jobs/{job_id}/progress")

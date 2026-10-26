@@ -306,17 +306,17 @@ def radar_screen(stories: list[dict] | None = None, opps: list[dict] | None = No
         if card:
             top, rest = topics[0], topics[1:]
             with ui.element("div").classes("story-card"):
-                ui.label(f"из отчёта #{top['report'].id} · {KINDS[top['kind']].lower()}").classes("story-label")
+                ui.label(f"из отчёта #{top['report'].id} · {KINDS.get(top['kind'], top['kind']).lower()}").classes("story-label")
                 ui.label(top["query"]).classes("story-title")
                 if top["why"]:
                     ui.label(top["why"]).classes("story-why")
-                kit.primary("Копнуть глубже", lambda: ui.navigate.to(kit.follow_up_url(top["query"], top["mode"], top["report"].id)))
+                kit.primary("Копнуть глубже", lambda: kit.start_followup(top["query"], top["report"].id))
         if rest:
             ui.label("Темы из твоих отчётов").classes("sheet-label")
             with ui.element("div").classes("list"):
                 for t in rest:
-                    kit.row(t["query"], f"{KINDS[t['kind']].lower()} · отчёт #{t['report'].id} · {kit.day(t['report'].created)}",
-                            target=kit.follow_up_url(t["query"], t["mode"], t["report"].id), lines=3)
+                    kit.row(t["query"], kit.followup_sub(f"{KINDS.get(t['kind'], t['kind']).lower()} · отчёт #{t['report'].id}"),
+                            on_click=lambda t=t: kit.start_followup(t["query"], t["report"].id), lines=3)
 
     stories = stories or []
     with kit.screen():

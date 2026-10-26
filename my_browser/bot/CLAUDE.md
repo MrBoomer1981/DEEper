@@ -6,13 +6,15 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
 
 `bot/telegram.py` (aiogram 3) uses core's API, and the news part's for `/news`; report files are downloaded from core and sent as `BufferedInputFile`.
 - Access is limited to `TELEGRAM_ALLOWED_USERS` through an outer middleware; anyone else is only told their ID. `TELEGRAM_TOKEN` (the DEEper v1 name) works as a fallback for `TELEGRAM_BOT_TOKEN`.
-- A plain-text message is treated as a topic and answered with mode and source buttons. A research is a job in core; a status message follows it every few seconds and shows the worker's phase line as it is.
+- A plain-text message is treated as a topic and answered with mode and source buttons («⚡ Обзор», the 5–7 minute report, comes first). A research is a job in core; a status message follows it every few seconds and shows the worker's phase line as it is.
+- After a report: the files with a caption (reading time, words, sources, time, cost), its «главное» (the overview's `## Главное`, else a longer report's conclusion: `_summary()`), the fact-check line, then «Что исследовать дальше»: the route's next step first (`rt:`), then the topics by number (`f:`). One tap starts an overview that continues the report at once (`start_followup()`): it is queued with `hold` (`HOLD_SEC`, 5 s) and `route_step` for a route's step, and its status message has «✖️ Отменить» (`cx:`) while it waits.
 - Replying to any message that contains `#N`, or using `/ask N`, answers from report N's text.
 - Callback data prefixes:
   - `m:`/`s:` mode and sources;
   - `k:` the fact-check toggle (as the mode has it → yes → no);
   - `c:`/`a:` clarification;
-  - `f:<report id>:<index>` a follow-up topic;
+  - `f:<report id>:<index>` a follow-up topic, started at once; `rt:<report id>:<step>` the route's next step, started at once;
+  - `cx:<job id>` cancel a job that has not started yet (`POST /api/jobs/{id}/cancel`; a cancelled job is gone, so `Status.follow()` takes the 404 for «cancelled»);
   - `r:<report id>:<qa index>` a question's research topic;
   - `x:<job id>` restart a failed or interrupted job;
   - `nr:<story id>`, `nf:<story id>:<±1>` a news story's research and feedback;
@@ -54,13 +56,15 @@ uv run python -m my_browser.bot       # needs core at CORE_URL and a bot token; 
 - **Its own copies of what lives elsewhere**:
   - `MODE_BUTTONS` and `SOURCE_BUTTONS`, whose keys come from `common/settings.py`;
   - the time estimates in `HELP`, which are also in `core/ui/kit.MODE_HINTS`;
-  - the conclusion pattern in `_conclusion()`: a level-2 «Заключение», «Выводы» or «Conclusion» heading, as the worker writes it;
+  - the summary pattern in `_summary()`: the overview's level-2 «Главное» (`Key points` in English), else a level-2 «Заключение», «Выводы» or «Conclusion» heading, as the worker writes them;
+  - `GET /api/reports/{id}`'s `route` (`steps`, `next`) for the route's button, `entry.reading_min` for the reading time; `POST /api/jobs` with `route_step` and `hold`, and `POST /api/jobs/{id}/cancel` → `cancelled`;
   - `_factcheck_line()`, which reads `checked`, `relinked`, `rewritten` and `doubtful` of the report's `factcheck`, like the web's chip.
   - The fact-check toggle sends `factcheck` true, false or nothing (as the mode has it); the status header guesses the mode's default from `FACTCHECK_MODES`, core decides.
   - The writer is never sent, so core's default (`DEFAULT_WRITER`) applies.
 - **Telegram**:
   - `callback_data` holds at most 64 bytes, so it never carries a topic:
-    - `f:<report>:<i>` and `r:<report>:<i>` read the topic back from core by position;
+    - `f:<report>:<i>`, `rt:<report>:<step>` and `r:<report>:<i>` read the topic back from core by position;
+    - `cx:<job>` cancels a job;
     - `m:`, `s:`, `k:` (fact-check toggle), `c:` and `a:` refer to `pending` by the key of the message that offered the topic;
     - `x:<job>` restarts a job.
   - Messages use HTML (`ParseMode.HTML`): escape everything from reports or users with `html.escape`. Text longer than `TG_LIMIT` goes through `_chunks()`.

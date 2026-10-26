@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Personal deep-research engine that writes long reports: the `gpt-researcher` pip library for orchestration, a local SearXNG (or Tavily on Railway) plus arXiv/OpenAlex for search, and DeepSeek as the LLM (Flash for search and planning, V4 Pro writes the text by default). A news radar (`my_browser/news/`) collects AI news from many independent sources for the bot and the app's «Радар»; its second lane collects opportunities with deadlines (hackathons, schools, internships, grants). The user writes in Russian; reports default to Russian. The roadmap is `plan.md` (Russian, checkboxes): one plan for every part, with open work only.
+Personal deep-research engine: after a search it writes a report for 5–7 minutes of reading (the default overview, `quick`; detailed and deep reports on request), and the follow-ups after it are the main way on: they start in one tap, know what the reader already read in the branch, and a branch's first report may lay out a route of next steps. It uses the `gpt-researcher` pip library for orchestration, a local SearXNG (or Tavily on Railway) plus arXiv/OpenAlex for search, and DeepSeek as the LLM (Flash for search and planning, V4 Pro writes the text by default). A news radar (`my_browser/news/`) collects AI news from many independent sources for the bot and the app's «Радар»; its second lane collects opportunities with deadlines (hackathons, schools, internships, grants). The user writes in Russian; reports default to Russian. The roadmap is `plan.md` (Russian, checkboxes): one plan for every part, with open work only.
 
 ## Commands
 
@@ -14,9 +14,9 @@ uv run python -m my_browser.worker         #   worker (API on WORKER_PORT=8502 +
 uv run python -m my_browser.search         #   news (API on NEWS_PORT=8504 + news loop), bot;
 uv run python -m my_browser.news           #   set WORKER_URL / SEARCH_URL / NEWS_URL / CORE_URL so they find each other
 uv run python -m my_browser.bot
-uv run research.py "тема"                  # one research without any server -> reports/ (detailed by default)
+uv run research.py "тема"                  # one research without any server -> reports/ (the 5–7 minute overview by default)
 uv run research.py "тема" --mode deep --sources all --words 2500
-uv run research.py "тема" --mode quick --factcheck   # fact-check on (default: detailed and deep only); --no-factcheck off
+uv run research.py "тема" --mode detailed --no-factcheck   # a long report without the fact-check (on by default in every mode)
 uv run dev/mock_llm.py                     # a fake OpenAI-compatible LLM on :8765 for free end-to-end runs; point any command at it:
 FAST_LLM=openai:mock SMART_LLM=openai:mock STRATEGIC_LLM=openai:mock OPENAI_API_KEY=mock \
   OPENAI_BASE_URL=http://127.0.0.1:8765/v1 uv run research.py "тема" --mode quick
@@ -51,9 +51,9 @@ Each of these folders, and `common/`, `eval/` and `proxy/`, has its own CLAUDE.m
 - All-in-one (`app.py`, also what Railway runs): one process, one port. NiceGUI serves core's pages and `/api` (`app.py` imports NiceGUI only through `core.web`, which first points NiceGUI's login storage at the volume); `start_parts()` starts the worker's job loop and the news loop (unless `NEWS_LOOP=0`) in threads and the bot as a task; worker, search and news are called in-process; the job loop and the bot call core over localhost. On Railway this keeps memory and cost as before; separate Railway services later need only commands and `*_URL` variables, no code.
 - A research's way through the parts:
   - The web page calls `core/service.submit()` directly, and the bot posts `/api/jobs`; either way the job waits in the `jobs` table of `library.sqlite`.
-  - The worker's job loop (`worker/runner.py`, one research at a time, in a thread) claims it at `/api/worker/claim`, together with the blocklist, and runs `pipeline.research()`. gpt-researcher searches; each batch of results goes to search's `/select`, and each page is read through search's `/read`.
+  - The worker's job loop (`worker/runner.py`, one research at a time, in a thread) claims it at `/api/worker/claim`, together with the blocklist, and runs `pipeline.research()`. A job that continues a report comes with what the reader already read (`branch`: the nearest reports' key points), the route its branch follows and the reader's profile (`core/service.claim()`): the writer starts from what is new, and the follow-ups do not repeat the branch. A follow-up started by one tap waits 5 s (`not_before`) for «Отменить». gpt-researcher searches; each batch of results goes to search's `/select`, and each page is read through search's `/read`.
   - Then come the fact-check (when the job has it), the follow-ups and `pipeline.render()`. The md, json, docx and pdf go back base64 to `/api/worker/jobs/{id}/result`, and `Library.store()` writes them into `REPORTS_DIR`.
-  - All along, `/api/worker/jobs/{id}/progress` carries a phase line from `common/phases.py`, sent when it changes and at least every 30 s. It is also the heartbeat: a job silent for 5 minutes, or one left running by a worker that has since restarted (its hello at start), becomes interrupted and can be restarted.
+  - All along, `/api/worker/jobs/{id}/progress` carries a phase line from `common/phases.py` and, while the report is written, its text so far (`draft`, `worker/draft.py`), which the job page shows; it is sent when it changes and at least every 30 s. It is also the heartbeat: a job silent for 5 minutes, or one left running by a worker that has since restarted (its hello at start), becomes interrupted and can be restarted.
 - A news story's way stays inside the news part until someone reads it (news imports no other part):
   - The news loop (`news/loop.py`, a thread ticking every minute) polls the due sources through `news/collectors/` into `items`. Every 5 minutes it merges the new posts into stories (`dedup.py`: shared links, then embeddings computed in a child process), and the LLM scores and summarizes them (`scoring.py`) and reads the opportunities lane (`opps.py`), each lane within its own budget.
   - Each tick, `delivery.py` and `opps_delivery.py` queue what is due (urgent stories, digests, hot opportunities, deadline reminders) in the `deliveries` table, as finished Telegram HTML with buttons. The bot takes them from `GET /deliveries` every 30 s and marks each sent; the buttons' callback data (`nr:`, `nf:`, `op:`) is written by news and handled by the bot.

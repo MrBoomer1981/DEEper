@@ -41,12 +41,15 @@ WRITERS = {"pro": "deepseek:deepseek-v4-pro", "flash": "deepseek:deepseek-flash"
 DEFAULT_WRITER = "pro"
 
 MODES = {
+    "quick": "обзор на 5–7 минут чтения: главное, 3–4 раздела, чего пока не знаем (по умолчанию)",
     "detailed": "подробный отчёт: введение, разделы по подтемам, заключение (самый длинный)",
     "deep": "глубокое исследование: рекурсивный поиск вширь и вглубь, затем один отчёт",
-    "quick": "обычный отчёт за один проход (быстрее и дешевле)",
 }
-# Modes whose reports are fact-checked unless the user switches it off (worker/factcheck.py).
-FACTCHECK_MODES = ("detailed", "deep")
+# The 5–7 minute report: the research is a single pass (gpt-researcher's research_report), the text is short.
+DEFAULT_MODE = "quick"
+# Modes whose reports are fact-checked unless the user switches it off (worker/factcheck.py): every mode since
+# the short report became the default (25.10.2026).
+FACTCHECK_MODES = ("quick", "detailed", "deep")
 
 PORT = int(os.environ.get("PORT", 8501))  # 8080 is the local SearXNG
 CORE_URL = os.environ.get("CORE_URL") or f"http://127.0.0.1:{PORT}"

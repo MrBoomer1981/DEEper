@@ -268,6 +268,13 @@ async def get_settings() -> dict:
             "weekday_names": config.WEEKDAYS}
 
 
+@app.get("/profile")
+async def get_profile() -> dict:
+    """The user's profile for DEEper's research follow-ups («Для меня», core/service.py): the text without contacts
+    (clean_profile), and whether the user wrote it with /profile rather than living with the neutral default."""
+    return {"text": config.clean_profile(config.load().opps_profile), "custom": config.is_set("opps_profile")}
+
+
 @app.put("/settings")
 async def put_settings(changes: dict) -> dict:
     """Changes some settings; 422 with a message for the user (in Russian) when a value is refused."""

@@ -9,7 +9,6 @@ import re
 
 from nicegui import ui
 
-from my_browser.common.text import plural
 from my_browser.core import bookmarks, jobs
 from my_browser.core.library import Library
 from my_browser.core.ui import kit, progress
@@ -60,8 +59,7 @@ def library_screen(tab: str = "reports", q: str = ""):
                 kit.row(job["query"], ("идёт" if job["status"] == "running" else "в очереди")
                         + (f" · {value}%" if value is not None else ""), target=f"/job/{job['id']}", accent=True)
             for e, snippet in found:
-                kit.row(e.query, f"{kit.day(e.created)} · {kit.MODE_NAMES.get(e.mode, e.mode)} · "
-                        f"{kit.number(e.words)} {plural(e.words, 'слово', 'слова', 'слов')}",
+                kit.row(e.query, f"{kit.day(e.created)} · {kit.MODE_NAMES.get(e.mode, e.mode)} · ≈\u00a0{e.reading_min}\u00a0мин чтения",
                         target=f"/report/{e.id}", note=re.sub(r"[#*_`>|]+", "", snippet).strip())
 
     def saved() -> None:

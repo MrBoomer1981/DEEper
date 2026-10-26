@@ -5,10 +5,14 @@ their patterns are in common/phases.py; «В очереди», «Прерван�
 """
 
 import re
+import time
 
 from my_browser.common import phases
+from my_browser.common.report import OVERVIEW_MIN
+from my_browser.common.text import plural
 
 SCRAPED = re.compile(r"Scraped (\d+) pages")  # gpt-researcher, once per search batch
+DEEP_WORDS = 3000  # about what a deep report runs to: its draft's share of the writing
 
 
 def _reading(job: dict) -> tuple[float, int]:
@@ -46,8 +50,9 @@ def percent(job: dict) -> int | None:
         return 4 + round(58 * int(m.group(3)) / max(1, int(m.group(4))))
     if phase == phases.READING:
         return 4 + round(58 * _reading(job)[0])
-    if phase == phases.WRITING:
-        return 66
+    if phase == phases.WRITING:  # the draft (worker/draft.py) tells how far the text is
+        written = len((job.get("draft") or "").split())
+        return 66 + round(14 * min(1.0, written / (OVERVIEW_MIN if mode == "quick" else DEEP_WORDS)))
     return None
 
 
@@ -70,6 +75,8 @@ def status(job: dict) -> tuple[str, str]:
         return f"Пишу раздел {m.group(1)} из {m.group(2)}", m.group(3).strip()
     if m := phases.CHECKING.search(phase):
         return "Проверяю факты", f"{m.group(1)} из {m.group(2)}"
+    if phase == phases.WRITING and (written := len((job.get("draft") or "").split())):
+        return "Пишу отчёт", f"написано {written} {plural(written, 'слово', 'слова', 'слов')}"
     for start, text in ((phases.LOOKING, "Ищу подтверждение"), (phases.FIXING, "Исправляю расхождения"),
                         (phases.FOLLOWUPS, "Подбираю, что копать дальше"), (phases.FILES, "Собираю PDF и DOCX"),
                         (phases.CONCLUSION, "Пишу заключение"), (phases.WRITING, "Пишу отчёт")):
@@ -84,6 +91,11 @@ def remaining(job: dict, value: int | None) -> str:
         return ""
     minutes = job["elapsed"] * (100 - value) / value / 60
     return "меньше минуты" if minutes < 1 else f"ещё ~{round(minutes)} мин"
+
+
+def held(job: dict) -> int:
+    """Seconds a queued job is still held back before the worker may take it (one tap on a follow-up), else 0."""
+    return max(0, round((job.get("not_before") or 0) - time.time()))
 
 
 def position(job: dict, active: list[dict]) -> int:

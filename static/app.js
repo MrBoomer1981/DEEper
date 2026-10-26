@@ -97,6 +97,26 @@ if (window.visualViewport) {
   vv.addEventListener('scroll', update);
 }
 
+// Job page: the report is ready. A reader still near the top just gets it; one down in the draft gets a bar that
+// opens it at the section being read (?at=i), so the place is not lost.
+window.deeperReady = url => {
+  const bar = document.querySelector('.ready-bar');
+  if (scrollY < 120 || !bar) { location.href = url; return; }
+  bar.classList.add('on');
+  bar.onclick = () => {
+    let at = 0;
+    document.querySelectorAll('.report.draft h2').forEach((h, i) => { if (h.getBoundingClientRect().top < innerHeight * .3) at = i; });
+    location.href = `${url}?at=${at}`;
+  };
+};
+// Report: ?at=i opens it at its i-th section.
+if (/^\/report\//.test(location.pathname)) {
+  const at = new URLSearchParams(location.search).get('at');
+  // after the fonts, once the text has its height, and again a moment later: the page may still settle
+  const go = () => { const el = document.querySelectorAll('.report.main h2')[Number(at)]; if (el) el.scrollIntoView({block: 'start'}); };
+  if (at && /^\d+$/.test(at)) whenPresent('.report.main h2', () => document.fonts.ready.then(() => { go(); setTimeout(go, 400); }));
+}
+
 // Report: «3 / 9 ▾» follows the scroll; deeperScrollTo(i) goes to the i-th section, deeperScrollTo('#id') to an anchor.
 window.deeperScrollTo = target => {
   const el = typeof target === 'number' ? document.querySelectorAll('.report.main h2')[target] : document.querySelector(target);

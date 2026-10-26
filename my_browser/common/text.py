@@ -1,9 +1,10 @@
-"""Small text helpers used by several parts: URLs, file names, money, Russian plurals."""
+"""Small text helpers used by several parts: URLs, file names, money, Russian plurals, reading time."""
 
 import re
 from urllib.parse import quote, urlparse
 
 _ENCODED_RUN = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
+READING_WPM = 180  # words a minute: a dense text in Russian, with figures, read on a phone
 # [anchor](url) with a web URL; the URL may hold balanced parentheses, as in «…/Облачные_сервисы_(рынок_России)»
 MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
 
@@ -48,3 +49,8 @@ def plural(n: int, one: str, few: str, many: str) -> str:
     if n % 10 == 1 and n % 100 != 11:
         return one
     return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+
+
+def reading_minutes(words: int) -> int:
+    """Minutes to read a text of `words` words (READING_WPM), at least one."""
+    return max(1, round(words / READING_WPM))

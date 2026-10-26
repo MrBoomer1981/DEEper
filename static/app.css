@@ -52,7 +52,7 @@ a, button, .q-btn, [role="button"] { touch-action: manipulation; }
 @view-transition { navigation: auto; }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .25s; }
 .tab-screen { display: none; }
-.tab-screen.on { display: block; }
+.tab-screen.on { display: block; width: 100%; min-width: 0; }  /* a flex item of NiceGUI's column: else a long unbroken line (the latest topic in «Продолжить») widened the whole section */
 .tab-screen.on > .screen, .screen.reading, .screen.job, .screen.login { animation: screen-in .28s cubic-bezier(.2, .7, .2, 1) both; }
 .tab-screen.on > .pill, .tab-screen.on > .home-glow { animation: fade-in .28s ease both; }  /* fixed: no transform on their parents */
 html.vt .screen { animation: none; }
@@ -271,9 +271,10 @@ body.kb-open .pill { bottom: calc(var(--kb, 0px) + 10px); }
 .home-hero { display: flex; flex-direction: column; gap: 18px; margin-top: clamp(36px, 11vh, 120px); }
 .dip-row { display: flex; align-items: center; gap: 4px; }
 .dip-marker { margin: -56px 0 0 -2px; }
-.continue { display: flex; align-items: center; gap: .3em; min-width: 0; font-size: 14px; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.continue { display: flex; align-items: center; gap: .3em; min-width: 0; max-width: 100%; font-size: 14px; color: var(--muted); text-decoration: none; white-space: nowrap; }
 .continue .continue-topic { overflow: hidden; text-overflow: ellipsis; min-width: 0; color: var(--muted); }
 .continue > :first-child, .continue > :last-child { flex: none; }
+.continue > .continue-topic { flex: 0 1 auto; }  /* the topic gives way, also when it is the row's last child (report.py) */
 .continue.linked { gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
 .continue.linked a { color: var(--muted); text-decoration: none; }
 .continue.linked .icon-btn { width: 36px; height: 36px; color: var(--muted); }
@@ -303,6 +304,19 @@ body.kb-open .pill { bottom: calc(var(--kb, 0px) + 10px); }
 .more-link { align-self: flex-start; background: none; border: 0; padding: 10px 0; cursor: pointer; color: var(--muted); font: 14px 'Onest', sans-serif;
              text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
 .job-bottom { margin-top: auto; padding-top: 28px; display: flex; flex-direction: column; gap: 10px; }
+.job-head { display: flex; flex-direction: column; gap: 10px; }
+/* While the text is written (job.py): Дип and the sources make room for it, the percent stays on top, smaller */
+.screen.job.writing .job-stage, .screen.job.writing .recent { display: none; }
+.screen.job.writing .job-head { position: sticky; top: 0; z-index: 10; background: var(--night); gap: 4px;
+                                padding: calc(env(safe-area-inset-top) + 8px) var(--gutter) 10px;
+                                margin: 0 calc(-1 * var(--gutter)); }
+.screen.job.writing .pct { font-size: 40px; }
+.screen.job.writing .pct-sign { font-size: 20px; }
+.report.draft { margin-top: 6px; }
+.ready-bar { display: none; position: fixed; z-index: 1900; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 16px);
+             min-height: 52px; border: 0; border-radius: var(--radius-pill); background: var(--amber); color: var(--night);
+             font: 600 16px 'Onest', sans-serif; cursor: pointer; box-shadow: 0 10px 32px rgba(0,0,0,.45); }
+.ready-bar.on { display: block; animation: fade-in .25s ease both; }
 .job-caption { text-align: center; font-size: 12px; color: var(--muted); }
 .plain-list { display: flex; flex-direction: column; gap: 8px; font-size: 15px; color: var(--paper-80); }
 .li.source { gap: 12px; }
@@ -341,6 +355,10 @@ body:not(.graffiti-off) .report.main h2:first-of-type { padding-bottom: 12px; ba
 .icon-btn.done { color: var(--bordo); pointer-events: none; }
 .ask-pill .pill-input textarea { max-height: 110px; }
 /* A report's short version (?short=1): the note above it, and the wait while the worker writes it. */
+.report-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-height: 20px; }
+.route-chip { background: none; border: 0; padding: 4px 0; min-height: 44px; cursor: pointer; display: flex; align-items: center; }
+.route-chip > div { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--paper-80); border: 1px solid var(--line);
+                    border-radius: var(--radius-chip); padding: 4px 10px; }
 .version-note { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 4px; }
 .version-link { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--paper); flex: none;
                 text-decoration: underline; text-decoration-color: var(--amber); text-underline-offset: 4px; }

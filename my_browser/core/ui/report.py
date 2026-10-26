@@ -1,7 +1,10 @@
 """«Отчёт» (/report/{id}): the text to read, nothing else on the main screen.
 
 The top bar has «Назад», the section counter «3 / 9 ▾» (follows the scroll in app.js; a tap opens the
-contents) and «⋯» (files, sources, questions, the end blocks, delete). Citations in parentheses become
+contents) and «⋯» (files, sources, questions, the end blocks, delete). Above the text: how long it reads and,
+when the branch follows a route, «маршрут · 2 / 5» (a tap lists the steps). At the end, «Что исследовать дальше»:
+the route's next step first, then the follow-up topics; one tap starts a research that continues this report
+(kit.start_followup(): held back 5 s, «Отменить» on its screen). Citations in parentheses become
 amber superscript numbers, and the sources sheet is numbered the same way; links inside a sentence stay
 text. Sentences the fact-check could not confirm get a bordo «?». «⋯» → «Сократить до 1 500 слов» has the worker write a
 short version once (core/short.py); it shows at ?short=1, without the fact-check's marks and block, which belong to
@@ -16,8 +19,8 @@ import re
 
 from nicegui import ui
 
-from my_browser.common.report import FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body
-from my_browser.common.text import MARKDOWN_LINK, plural, rub_text
+from my_browser.common.report import FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body, reading_words
+from my_browser.common.text import MARKDOWN_LINK, plural, reading_minutes, rub_text
 from my_browser.core import blocklist, bookmarks, service, short as shorts
 from my_browser.core.library import Library
 from my_browser.core.qa import load_qa
@@ -41,9 +44,10 @@ def mark_doubtful(markdown: str, doubtful: list[dict]) -> str:
     return markdown
 
 
-def cite(markdown: str) -> tuple[str, dict[str, int]]:
-    """Citation groups as superscript numbers, numbered by first appearance; returns {url: number} too."""
-    numbers: dict[str, int] = {}
+def cite(markdown: str, numbers: dict[str, int] | None = None) -> tuple[str, dict[str, int]]:
+    """Citation groups as superscript numbers, numbered by first appearance; returns {url: number} too. Pass the
+    numbers of earlier parts of the same text (the job page's draft) to go on with them."""
+    numbers = {} if numbers is None else numbers
 
     def group(match: re.Match) -> str:
         links = []
@@ -87,6 +91,9 @@ def report_page(report_id: int, short: bool = False) -> None:
     text, numbers = cite(shown if short else mark_doubtful(shown, check.get("doubtful") or []))
     headings = [m.group(1).strip() for m in H2.finditer(shown)]
     origin = library.by_name(meta["parent"]) if meta.get("parent") else None
+    chain = service.lineage(entry, library)
+    route = service.route(chain)
+    minutes = reading_minutes(shorts.words(short_text) if short else reading_words(markdown))
 
     def contents() -> None:
         dialog, sheet_body = kit.sheet("Содержание")
@@ -227,10 +234,28 @@ def report_page(report_id: int, short: bool = False) -> None:
                 kit.row("Удалить отчёт", on_click=lambda: (dialog.close(), delete()))
         dialog.open()
 
+    def route_sheet() -> None:
+        """The route's steps: those read on the way here open their reports, the others start in one tap."""
+        steps, read = route["steps"], {1: route["root"]} | {d["route_step"]: e for e, d in chain if d.get("route_step")}
+        dialog, sheet_body = kit.sheet(f"Маршрут · {len(steps)} {plural(len(steps), 'шаг', 'шага', 'шагов')}")
+        with sheet_body:
+            ui.label("Каждый шаг — отдельный обзор на 5–7 минут. Касание шага, который ещё не прочитан, запускает его.").classes("sub-text")
+            with ui.element("div").classes("list"):
+                for n, step in enumerate(steps, 1):
+                    if (done := read.get(n)) and done.id == entry.id:
+                        kit.row(step["query"], f"шаг {n} · вы здесь", lines=3)
+                    elif done:
+                        kit.row(step["query"], f"шаг {n} · прочитано", target=f"/report/{done.id}", lines=3)
+                    else:
+                        kit.row(step["query"], f"шаг {n} · " + kit.followup_sub("дальше" if n == route["next"] else ""),
+                                note=step.get("why") or "", lines=3,
+                                on_click=lambda q=step["query"], n=n: (dialog.close(), kit.start_followup(q, entry.id, n)))
+        dialog.open()
+
     async def propose(button) -> None:
         button.props("loading")
         try:
-            found = await service.followups(entry)
+            found = await service.followups(entry, kit.prefs()["profile"])
         except Exception as e:
             kit.toast(f"Не получилось подобрать темы: {e}", "error")
             return
@@ -240,6 +265,9 @@ def report_page(report_id: int, short: bool = False) -> None:
             kit.toast("Не получилось подобрать темы, попробуйте ещё раз", "warn")
             return
         meta.update(json.loads(entry.base.with_suffix(".json").read_text("utf-8")))
+        nonlocal chain, route  # a report that starts a branch may have got a route with its topics
+        chain = service.lineage(entry, library)
+        route = service.route(chain)
         next_steps.refresh()
 
     def selected(e) -> None:
@@ -269,6 +297,12 @@ def report_page(report_id: int, short: bool = False) -> None:
             with ui.link(target=f"/report/{origin.id}").classes("continue linked"):
                 ui.icon("subdirectory_arrow_right")
                 ui.label(f"продолжение отчёта #{origin.id}: {origin.query}").classes("continue-topic")
+        with ui.element("div").classes("report-meta"):
+            ui.label(kit.reading(minutes)).classes("mono-label")
+            if route:
+                with ui.element("button").classes("route-chip").props('type="button" aria-label="Маршрут по теме"') as chip:
+                    ui.label(f"маршрут · {route['at'] or route['reached']} / {len(route['steps'])}")
+                chip.on("click", route_sheet)
         if short:
             with ui.element("div").classes("version-note"):
                 ui.label(f"Краткая версия · {words_text(shorts.words(short_text))}").classes("mono-label")
@@ -293,13 +327,18 @@ def report_page(report_id: int, short: bool = False) -> None:
                     with ui.element("div").classes("next-dip"):
                         kit.mascot("found", 72)
                         kit.marker("NEXT?", "next-marker")
-                if topics:
+                step = route["steps"][route["next"] - 1] if route and route["next"] else None
+                if step or topics:
                     with ui.element("div").classes("list"):
+                        if step:
+                            kit.row(step["query"], kit.followup_sub(f"дальше по маршруту · шаг {route['next']} из {len(route['steps'])}"),
+                                    note=step.get("why") or "", accent=True, lines=3,
+                                    on_click=lambda: kit.start_followup(step["query"], entry.id, route["next"]))
                         for t in topics:
-                            kit.row(t["query"], f"{KINDS[t['kind']].lower()} · {kit.MODE_NAMES.get(t['mode'], t['mode'])}"
-                                    + (f" · {t['why']}" if t["why"] else ""),
-                                    target=kit.follow_up_url(t["query"], t["mode"], entry.id), lines=3)
-                else:
+                            kit.row(t["query"], kit.followup_sub(KINDS.get(t["kind"], t["kind"]).lower()), note=t["why"], lines=3,
+                                    on_click=lambda t=t: kit.start_followup(t["query"], entry.id))
+                    ui.label("Касание сразу запускает исследование; 5 секунд его можно отменить.").classes("mono-label")
+                if not topics:
                     propose_button = kit.secondary("Предложить темы", lambda: propose(propose_button), icon="auto_awesome")
                     ui.label("модель прочтёт оглавление и выводы · ≈\u00a00,1\u00a0₽").classes("mono-label")
                 for title, items in (("Продолжения этого отчёта", children), ("Похожие в библиотеке", related)):
@@ -307,7 +346,7 @@ def report_page(report_id: int, short: bool = False) -> None:
                         ui.label(title).classes("sheet-label")
                         with ui.element("div").classes("list"):
                             for e in items:
-                                kit.row(e.query, f"#{e.id} · {kit.day(e.created)}", target=f"/report/{e.id}")
+                                kit.row(e.query, f"#{e.id} · {kit.day(e.created)} · {e.reading_min}\u00a0мин", target=f"/report/{e.id}")
 
         next_steps()
 

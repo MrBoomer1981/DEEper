@@ -24,6 +24,7 @@ from gpt_researcher.utils.llm import construct_subtopics
 
 from my_browser.common import phases
 from my_browser.common.text import MARKDOWN_LINK
+from my_browser.worker import draft
 from my_browser.worker.prompts import CONCLUSION_WORDS, INTRO_WORDS, OVERSHOOT, REPORT_WORDS
 
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ class DetailedReport:
 
         self.on_progress(phases.researched(0, len(subtopics)))
         introduction, *results = await asyncio.gather(
-            self.researcher.write_introduction(), *(research(task) for task in subtopics), return_exceptions=True)
+            self._introduction(), *(research(task) for task in subtopics), return_exceptions=True)
         if isinstance(introduction, BaseException):
             raise introduction
         failed = [(task, r) for task, r in zip(subtopics, results) if isinstance(r, BaseException)]
@@ -104,7 +105,8 @@ class DetailedReport:
 
         self.on_progress(phases.CONCLUSION)
         toc = self.researcher.table_of_contents(body)
-        conclusion = await self.researcher.write_report_conclusion(body)
+        with draft.writing():
+            conclusion = await self.researcher.write_report_conclusion(body)
         report = f"{introduction}\n\n{toc}\n\n{body}\n\n{conclusion}"
 
         # Upstream lists every visited URL, including pages dropped as irrelevant;
@@ -145,9 +147,15 @@ class DetailedReport:
         titles = [h.get("text", "") for h in self.researcher.extract_headers("\n".join(draft or []))]
         return assistant, titles[:MAX_TITLES]
 
+    async def _introduction(self) -> str:
+        """Written in a task of its own beside the subtopics' research, whose draft titles are not the report's text."""
+        with draft.writing():
+            return await self.researcher.write_introduction()
+
     async def _write(self, task: str, assistant: GPTResearcher, titles: list[str]) -> str:
         relevant = await assistant.get_similar_written_contents_by_draft_section_titles(task, titles, self.written_sections)
-        section = await assistant.write_report(existing_headers=self.existing_headers, relevant_written_contents=relevant)
+        with draft.writing():
+            section = await assistant.write_report(existing_headers=self.existing_headers, relevant_written_contents=relevant)
         self.written_sections.extend(self.researcher.extract_sections(section))
         self.existing_headers.append({"subtopic task": task, "headers": self.researcher.extract_headers(section)})
         return section

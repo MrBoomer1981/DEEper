@@ -32,7 +32,7 @@ def search_screen(topic: str = "", mode: str = "", parent: int | None = None) ->
             kit.toast("Напишите тему исследования", "warn")
             return
         job = service.submit(query, choice["mode"], choice["sources"], choice["writer"],
-                             parent_id=linked["parent"], factcheck=checked())
+                             parent_id=linked["parent"], factcheck=checked(), profile=kit.prefs()["profile"])
         ui.run_javascript("window.Notification && Notification.permission === 'default' && Notification.requestPermission()")
         ui.navigate.to(f"/job/{job['id']}")
 

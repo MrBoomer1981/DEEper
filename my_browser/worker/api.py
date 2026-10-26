@@ -23,6 +23,10 @@ class AskRequest(BaseModel):
 class FollowupsRequest(BaseModel):
     query: str
     markdown: str
+    branch: list[dict] = []  # the reports read before this one, nearest first: [{query}]
+    profile: str = ""
+    route: list[dict] = []  # the steps of the route the branch follows: [{query}]
+    make_route: bool = False  # the report starts a branch: propose a route too
 
 
 class ClarifyRequest(BaseModel):
@@ -47,9 +51,11 @@ async def answer(request: AskRequest) -> dict:
 
 @app.post("/followups")
 async def followups(request: FollowupsRequest) -> dict:
+    """{topics, route, cost_rub}: the next topics and, with make_route, the route's next steps."""
     with costs.metered() as meter:
-        topics = await suggest.followups(request.query, request.markdown)
-    return {"topics": topics, "cost_rub": round(meter.rub(), 2)}
+        found = await suggest.followups(request.query, request.markdown, branch=request.branch, profile=request.profile,
+                                        route=request.route, make_route=request.make_route)
+    return {**found, "cost_rub": round(meter.rub(), 2)}
 
 
 @app.post("/clarify")

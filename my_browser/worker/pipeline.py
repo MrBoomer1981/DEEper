@@ -104,15 +104,19 @@ def preflight(settings: dict) -> None:
             raise PreflightError(f"SearXNG не отвечает по {url!r} ({e}). Запустите Docker и: docker compose up -d") from e
 
 
-async def research(query: str, mode: str, config_path: Path, on_progress: Callable[[str], None] = print) -> Research:
+async def research(query: str, mode: str, config_path: Path, on_progress: Callable[[str], None] = print,
+                   reader: str = "") -> Research:
+    """One research run. `reader` is what the reader already knows (prompts.reader_text()), for a report that
+    continues a line of research; the text being written goes to draft.current, when the caller set one."""
     from gpt_researcher import GPTResearcher
 
     from my_browser.common import costs  # noqa: F401  patch gpt-researcher (see each module)
-    from my_browser.worker import hooks, prompts, stemming  # noqa: F401
+    from my_browser.worker import draft, hooks, prompts, stemming  # noqa: F401
     from my_browser.worker.detailed import DetailedReport
 
     pages: dict[str, dict] = {}
     hooks.read_pages.set(pages)  # the tasks gpt-researcher starts from here share this dict
+    prompts.reader.set(reader)  # so do the writing prompts
     if mode == "detailed":
         report = DetailedReport(query, config_path=str(config_path), on_progress=on_progress)
         return Research(await report.run(), report.source_urls(), pages)
@@ -127,17 +131,21 @@ async def research(query: str, mode: str, config_path: Path, on_progress: Callab
     else:
         await researcher.conduct_research()
     on_progress(phases.WRITING)
-    return Research(await researcher.write_report(), researcher.get_source_urls(), pages)
+    with draft.writing():
+        markdown = await researcher.write_report()
+    return Research(markdown, researcher.get_source_urls(), pages)
 
 
 def render(query: str, mode: str, markdown: str, sources: list[str], seconds: float, settings: dict,
            cost: dict | None = None, followups: list[dict] | None = None, parent: str | None = None,
-           factcheck: dict | None = None, pdf: bool = True) -> dict[str, bytes]:
+           factcheck: dict | None = None, pdf: bool = True, route: list[dict] | None = None,
+           route_step: int | None = None) -> dict[str, bytes]:
     """The report's files keyed by suffix (.md, .json, .docx, .pdf); core stores them.
 
     The fact-check's summary and the follow-up topics go into the JSON and, as the last two
     sections, into the documents. parent is the file name (without suffix) of the report this
-    research continues.
+    research continues. route is the route the report proposes (the steps after it, when it starts a branch),
+    route_step the step of a route the report is.
     """
     from my_browser.worker import factcheck as checks
     from my_browser.worker.export import write_docx, write_pdf
@@ -156,6 +164,10 @@ def render(query: str, mode: str, markdown: str, sources: list[str], seconds: fl
         "followups": followups or [],
         "parent": parent,
     }
+    if route:
+        meta["route"] = route
+    if route_step:
+        meta["route_step"] = route_step
     if factcheck is not None:
         meta["factcheck"] = factcheck
     files = {".md": full.encode(), ".json": json.dumps(meta, ensure_ascii=False, indent=2).encode()}

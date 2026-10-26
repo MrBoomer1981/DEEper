@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from my_browser.common.report import reading_words
 from my_browser.common.settings import REPORTS_DIR
-from my_browser.common.text import slugify
+from my_browser.common.text import reading_minutes, slugify
 
 DB_PATH = REPORTS_DIR / "library.sqlite"
 REPORT_NAME = re.compile(r"\d{4}-\d{2}-\d{2}_")  # reports are <date>_<time>_<slug>.*
@@ -28,10 +29,15 @@ class Entry:
     duration_sec: int
     sources_count: int
     base: Path
+    reading_words: int = 0  # the words a reader reads: no appended sections, sources or citations
 
     @property
     def md_path(self) -> Path:
         return self.base.with_suffix(".md")
+
+    @property
+    def reading_min(self) -> int:
+        return reading_minutes(self.reading_words or self.words)
 
     def files(self) -> list[Path]:
         return [p for p in (self.base.with_suffix(s) for s in (".pdf", ".docx", ".md")) if p.exists()]
@@ -47,12 +53,16 @@ class Library:
                 base TEXT UNIQUE NOT NULL,
                 query TEXT, mode TEXT, created TEXT,
                 words INTEGER, duration_sec INTEGER, sources_count INTEGER,
-                parent TEXT  -- file name of the report this one continues
+                parent TEXT,  -- file name of the report this one continues
+                reading_words INTEGER  -- common.report.reading_words() of its text
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS reports_fts USING fts5(query, body, tokenize = 'unicode61');
         """)
-        if "parent" not in {row[1] for row in self.db.execute("PRAGMA table_info(reports)")}:
+        present = {row[1] for row in self.db.execute("PRAGMA table_info(reports)")}
+        if "parent" not in present:
             self.db.execute("ALTER TABLE reports ADD COLUMN parent TEXT")  # databases from before follow-ups
+        if "reading_words" not in present:
+            self.db.execute("ALTER TABLE reports ADD COLUMN reading_words INTEGER")  # from before reading times (sync() fills it)
 
     def add(self, json_path: Path) -> int:
         base = json_path.with_suffix("")
@@ -64,10 +74,10 @@ class Library:
             if row:
                 return row[0]
             cur = self.db.execute(
-                "INSERT INTO reports (base, query, mode, created, words, duration_sec, sources_count, parent) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO reports (base, query, mode, created, words, duration_sec, sources_count, parent, reading_words) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (str(base), meta["query"], meta["mode"], meta["created"], meta["words"], meta["duration_sec"],
-                 len(meta["sources"]), meta.get("parent")),
+                 len(meta["sources"]), meta.get("parent"), reading_words(body)),
             )
             self.db.execute("INSERT INTO reports_fts (rowid, query, body) VALUES (?, ?, ?)", (cur.lastrowid, meta["query"], body))
             return cur.lastrowid
@@ -82,10 +92,16 @@ class Library:
         return self.add(base.with_suffix(".json"))
 
     def sync(self) -> None:
-        """Index reports made before the library existed (or by an older version)."""
+        """Index reports made before the library existed (or by an older version), and count the reading words
+        of those indexed before reading times."""
         for json_path in sorted(REPORTS_DIR.glob("*.json")):
             if REPORT_NAME.match(json_path.name) and not json_path.name.endswith(".qa.json"):  # not read_stats.json etc.
                 self.add(json_path)
+        for report_id, base in self.db.execute("SELECT id, base FROM reports WHERE reading_words IS NULL").fetchall():
+            md = Path(base).with_suffix(".md")
+            with self.db:
+                self.db.execute("UPDATE reports SET reading_words = ? WHERE id = ?",
+                                (reading_words(md.read_text("utf-8")) if md.exists() else 0, report_id))
 
     def get(self, report_id: int) -> Entry | None:
         row = self.db.execute(f"SELECT {_COLUMNS} FROM reports WHERE id = ?", (report_id,)).fetchone()
@@ -146,8 +162,8 @@ class Library:
         return entry
 
 
-_COLUMNS = "id, query, mode, created, words, duration_sec, sources_count, base"
+_COLUMNS = "id, query, mode, created, words, duration_sec, sources_count, base, reading_words"
 
 
 def _entry(row) -> Entry:
-    return Entry(*row[:7], base=Path(row[7]))
+    return Entry(*row[:7], base=Path(row[7]), reading_words=row[8] or 0)

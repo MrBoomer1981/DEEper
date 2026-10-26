@@ -2,9 +2,11 @@
 
 One research at a time, in a plain thread (the all-in-one process starts it next to core; on its own
 the worker starts it next to its API). Progress (phase, planned queries, accepted sources with
-scores, log tail, cost) comes from pipeline phases and gpt-researcher's "scraper" log, goes to core
-every few seconds and doubles as the heartbeat core uses to spot interrupted jobs. A job with
-"factcheck" has its report checked against the pages it read before the files are rendered.
+scores, log tail, cost, the text written so far) comes from pipeline phases, gpt-researcher's "scraper"
+log and the run's draft, goes to core every few seconds and doubles as the heartbeat core uses to spot
+interrupted jobs. A job with "factcheck" has its report checked against the pages it read before the
+files are rendered. A job that continues a branch comes with what the reader already read ("branch",
+"route") and the reader's "profile": the writer and the follow-ups get them.
 """
 
 import ast
@@ -21,7 +23,7 @@ import gpt_researcher.actions  # noqa: F401  creates the "scraper" logger's cons
 
 from my_browser.common import costs, memory, phases
 from my_browser.common.clients import call_core
-from my_browser.worker import factcheck, hooks, suggest
+from my_browser.worker import draft, factcheck, hooks, prompts, suggest
 from my_browser.worker.pipeline import PreflightError, config_file, preflight, render, research, run_settings
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,10 @@ class Progress(logging.Handler):
         self.urls: list[list[str]] = []  # [url, score like "3/3"]
         self.log: deque = deque(maxlen=200)
         self.version = 0  # bumped on every change, so unchanged progress is not resent
+        self.draft = draft.Draft(on_change=self.bump)
+
+    def bump(self) -> None:
+        self.version += 1
 
     def set_phase(self, text: str) -> None:
         self.phase = text
@@ -62,7 +68,7 @@ class Progress(logging.Handler):
 
     def snapshot(self, meter: costs.Meter) -> dict:
         return {"worker": WORKER_ID, "phase": self.phase, "queries": self.queries, "urls": self.urls,
-                "log": list(self.log), "cost_rub": round(meter.rub(), 2)}
+                "log": list(self.log), "cost_rub": round(meter.rub(), 2), "draft": self.draft.text()}
 
 
 def _send_progress(job_id: str, progress: Progress, meter: costs.Meter, stop: threading.Event) -> None:
@@ -101,23 +107,28 @@ def execute(job: dict) -> None:
     scraper_log.addHandler(progress)
     ticker = threading.Thread(target=_send_progress, args=(job["id"], progress, meter, stop), daemon=True)
     ticker.start()
-    metering = costs.current.set(meter)  # asyncio.run copies the context (meter, blocklist) into the research
+    metering = costs.current.set(meter)  # asyncio.run copies the context (meter, blocklist, draft) into the research
     blocking = hooks.blocked.set(job.get("blocked") or [])
+    drafting = draft.current.set(progress.draft)
+    branch, route = job.get("branch") or [], job.get("route") or {}
     try:
         settings = run_settings(job["sources"], writer=job["writer"])
         preflight(settings)
         started, check = time.monotonic(), None
         with config_file(settings) as path:
-            result = asyncio.run(research(job["query"], job["mode"], path, on_progress=progress.set_phase))
+            result = asyncio.run(research(job["query"], job["mode"], path, on_progress=progress.set_phase,
+                                          reader=prompts.reader_text(branch, route)))
             markdown = result.markdown
             if job.get("factcheck"):
                 markdown, check = asyncio.run(factcheck.run(markdown, result.pages, path, on_progress=progress.set_phase))
         seconds = time.monotonic() - started
         progress.set_phase(phases.FOLLOWUPS)
-        followups = asyncio.run(suggest.followups(job["query"], markdown))
+        found = asyncio.run(suggest.followups(job["query"], markdown, branch=branch, profile=job.get("profile") or "",
+                                              route=route.get("steps"), make_route=not job.get("parent")))
         progress.set_phase(phases.FILES)
         files = render(job["query"], job["mode"], markdown, result.sources, seconds, settings, cost=meter.summary(),
-                       followups=followups, parent=job.get("parent"), factcheck=check)
+                       followups=found["topics"], parent=job.get("parent"), factcheck=check, route=found["route"],
+                       route_step=job.get("route_step"))
         _hand_in(job["id"], files)
     except PreflightError as e:
         _fail(job["id"], str(e))
@@ -130,6 +141,7 @@ def execute(job: dict) -> None:
         scraper_log.removeHandler(progress)
         costs.current.reset(metering)
         hooks.blocked.reset(blocking)
+        draft.current.reset(drafting)
         memory.release()  # the research's pages and parse trees: hundreds of MB that glibc would keep
 
 

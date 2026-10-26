@@ -18,8 +18,8 @@ from urllib.parse import urlencode, urlparse
 import markdown2
 from nicegui import app, ui
 
-from my_browser.common.settings import DEFAULT_SOURCES, DEFAULT_WRITER, ROOT
-from my_browser.core import jobs
+from my_browser.common.settings import DEFAULT_MODE, DEFAULT_SOURCES, DEFAULT_WRITER, FACTCHECK_MODES, ROOT
+from my_browser.core import jobs, service
 
 # Railway sets PORT: listen on every interface and require APP_PASSWORD. Locally the app listens on
 # 127.0.0.1; PUBLIC=0 keeps it there on another PORT too (a second copy, e.g. another session's check).
@@ -27,13 +27,17 @@ PUBLIC = os.environ.get("PUBLIC", "1" if "PORT" in os.environ else "0") != "0"
 PASSWORD = os.environ.get("APP_PASSWORD", "")
 AUTH = PUBLIC or bool(PASSWORD)
 
-MODES = {"quick": "Быстро", "detailed": "Подробно", "deep": "Глубоко"}
-MODE_NAMES = {"quick": "быстрый", "detailed": "подробный", "deep": "глубокий"}
+MODES = {"quick": "Обзор", "detailed": "Подробно", "deep": "Глубоко"}
+MODE_NAMES = {"quick": "обзор", "detailed": "подробный", "deep": "глубокий"}
 MODE_HINTS = {
-    "quick": "≈ 1–4 мин · один проход",
-    "detailed": "≈ 5 мин с Flash, ≈ 5–7 мин с Pro · до 5000 слов: введение, разделы по подтемам, заключение",
+    "quick": "≈ 2 мин · 5–7 минут чтения: главное, 3–4 раздела, чего пока не знаем",
+    "detailed": "≈ 5–7 мин · до 5000 слов, около 20 минут чтения: введение, разделы по подтемам, заключение",
     "deep": "дольше всех · рекурсивный поиск вширь и вглубь, затем один отчёт",
 }
+READ_HINTS = {"quick": "5–7 мин", "detailed": "≈ 20 мин", "deep": "≈ 20 мин"}  # reading time of a report not written yet
+# What a research costs when the queue has no finished one made the same way (jobs.typical_cost), off-peak.
+PRICE_GUESS = {("quick", "pro"): 2.5, ("quick", "flash"): 1.0, ("detailed", "pro"): 11.0, ("detailed", "flash"): 4.0,
+               ("deep", "pro"): 12.0, ("deep", "flash"): 4.0}
 SOURCE_LABELS = {"web": "Веб", "academic": "Наука", "all": "Всё"}
 WRITER_LABELS = {"pro": "Pro", "flash": "Flash"}
 WRITER_HINTS = {"pro": "текст пишет DeepSeek V4 Pro — сильнее, дороже ≈ 3×", "flash": "текст пишет DeepSeek Flash — быстрее и дешевле"}
@@ -50,8 +54,11 @@ NAV = [  # (section, route, Material icon, label for screen readers)
     ("focus", "/focus", "tune", "Фокус"),
 ]
 TAB_TITLES = {"search": "DEEper", "radar": "Радар — DEEper", "library": "Библиотека — DEEper", "focus": "Фокус — DEEper"}
+# 2 (25.10.2026): the 5–7 minute overview became the default; a mode chosen before is dropped once, and a preset
+# whose mode is the detailed report becomes «Мой».
+PREFS_VERSION = 2
 DEFAULT_PREFS = {
-    "mode": "detailed", "sources": DEFAULT_SOURCES, "writer": DEFAULT_WRITER,
+    "mode": DEFAULT_MODE, "sources": DEFAULT_SOURCES, "writer": DEFAULT_WRITER,
     "factcheck": None,  # None: as the mode has it (common.settings.FACTCHECK_MODES)
     "graffiti": True, "preset": "mine", "profile": "", "name": "",
     "radar_tab": "news",  # «Радар»: news, opportunities or «Мои», the last one chosen
@@ -60,7 +67,13 @@ DEFAULT_PREFS = {
 
 def prefs() -> dict:
     """The user's defaults from «Фокус», per browser (app.storage.user lives on the reports volume)."""
-    return {**DEFAULT_PREFS, **app.storage.user.get("prefs", {})}
+    stored = app.storage.user.get("prefs", {})
+    if stored.get("version", 1) < PREFS_VERSION:
+        stored = {key: value for key, value in stored.items() if key != "mode"} | {"version": PREFS_VERSION}
+        if stored.get("preset") in ("scholar", "analyst"):
+            stored["preset"] = "mine"
+        app.storage.user["prefs"] = stored
+    return {**DEFAULT_PREFS, **stored}
 
 
 # The four sections of the tab bar are one page (tabs.py): «Поиск», built once, has to follow what «Фокус» changes.
@@ -293,6 +306,32 @@ def domain(url: str) -> str:
 
 def day(created: str) -> str:
     return f"{datetime.fromisoformat(created):%d.%m}"
+
+
+def reading(minutes: int) -> str:
+    return f"≈\u00a0{minutes}\u00a0мин чтения"
+
+
+def price(mode: str, writer: str, factcheck: bool) -> str:
+    """«≈ 2,4 ₽»: the median of the last researches made the same way, else PRICE_GUESS; "" when unknown."""
+    rub = jobs.typical_cost(mode, writer, factcheck) or PRICE_GUESS.get((mode, writer))
+    return f"≈\u00a0{rub:.1f}\u00a0₽".replace(".", ",") if rub else ""
+
+
+def followup_sub(kind_label: str) -> str:
+    """A follow-up's caption: its kind, how long its report will read and what it will cost, as «Фокус» makes it."""
+    p = prefs()
+    checked = p["mode"] in FACTCHECK_MODES if p["factcheck"] is None else p["factcheck"]
+    return " · ".join(part for part in (kind_label, READ_HINTS.get(p["mode"], ""), price(p["mode"], p["writer"], checked)) if part)
+
+
+def start_followup(query: str, parent_id: int, route_step: int | None = None) -> None:
+    """One tap on a follow-up: the research is queued at once, made as «Фокус» says, and held back jobs.HOLD_SEC
+    for «Отменить» on its screen, which opens."""
+    p = prefs()
+    job = service.submit(query, p["mode"], p["sources"], p["writer"], parent_id=parent_id, factcheck=p["factcheck"],
+                         route_step=route_step, hold=jobs.HOLD_SEC, profile=p["profile"])
+    ui.navigate.to(f"/job/{job['id']}")
 
 
 def follow_up_url(topic: str, mode: str | None = None, parent: int | None = None) -> str:

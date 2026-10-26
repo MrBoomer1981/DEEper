@@ -16,10 +16,10 @@ PRESETS = {
                 {"sources": "academic", "mode": "detailed", "writer": "pro", "factcheck": True}),
     "analyst": ("Аналитик", "всё · подробно · Pro · проверка фактов",
                 {"sources": "all", "mode": "detailed", "writer": "pro", "factcheck": True}),
-    "news": ("Новости", "веб · быстро · Flash, без проверки", {"sources": "web", "mode": "quick", "writer": "flash", "factcheck": False}),
+    "news": ("Новости", "веб · обзор · Flash, без проверки", {"sources": "web", "mode": "quick", "writer": "flash", "factcheck": False}),
 }
 FACTCHECK = {None: "как в режиме", True: "всегда", False: "никогда"}
-FACTCHECK_HINTS = {None: "в подробном и глубоком режимах да, в быстром нет", True: "+1–2\u00a0мин и ≈\u00a01–3\u00a0₽ к отчёту", False: ""}
+FACTCHECK_HINTS = {None: "во всех режимах да", True: "+1–2\u00a0мин и ≈\u00a01–3\u00a0₽ к отчёту", False: ""}
 
 
 def blocklist_sheet(on_close=None) -> None:

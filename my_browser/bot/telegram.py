@@ -33,28 +33,29 @@ from aiogram.types import (
 
 from my_browser.common.clients import call
 from my_browser.common.report import ANY_ANSWER, KINDS
-from my_browser.common.settings import DEFAULT_SOURCES, FACTCHECK_MODES
+from my_browser.common.settings import DEFAULT_MODE, DEFAULT_SOURCES, FACTCHECK_MODES
 from my_browser.common.text import plural, rub_text
 
-MODE_BUTTONS = {"detailed": "📄 Подробный", "deep": "🔬 Глубокий", "quick": "⚡ Быстрый"}
+MODE_BUTTONS = {"quick": "⚡ Обзор", "detailed": "📄 Подробный", "deep": "🔬 Глубокий"}
 SOURCE_BUTTONS = {"web": "🌐 Веб", "academic": "🎓 Наука", "all": "🌐+🎓 Всё"}
 FACTCHECK_BUTTONS = {None: "🔎 Проверка фактов: как в режиме", True: "🔎 Проверка фактов: да", False: "🔎 Проверка фактов: нет"}
 TG_LIMIT = 4000
 TICK_SEC = 5  # status refresh; also proves the bot is alive during long runs
 NOTIFY_SEC = 60  # how often to look for researches interrupted by a restart
 NEWS_SEC = 30  # how often to take the news part's urgent stories and digests
+HOLD_SEC = 5  # a follow-up started by one tap waits this long for «Отменить» (core/jobs.HOLD_SEC)
 
 HELP = """<b>Глубокие исследования</b>
 
 Пришлите тему — выберите режим и источники кнопками:
-📄 Подробный — разделы по подтемам, до 5000 слов (~5–7 мин, текст пишет Pro)
+⚡ Обзор — отчёт на 5–7 минут чтения: главное, 3–4 раздела, чего пока не знаем (~2 мин, текст пишет Pro)
+📄 Подробный — разделы по подтемам, до 5000 слов, около 20 минут чтения (~5–7 мин)
 🔬 Глубокий — рекурсивный поиск вширь и вглубь (дольше всех)
-⚡ Быстрый — один проход (~1–4 мин)
 ❓ Уточнить тему — 2–3 вопроса с вариантами, если тема широкая
-🔎 Проверка фактов — сверить утверждения со ссылками с источниками и исправить расхождения (+1–2 мин); «как в режиме» — в подробном и глубоком да, в быстром нет
+🔎 Проверка фактов — сверить утверждения со ссылками с источниками и исправить расхождения (+1–2 мин); «как в режиме» — во всех режимах да
 
-Отчёт придёт файлами PDF, DOCX и Markdown, а заключение — сообщением.
-Следом — темы «что исследовать дальше»: нажмите номер, чтобы запустить.
+Отчёт придёт файлами PDF, DOCX и Markdown, а главное — сообщением.
+Следом — что исследовать дальше: нажмите номер, и обзор начнётся сразу (5 секунд можно отменить). У первого отчёта ветки бывает маршрут из нескольких шагов: ➡️ ведёт по нему.
 Ответьте на сообщение с номером отчёта, чтобы задать по нему вопрос.
 
 /history — последние отчёты
@@ -131,14 +132,23 @@ class Status:
         self._shown_at = 0.0
 
     async def follow(self, job_id: str) -> dict:
+        """The job once it is no longer active; {"status": "cancelled"} when it was cancelled before it started.
+        While it waits, the message has «✖️ Отменить»."""
         while True:
             await asyncio.sleep(TICK_SEC)
-            job = await core("GET", f"/api/jobs/{job_id}")
+            try:
+                job = await core("GET", f"/api/jobs/{job_id}")
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:  # cancelled: the queue drops it
+                    return {"status": "cancelled"}
+                raise
             if not job["active"]:
                 return job
-            text = "В очереди: дождусь окончания текущего исследования..." if job["status"] == "queued" else job["phase"]
+            queued = job["status"] == "queued"
+            wait = max(0, round((job.get("not_before") or 0) - time.time())) if queued else 0
+            text = (f"Начну через {wait} с" if wait else "В очереди: дождусь окончания текущего исследования...") if queued else job["phase"]
             if text != self._shown or time.monotonic() - self._shown_at >= 15:
-                await self.render(f"⏳ {html.escape(text or '')}\n⏱ {_mmss(job['elapsed'])}")
+                await self.render(f"⏳ {html.escape(text or '')}\n⏱ {_mmss(job['elapsed'])}", _cancel_keyboard(job_id) if queued else None)
                 self._shown, self._shown_at = text, time.monotonic()
 
     async def render(self, body: str, keyboard: InlineKeyboardMarkup | None = None) -> None:
@@ -161,11 +171,13 @@ def _chunks(text: str, limit: int = TG_LIMIT) -> list[str]:
     return parts + [text] if text else parts
 
 
-def _conclusion(markdown: str) -> str | None:
-    match = re.search(r"^##\s+(?:Заключение|Выводы|Conclusion)[^\n]*\n(.*?)(?=^##\s|\Z)", markdown, re.S | re.M | re.I)
-    if not match:
-        return None
-    return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(1)).strip() or None
+def _summary(markdown: str) -> tuple[str, str] | None:
+    """(what it is, its text): the overview's «Главное», else a longer report's conclusion; links as their anchors."""
+    for name, heading in (("главное", r"Главное|Key points"), ("заключение", r"Заключение|Выводы|Conclusion")):
+        match = re.search(rf"^##\s+(?:{heading})[^\n]*\n(.*?)(?=^##\s|\Z)", markdown, re.S | re.M | re.I)
+        if match and (text := re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(1)).strip()):
+            return name, text
+    return None
 
 
 def _factcheck_line(check: dict | None) -> str | None:
@@ -188,6 +200,10 @@ def _header(job: dict) -> str:
 
 def _restart_keyboard(job_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔁 Перезапустить", callback_data=f"x:{job_id}")]])
+
+
+def _cancel_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✖️ Отменить", callback_data=f"cx:{job_id}")]])
 
 
 def _topic_text(item: dict, note: str = "") -> str:
@@ -228,7 +244,8 @@ async def send_report(message: Message, view: dict) -> None:
     entry, meta = view["entry"], view["meta"]
     caption = (
         f"📄 <b>Отчёт #{entry['id']}</b>: {html.escape(entry['query'])}\n"
-        f"{entry['words']} слов · {entry['sources_count']} источников · {_mmss(entry['duration_sec'])} · {_cost(meta)}"
+        f"≈ {entry.get('reading_min') or '?'} мин чтения · {entry['words']} слов · {entry['sources_count']} источников · "
+        f"{_mmss(entry['duration_sec'])} · {_cost(meta)}"
     )
     files = []
     for kind in ("pdf", "docx", "md"):
@@ -245,27 +262,34 @@ async def send_report(message: Message, view: dict) -> None:
             InputMediaDocument(media=f, caption=caption if f is files[-1] else None) for f in files
         ])
 
-    conclusion = _conclusion(view["markdown"])
-    if conclusion:
-        for part in _chunks(f"📌 Отчёт #{entry['id']} — заключение\n\n{conclusion}"):
+    if found := _summary(view["markdown"]):
+        for part in _chunks(f"📌 Отчёт #{entry['id']} — {found[0]}\n\n{found[1]}"):
             await message.answer(part, parse_mode=None)
     if line := _factcheck_line(meta.get("factcheck")):
         await message.answer(line)
     await message.answer(f"Ответьте на сообщение с «#{entry['id']}», чтобы задать вопрос по этому отчёту.")
 
-    topics = meta.get("followups") or []
-    if topics:
-        lines = [f"🧭 <b>Что исследовать дальше</b> — по отчёту #{entry['id']}"]
+    topics, route = meta.get("followups") or [], view.get("route")
+    step = route["steps"][route["next"] - 1] if route and route.get("next") else None
+    if topics or step:
+        lines, buttons = [f"🧭 <b>Что исследовать дальше</b> — по отчёту #{entry['id']}"], []
+        if step:
+            of = f"{route['next']}/{len(route['steps'])}"
+            lines.append(f"➡️ <b>Дальше по маршруту, шаг {of}:</b> {html.escape(step['query'])}"
+                         + (f"\n<i>{html.escape(step['why'])}</i>" if step.get("why") else ""))
+            buttons.append(InlineKeyboardButton(text=f"➡️ {of}", callback_data=f"rt:{entry['id']}:{route['next']}"))
         for i, t in enumerate(topics, 1):
-            lines.append(f"{i}. <b>{KINDS[t['kind']]}:</b> {html.escape(t['query'])}"
+            lines.append(f"{i}. <b>{KINDS.get(t['kind'], t['kind'])}:</b> {html.escape(t['query'])}"
                          + (f"\n<i>{html.escape(t['why'])}</i>" if t["why"] else ""))
-        buttons = [InlineKeyboardButton(text=str(i), callback_data=f"f:{entry['id']}:{i - 1}") for i in range(1, len(topics) + 1)]
-        await message.answer("\n\n".join(lines) + "\n\nНажмите номер темы, чтобы выбрать режим и запустить.",
+        buttons += [InlineKeyboardButton(text=str(i), callback_data=f"f:{entry['id']}:{i - 1}") for i in range(1, len(topics) + 1)]
+        await message.answer("\n\n".join(lines) + "\n\nНажмите кнопку — обзор на 5–7 минут начнётся сразу (5 секунд можно отменить).",
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]))
 
 
 async def finish(status: Status, job: dict) -> None:
     """Render a finished, failed or interrupted job; send the report when it is ready."""
+    if job["status"] == "cancelled":  # on_cancel has said so in the message
+        return
     if job["status"] == "error":
         await status.render(f"❌ {html.escape(job['error'] or 'Ошибка')}", _restart_keyboard(job["id"]))
         return
@@ -275,7 +299,7 @@ async def finish(status: Status, job: dict) -> None:
         return
     view = await report_view(job["report_id"])
     entry = view["entry"]
-    await status.render(f"✅ Готово за {_mmss(job['elapsed'])}: {entry['words']} слов, "
+    await status.render(f"✅ Готово за {_mmss(job['elapsed'])}: ≈ {entry.get('reading_min') or '?'} мин чтения ({entry['words']} слов), "
                         f"{entry['sources_count']} источников, {_cost(view['meta'])}")
     await send_report(status.message, view)
 
@@ -890,6 +914,20 @@ async def on_topic(message: Message) -> None:
     await _offer(message.reply, f"{message.chat.id}_{message.message_id}", query)
 
 
+async def start_followup(message: Message, query: str, parent_id: int, route_step: int | None = None) -> None:
+    """One tap on a follow-up: an overview that continues the report starts at once, held back HOLD_SEC with «✖️ Отменить»."""
+    header = (f"🔎 <b>{html.escape(query)}</b>\n{MODE_BUTTONS[DEFAULT_MODE]} · {SOURCE_BUTTONS[DEFAULT_SOURCES]}"
+              + (" · проверка фактов" if DEFAULT_MODE in FACTCHECK_MODES else "")
+              + f"\n↳ продолжение отчёта #{parent_id}" + (f", шаг {route_step} маршрута" if route_step else ""))
+    status = Status(await message.answer(f"{header}\n\n⏳ Начинаю..."), header)
+    job = await core("POST", "/api/jobs", json={
+        "query": query, "mode": DEFAULT_MODE, "sources": DEFAULT_SOURCES, "parent_id": parent_id, "origin": "telegram",
+        "origin_ref": {"chat": status.message.chat.id, "message": status.message.message_id},
+        "route_step": route_step, "hold": HOLD_SEC})
+    await status.render(f"⏳ Начну через {HOLD_SEC} с", _cancel_keyboard(job["id"]))
+    await finish(status, await status.follow(job["id"]))
+
+
 @dp.callback_query(F.data.startswith("f:"))
 async def on_followup(callback: CallbackQuery) -> None:
     _, report_id, index = callback.data.split(":")
@@ -898,10 +936,33 @@ async def on_followup(callback: CallbackQuery) -> None:
     if int(index) >= len(topics):
         await callback.answer("Отчёт или тема не найдены", show_alert=True)
         return
-    await callback.answer()
-    topic = topics[int(index)]
-    key = f"{callback.message.chat.id}_{callback.message.message_id}_{index}"
-    await _offer(callback.message.answer, key, topic["query"], parent_id=int(report_id), recommended=topic["mode"])
+    await callback.answer("Запускаю обзор")
+    _spawn(start_followup(callback.message, topics[int(index)]["query"], int(report_id)))
+
+
+@dp.callback_query(F.data.startswith("rt:"))
+async def on_route_step(callback: CallbackQuery) -> None:
+    """➡️ under a report: the next step of its branch's route."""
+    _, report_id, step = callback.data.split(":")
+    view = await report_view(int(report_id))
+    route = (view or {}).get("route")
+    if not route or not 1 <= int(step) <= len(route["steps"]):
+        await callback.answer("Маршрут не найден", show_alert=True)
+        return
+    await callback.answer("Запускаю следующий шаг")
+    _spawn(start_followup(callback.message, route["steps"][int(step) - 1]["query"], int(report_id), int(step)))
+
+
+@dp.callback_query(F.data.startswith("cx:"))
+async def on_cancel(callback: CallbackQuery) -> None:
+    """«✖️ Отменить» under a research that has not started yet."""
+    job_id = callback.data.split(":", 1)[1]
+    if not (await core("POST", f"/api/jobs/{job_id}/cancel"))["cancelled"]:
+        await callback.answer("Уже началось — отменить нельзя", show_alert=True)
+        return
+    await callback.answer("Отменено")
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_text(f"{callback.message.html_text}\n\n✖️ Отменено", reply_markup=None)
 
 
 @dp.callback_query(F.data.startswith("r:"))

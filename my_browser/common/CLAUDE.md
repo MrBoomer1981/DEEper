@@ -6,7 +6,7 @@
 
 - `settings.py`:
   - paths: `ROOT`, `CONFIG_PATH`, `REPORTS_DIR`;
-  - research options: `SOURCES`, `WRITERS`, `MODES`, `FACTCHECK_MODES`;
+  - research options: `SOURCES`, `WRITERS`, `MODES`, `DEFAULT_MODE` (`quick`, the 5–7 minute overview, since 25.10.2026), `FACTCHECK_MODES` (every mode);
   - how the parts find each other: `PORT`, `CORE_URL`, `WORKER_URL`, `SEARCH_URL`, `NEWS_URL`, `service_token()`;
   - `configure_logging()`, which quiets httpx because the job loop polls core every few seconds.
 - `clients.py`: `call(part, method, path)` and the blocking `call_core()`, in-process or over HTTP (see the root CLAUDE.md).
@@ -16,9 +16,9 @@
   - DeepSeek prices (peak 01–04 and 06–10 UTC on weekdays, half price otherwise) and the CBR USD/RUB rate (cached 12 h; `USD_RUB` overrides) go into `cost` in each report's JSON and into `cost_rub` per Q&A. The UI and the bot show them.
   - Streamed calls report usage only because `LLM_KWARGS.stream_usage` is true.
   - `finish_reason == "length"` is logged and counted as `truncated_calls`.
-- `text.py`: `host`, `readable_url`, `slugify`, `rub_text`, `plural`, `MARKDOWN_LINK`.
+- `text.py`: `host`, `readable_url`, `slugify`, `rub_text`, `plural`, `MARKDOWN_LINK`, `READING_WPM` (180 words a minute) and `reading_minutes()`.
   - `readable_url` decodes percent-encoded Cyrillic and keeps ASCII escapes. Encoded slugs cost 3–4 tokens per letter, and they made long reports hit the output cap mid-reference (16k back then, now 32k).
-- `report.py`: the sections appended to a report, «Проверка фактов» and «Что исследовать дальше», with the verdict wording.
+- `report.py`: the sections appended to a report, «Проверка фактов» and «Что исследовать дальше», with the verdict wording; the follow-up kinds (`KINDS`, the ones asked for now in `FOLLOWUP_KINDS`); the overview's sections and the length asked of the writer (`OVERVIEW_HEADINGS`, `OVERVIEW_WORDS`, `OVERVIEW_MIN`, `OVERVIEW_MAX`; Pro writes less than asked, see `worker/CLAUDE.md`); `summary()`, a report's key points without links (its «Главное», else its conclusion, else its opening), and `reading_words()`, the words a reader reads (no appended sections, sources or citations).
 - `phases.py`: a running job's phase, the line in which the worker says what it is doing. The worker writes it and core's job page parses it, both from this module.
 - `gptr.py`: gpt-researcher's unpatched `Scraper.extract_data_from_url`, captured before the worker patches it, so that search can still fetch pages in the same process.
 - `memory.py`: hands freed memory back to the system after heavy work. `trim()` calls glibc's `malloc_trim(0)` (a no-op without glibc, so on macOS); `release()` collects cyclic garbage first. On Railway the process climbed to about 1 GB within hours of a deploy and stayed there: glibc keeps freed pages. On Linux, threads that read page-sized texts and dropped them left a process at 1.2 GB, and `malloc_trim(0)` brought it to 15 MB; `MALLOC_ARENA_MAX=2` alone changed nothing there, so the Dockerfile does not set it.
@@ -64,7 +64,8 @@ Adding a function, a constant or an optional argument is safe. Renaming or remov
 - `rub_text()` is used by the web UI, the bot and `research.py`; it puts a no-break space before «₽», so the sign never wraps alone on a narrow screen. `plural()` is used by the web UI, `phases.py` and the worker's fact-check section.
 - `MARKDOWN_LINK` finds `[anchor](url)` with URLs that hold parentheses («…_(рынок_России)»). The fact-check's claims (and so eval's citation pairs) and the detailed report's reference list use it; changing it changes eval's sampled pairs, so bump `JUDGE` in `eval/run.py`.
 
-**`report.py`**: used by the worker (`section`, `KINDS`, `ANY_ANSWER`, `body`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the web UI (`body`, `appended`, `KINDS`, `ANY_ANSWER`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the bot (`KINDS`, `ANY_ANSWER`) and eval (`body`, through the fact-check's helpers).
+**`report.py`**: used by the worker (`section`, `KINDS`, `FOLLOWUP_KINDS`, `OVERVIEW_*`, `ANY_ANSWER`, `body`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), core (`summary` for a continuation's branch, `reading_words` in the library and the report page, `OVERVIEW_MIN` for the job page's writing percent, `body`, `appended`, `KINDS`, `ANY_ANSWER`, `FACTCHECK_TITLE`, `VERDICT_TEXT`), the bot (`KINDS`, `ANY_ANSWER`) and eval (`body`, through the fact-check's helpers).
+- `OVERVIEW_HEADINGS` are the headings the writer is told to use; `summary()` and the bot's `_summary()` look for «Главное» by name, so a change of wording changes all three.
 - `FOLLOWUPS_TITLE` and `FACTCHECK_TITLE` are in saved reports, so `body()` and `appended()` must keep recognizing the titles of reports already on the volume. The fact-check section always comes before the follow-ups.
 - `VERDICT_TEXT` keys are the lower-case verdicts the worker writes into `factcheck.doubtful`.
 - The `KINDS` keys are the `kind` values the follow-ups prompt asks for and `suggest.followups()` accepts.

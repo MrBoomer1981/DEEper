@@ -226,6 +226,11 @@ def _stored() -> dict:
         return {row["key"]: json.loads(row["value"]) for row in conn.execute("SELECT key, value FROM settings")}
 
 
+def is_set(key: str) -> bool:
+    """The user has set this setting (it is stored), rather than living with its default."""
+    return key in _stored()
+
+
 def load() -> Settings:
     """Current settings; stored values that no longer pass are deleted, so their defaults apply."""
     stored = _stored()

@@ -6,7 +6,8 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
 
 - `worker/runner.py`: the job loop.
   - One research at a time, in a plain thread.
-  - Per job it sets the cost meter and the blocklist ContextVars (`asyncio.run` copies them into the research), runs `pipeline.research()`, asks for follow-ups, renders the files and hands them in (with retries, since core may be restarting).
+  - Per job it sets the cost meter, the blocklist and the draft ContextVars (`asyncio.run` copies them into the research), runs `pipeline.research()` with what the reader already read (`prompts.reader_text()` of the job's `branch` and `route`), asks for follow-ups (with the branch, the route's steps and the job's `profile`; a job without a parent also gets a route), renders the files and hands them in (with retries, since core may be restarting).
+  - The progress carries the report's text while it is written (`draft`, from `worker/draft.py`): core's job page shows it paragraph by paragraph.
   - A handler on gpt-researcher's `scraper` logger collects the planned queries and the `Added source url (score)` lines.
   - A ticker thread sends progress every few seconds when it changed and every 30 s as a heartbeat.
   - After each research, done or failed, `common.memory.release()` gives its pages and parse trees back to the system: glibc would keep them, and on Railway the process stayed at its peak for hours.
@@ -14,10 +15,10 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
   - `run_settings()` builds config.json plus the run's sources, writer, words and language, and `config_file()` writes it to a temporary file for each run, so nothing process-wide changes during a research.
   - Configuration precedence in gpt-researcher is **env vars > config file > library defaults**. Any key from `config.json` can still be overridden in `.env`, and an environment variable beats the run's choice too.
   - `preflight()`: a 1-token DeepSeek call and a SearXNG JSON ping, so a bad key, an empty balance or a stopped container fails in seconds. It raises `PreflightError`.
-  - `research()`: one of three modes. It returns `Research(markdown, sources, pages)`, where `pages` holds the text of every page read.
+  - `research()`: one of three modes. It returns `Research(markdown, sources, pages)`, where `pages` holds the text of every page read. Its `reader` (text) goes into every writing prompt (`prompts.reader`); the report-writing calls run inside `draft.writing()`.
   - `render()`: the md/json/docx/pdf bytes, which core stores.
 - Modes:
-  - `quick` is gpt-researcher's `research_report`.
+  - `quick` is gpt-researcher's `research_report`, written as the overview, the default since 25.10.2026: asked for about `OVERVIEW_WORDS` (1300) words of text, at least `OVERVIEW_MIN` (1100), never over `OVERVIEW_MAX` (1450), the references not counted (`common/report.py`). Pro writes less than asked, the less the thinner the sources: 804–1000 words for «about 1100» on eval topics 1, 3, 4, 6 and 830–959 on a branch's steps (26.10.2026), 5–6 minutes at `common.text.READING_WPM`. Its sections: `## Главное` first, 3–4 sections, `## Чего пока не знаем` last (`OVERVIEW_HEADINGS`), no introduction or conclusion section. With Pro and the fact-check: 2:08 and 2.44 ₽ on average, citation accuracy 83% (`eval/results/2026-10-26_0008_overview-pro.md`).
   - `deep` is its recursive `deep` report (`DEEP_RESEARCH_*` keys).
   - `detailed` is `worker/detailed.py`, a port of upstream `backend/report_type/detailed_report`, which is **not shipped in the pip package**:
     - One broad research pass first. Then all subtopics are researched at once while the introduction is written (since 20.10.2026; the sub-researchers share one `visited_urls` set).
@@ -36,7 +37,8 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
   - The search engines themselves still run inside gpt-researcher here.
 - `worker/prompts.py` registers the `deeper` prompt family (`PROMPT_FAMILY` in `config.json`), which does two things:
   - It makes search queries English-first while the report stays in `LANGUAGE`.
-  - It limits the length in the same five prompts: a quick or deep report is at most `REPORT_WORDS` words (upstream's «at least `TOTAL_WORDS`» stays), a detailed report's section is «about N words and never more than N × `OVERSHOOT`» in place of upstream's minimum, the introduction and the conclusion get their own caps.
+  - It limits the length in the same five prompts: the quick report is the overview (`overview_rules()`: about `OVERVIEW_WORDS` words and its structure; `LONG_ASK` cuts upstream's «a detailed report» of «at least `TOTAL_WORDS` words», «as long as you can», and the rules take precedence if an upgrade rewords it), a deep report is at most `REPORT_WORDS` words (upstream's «at least `TOTAL_WORDS`» stays), a detailed report's section is «about N words and never more than N × `OVERSHOOT`» in place of upstream's minimum, the introduction and the conclusion get their own caps.
+  - A report that continues a branch: every writing prompt ends with `reader` (a ContextVar `research()` sets): the earlier reports' topics and key points, nearest first («do not retell, start from what is new, say where the new information contradicts them»), and, for a route's step, the route with «this report» marked («leave the other steps' questions to their reports»).
   - It gives the writer its citation rules (`CITATION_RULES`, plan 3.13) in all five writing prompts: the quick report, the detailed report's sections, introduction and conclusion, and the deep report.
     - A source is cited only for what it says itself; the report's own comparisons, generalizations and forecasts go without a citation.
     - A fact and its interpretation go in separate sentences, with the citation right after its own sentence rather than at the end of the paragraph.
@@ -47,6 +49,7 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
     - `query_processing.generate_sub_queries`: upstream `plan_research_outline()` doesn't pass `prompt_family`, so a custom family never reached sub-query generation.
     - `skills.writer.generate_report`: upstream `ReportGenerator.write_report()` doesn't pass it either, so until 20.10.2026 the report text itself (quick, the detailed report's sections, deep) was written with upstream's prompts; only the introduction and conclusion got the family.
     - `DeepResearchSkill.generate_search_queries`: its query prompt is inline, so it gets the language rule and today's date.
+- `worker/draft.py`: the report's text while it is written. It patches `GenericLLMProvider.stream_response` and `_send_output`: inside `draft.writing()` (the quick and deep report's `write_report()`, the detailed report's introduction, sections and conclusion, each in a task of its own where it runs beside others), the streamed paragraphs go to the job's `Draft` (`draft.current`) instead of being printed. Each streamed call is one part; a call that fails drops its part, since upstream tries again. The draft titles of the detailed report stream outside `writing()` and stay out.
 - `worker/stemming.py` swaps gpt-researcher's BM25 tokenizer (`context/lexical.py`) for one with the Snowball Russian stemmer (from nltk) and Russian stopwords; Latin tokens go through upstream's stemmer unchanged. `pipeline.research()` imports `hooks`, `prompts` and `stemming` for their side effects.
 - `worker/factcheck.py` checks a written report against the pages its research read, when the job has `factcheck`:
   - `claims()`: every sentence with a link, paired with each URL it links, plus the sentence before it as context (what «их» refers to). When the sentence cites several sources, it also keeps this link's anchor (`cited_as`): the judge checks only the part that citation stands for.
@@ -68,7 +71,7 @@ The worker is DEEper's research engine: gpt-researcher with our patches, the job
   - While judging it reports «Проверяю факты: k из n» (`phases.checking`), so the job page's percent moves through the check.
   - About 0.6–0.9 ₽ for a quick report off-peak, mostly the chunks sent to the judge.
 - `worker/suggest.py` holds the cheap FAST_LLM suggestions:
-  - Follow-ups («Что исследовать дальше»): 5 topics, deeper/adjacent/verify, each with `why` and a recommended mode, from the report's outline, conclusions and limitation sections. A failure returns `[]` and never blocks saving.
+  - Follow-ups («Что исследовать дальше»): `followups()` → `{"topics", "route"}`. Four topics of different kinds (`common.report.FOLLOWUP_KINDS`): always «Глубже» (`deeper`) and «Против» (`against`), and two of «На практике» (`practice`), «Для меня» (`personal`, only with a profile), «Свежее» (`fresh`, a fast-moving field), «Рядом» (`adjacent`); one of each kind, each with `why` and `mode` = `DEFAULT_MODE`. They come from the report's outline, «Главное» and «Чего пока не знаем» (or the conclusion and limitation sections of older reports), and do not repeat the branch's topics or the route's steps. With `make_route` (a report without a parent), also a route: 3–5 next steps (`ROUTE_STEPS`) of a short course through the topic, or none when the topic is narrow. A failure returns empty lists and never blocks saving.
   - Clarification («Уточнить»): `questions()`, `refine()`.
   - `render()` puts follow-ups into the JSON and as the last `## Что исследовать дальше` section into the documents. The web view strips the appended sections (`common/report.body()`) and renders cards and its own fact-check block instead. Older reports get topics on demand («Предложить темы»), in the JSON only.
 - `worker/ask.py` answers a question from a report's text with `SMART_LLM`; `worker/api.py` exposes `/ask`, `/followups`, `/clarify`, `/refine`, `/shorten` for core.
@@ -101,7 +104,7 @@ uv run ../../research.py "тема" --mode quick --writer flash   # one research
 
 **Core** calls the worker's API (`api.py`; in-process unless `WORKER_URL` is set):
 - `POST /ask {markdown, question}` → `{a, cost_rub, research?}`. `research` is the topic from the model's last «ИССЛЕДОВАТЬ: …» line, already cut from `a`; core stores the item in `.qa.json` and both UIs offer to run it.
-- `POST /followups {query, markdown}` → `{topics, cost_rub}`; a failure gives `topics: []`, never an error.
+- `POST /followups {query, markdown, branch?, profile?, route?, make_route?}` → `{topics, route, cost_rub}`; a failure gives empty lists, never an error. `branch` is `[{query}]` nearest first, `route` the route's steps `[{query}]`.
 - `POST /clarify {query}` → `{questions: [{q, options}], cost_rub}`. The options never include `ANY_ANSWER`; the UIs add it.
 - `POST /refine {query, answers: [[question, answer]]}` → `{topic, cost_rub}`; the original topic comes back when the rewrite looks wrong.
 - `POST /shorten {markdown, words?}` → `{markdown, words, cost_rub}`: the short version ending with `## Источники` (`## References` in English) over the links it cites; `words` counts the text without that list, and so does core's `short.words()`, which finds the list by those two headings. A Pro call takes up to a minute, so core calls it with a 300 s timeout.
@@ -115,12 +118,14 @@ uv run ../../research.py "тема" --mode quick --writer flash   # one research
   - `writer`: the model name without the provider;
   - `cost`: `Meter.summary()`, whose `rub` core and both UIs show;
   - `sources`: a list of URLs, whose length is the library's source count; the sources tab lists them;
-  - `followups`: `[{kind, query, why, mode}]`;
+  - `followups`: `[{kind, query, why, mode}]`, `kind` in `common.report.KINDS` (older reports have `verify` and a `detailed` mode);
+  - `route` (only in a report that starts a branch and got one): its next steps `[{query, why}]`, the report's own topic being step 1; `route_step` (only in a report started as a route's step): the step it is. Core works the route out of the branch (`core/service.route()`);
   - `factcheck` (only when the job had it): `factcheck.summary()`, i.e. counts by verdict, `accuracy`, `relinked`, `rewritten`, `fixed`, and `doubtful` items `{statement, url, verdict, note, raw}`, where `raw` is the sentence as it stands in the report and core puts its «?» after it; plus `cost_rub` and `seconds`, or `error` when the check failed;
   - `parent`: the parent report's file name without suffix.
   - Readers: `core/library.py`, `core/service.py`, the screens in `core/ui/` (report, library, radar), the bot (through core) and `eval/`.
 - The Markdown ends with `factcheck.section()` («Проверка фактов», only when checked) and then `common.report.section(followups)`; `common.report.body()` strips both by their titles. The bot's `_conclusion()` looks for a level-2 «Заключение», «Выводы» or «Conclusion» heading. `suggest._excerpt()` looks for conclusion, limitation and reference headings.
-- Progress: `Progress.snapshot()` matches core's `ProgressRequest`; the job page shows `urls` as `[url, score]` pairs. Every phase line comes from `common/phases.py`: core's job page parses it there, the bot shows it as it is.
+- Progress: `Progress.snapshot()` matches core's `ProgressRequest`; the job page shows `urls` as `[url, score]` pairs and `draft` (the text written so far) under the percent. Every phase line comes from `common/phases.py`: core's job page parses it there, the bot shows it as it is.
+- The claimed job: the worker reads `id`, `query`, `mode`, `sources`, `writer`, `parent`, `factcheck`, `blocked`, and for a continuation `branch` (`[{id, query, summary}]`), `route` (`{steps, at}`), `route_step` and `profile` (text, may be empty), all set by `core/service.claim()`.
 
 **In-process users** (no API):
 - `research.py` and `eval/run.py` use `pipeline` (`run_settings`, `config_file`, `preflight`, `research` and its `Research(markdown, sources, pages)`, `render`), `factcheck.run` and `hooks.blocked`.
@@ -156,6 +161,8 @@ uv run ../../research.py "тема" --mode quick --writer flash   # one research
     - `generate_report` as `skills/writer.py` imports it by name and calls it with keyword arguments including `cfg`; the patch adds the configured `prompt_family`, which `ReportGenerator.write_report()` leaves out. If upstream starts passing it, `setdefault` keeps upstream's; if the call moves elsewhere, the report is written with upstream's prompts again, which shows as citations at the end of paragraphs and the fact-check's not-found count going up.
   - `stemming.py`: `tokenize`, `_TOKEN`, `_STOPWORDS`, `_stem` in `gpt_researcher/context/lexical.py`.
   - `common/costs.py`: `GenericLLMProvider.get_chat_response(self, messages, stream, websocket=None, **kwargs)`, `last_usage_metadata`, `last_response_metadata`.
+  - `draft.py`: `GenericLLMProvider.stream_response(self, messages, websocket=None, **kwargs)`, which sends each paragraph through `self._send_output(content, websocket)` and returns the whole text, and `create_chat_completion` calling it with no websocket (a websocket would also turn off upstream's retries of a streamed call). If upstream stops streaming report text, the job page shows no draft; nothing else fails.
+  - the overview's `LONG_ASK`: the wording of upstream's `generate_report_prompt` («in a detailed report -- … necessary information provided.»).
   - `runner.py`:
     - the `scraper` logger, whose console handler `gpt_researcher.actions` creates; it is imported first;
     - the wording of the `based on the following queries:` message in `skills/researcher.py`.
@@ -191,7 +198,10 @@ uv run ../../research.py "тема" --mode quick --writer flash   # one research
 | Change | Also update |
 |---|---|
 | a field of the report JSON | `core/library.py` (`add`), `core/service.py`, `core/ui/` (`report.py`, `radar.py`), the bot, `eval/metrics.py` and `eval/run.py`; reports already on the volume keep the old shape |
-| the shape or kinds of follow-up topics | `common/report.py` (`KINDS`, `section`), the end of `core/ui/report.py`, the feed in `core/ui/radar.py`, the bot's buttons |
+| the shape or kinds of follow-up topics, or the route | `common/report.py` (`KINDS`, `FOLLOWUP_KINDS`, `section`), the end of `core/ui/report.py` and its route sheet, the feed in `core/ui/radar.py`, `core/service.route()`, the bot's buttons (`f:`, `rt:`), `dev/mock_llm.py` («Ты подбираешь, что читателю исследовать дальше») |
+| the overview's length or sections (`OVERVIEW_WORDS`, `OVERVIEW_HEADINGS`) | `common/report.summary()` (what a continuation is told), the bot's `_summary()`, `core/ui/progress.py` (the writing percent), `README.md`, `MODE_HINTS` and the bot's `HELP`; measure on eval topics (`--mode quick --writer pro --factcheck`) |
+| what a continuation's writer is told (`reader_text()`) | `core/service.claim()` (`branch`, `route`), `core/service.BRANCH_REPORTS` |
+| which calls stream into the draft (`draft.writing()`) | the job page (`core/ui/job.py`), which shows the parts in their order |
 | the `Added source url to research` line | `runner.SOURCE_LINE`, `eval/metrics.ADDED` |
 | report headings (conclusion, limitations, references) | the bot's `_conclusion()`, the patterns in `suggest.py`, `factcheck.REFERENCES` (eval uses it too) |
 | the fact-check's summary or section | `core/ui/report.py` (`mark_doubtful()`, the «⋯» row, the block), the bot's `_factcheck_line()`, `common/report.VERDICT_TEXT`, eval's `fc_*` columns |

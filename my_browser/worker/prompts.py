@@ -10,8 +10,14 @@
   conclusions carrying a citation «for show» and facts that no page the research read states (plan 3.13).
 - A report is at most REPORT_WORDS words. Upstream asks for at least TOTAL_WORDS per report, and per
   section in the detailed report, whose four sections then ran to 7-9 thousand words with Pro writing.
+- The quick report is the overview, the default since 25.10.2026: about OVERVIEW_WORDS words to read in 5–7
+  minutes, with «Главное» first and «Чего пока не знаем» last (overview_rules()). Upstream asked it for «a detailed
+  report» of «at least TOTAL_WORDS words», «as long as you can»: 2–3.5 thousand words.
+- A report that continues a line of research is told what the reader already read (`reader`, set per job by the
+  worker's job loop): every writing prompt gets the block, so a continuation starts from what is new.
 """
 
+import contextvars
 import re
 from datetime import datetime, timezone
 
@@ -19,6 +25,8 @@ from gpt_researcher import prompts
 from gpt_researcher.actions import query_processing
 from gpt_researcher.skills import writer
 from gpt_researcher.skills.deep_research import DeepResearchSkill
+
+from my_browser.common.report import OVERVIEW_HEADINGS, OVERVIEW_MAX, OVERVIEW_MIN, OVERVIEW_WORDS
 
 QUERY_LANGUAGE_RULE = (
     "All queries must be in English, even though the task may be written in another language: "
@@ -56,7 +64,17 @@ PLACEMENT = re.compile(r"(?:you must )?use in-text citation references in (\S+) 
 # A detailed report's section: «about N words» below replaces upstream's minimum of N words.
 MINIMUM_LENGTH = re.compile(r"^- The report should have a minimum length of \d+ words\.\n", re.M)
 
+# Upstream's research_report asks for «a detailed report» of «at least {total_words} words», «as long as you can»;
+# the overview asks for a short one instead. If an upgrade rewords it, the overview's rules still take precedence.
+LONG_ASK = re.compile(r" in a detailed report --\s*The report should focus on the answer to the query.*?"
+                      r"necessary information provided\.\n", re.S)
+SHORT_ASK = " in a short report that answers it directly, with the most important facts and numbers.\n"
+
 LENGTH_HEADER = "Length. This rule takes precedence over anything said about length above:"
+
+# What the reader already knows when a report continues a line of research: reader_text() of the job's branch and
+# route, set by the worker's job loop for the run. Every writing prompt ends with it.
+reader = contextvars.ContextVar("reader", default="")
 
 
 def report_length(**_) -> str:
@@ -78,14 +96,46 @@ def conclusion_length(**_) -> str:
     return f"{LENGTH_HEADER} the conclusion is at most {CONCLUSION_WORDS} words."
 
 
-def _writing(upstream, length, rules: str = CITATION_RULES, **defaults):
-    """Upstream's writing prompt with our citation rules in place of its own, and our length limit."""
+def overview_rules(language: str = "russian", **_) -> str:
+    summary, gaps = OVERVIEW_HEADINGS.get(str(language).lower(), OVERVIEW_HEADINGS["english"])
+    return f"""Format. These rules take precedence over anything said about length and structure above:
+- This is a briefing to read on a phone in 5-7 minutes: about {OVERVIEW_WORDS} words of text, at least {OVERVIEW_MIN} and never more than {OVERVIEW_MAX}; the list of references does not count. Use that room: explain the key facts with their context, figures and examples, and leave out minor details rather than squeeze everything in.
+- Structure: the # title; then "## {summary}" with 3-4 bullet points of one or two sentences each, which answer the query with the key facts; then 3-4 sections (##) that explain and support them, in short paragraphs; then "## {gaps}" with 2-4 bullet points: open questions, missing or conflicting data, what would change the answer; then the references.
+- No introduction that restates the query and no conclusion section: "{summary}" is the summary.
+- A table only where it compares several items on the same points."""
+
+
+def reader_text(branch: list[dict] | None, route: dict | None) -> str:
+    """The prompt's block about the reader: the reports of the branch they already read (nearest first, with their
+    key points) and the route this report is a step of ({"steps": [{"query"}...], "at": n})."""
+    parts = []
+    if branch:
+        read = "\n".join(f"{i}. «{b['query']}»" + (f"\n{b['summary']}" if b.get("summary") else "") for i, b in enumerate(branch, 1))
+        parts.append("The reader. This report continues a line of research, and the reader has already read these reports "
+                     f"(the nearest first) with these key points:\n{read}\n"
+                     "Do not retell what they cover: refer to it in a clause at most and spend the words on what is new to the "
+                     "reader. Where the new information changes or contradicts an earlier report, say so.")
+    if route and route.get("steps") and route.get("at"):
+        steps = "\n".join(f"{n}. {s['query']}" + ("  <- this report" if n == route["at"] else "")
+                          for n, s in enumerate(route["steps"], 1))
+        parts.append(f"The route. This report is step {route['at']} of {len(route['steps'])} of a short course through the "
+                     f"topic:\n{steps}\nAnswer this step's question; leave the other steps' questions to their reports.")
+    return "\n\n".join(parts)
+
+
+def _writing(upstream, length, rules: str = CITATION_RULES, rewrite=None, **defaults):
+    """Upstream's writing prompt with our citation rules in place of its own, our length limit and, when the report
+    continues a line of research, what the reader already knows."""
     def prompt(*args, **kwargs) -> str:
         kwargs = {**defaults, **kwargs}
-        text = EVERY_CLAIM.sub("", upstream(*args, **kwargs))
+        text = upstream(*args, **kwargs)
+        if rewrite:
+            text = rewrite(text)
+        text = EVERY_CLAIM.sub("", text)
         text = PLACEMENT.sub(r"Use in-text citations in \1 format, as markdown hyperlinks like this: ([in-text citation](url)).", text)
         text = MINIMUM_LENGTH.sub("", text)
-        return f"{text.rstrip()}\n\n{rules}\n\n{length(**kwargs)}\n"
+        known = reader.get()
+        return f"{text.rstrip()}\n\n{rules}\n\n{length(**kwargs)}\n" + (f"\n{known}\n" if known else "")
     return staticmethod(prompt)
 
 
@@ -97,8 +147,9 @@ class DeeperPromptFamily(prompts.PromptFamily):
         )
         return prompt.replace("You must respond with a list of strings", f"{QUERY_LANGUAGE_RULE}\n\nYou must respond with a list of strings")
 
-    # quick mode; detailed mode's sections, introduction and conclusion; deep mode
-    generate_report_prompt = _writing(prompts.PromptFamily.generate_report_prompt, report_length)
+    # quick mode (the overview); detailed mode's sections, introduction and conclusion; deep mode
+    generate_report_prompt = _writing(prompts.PromptFamily.generate_report_prompt, overview_rules,
+                                      rewrite=lambda text: LONG_ASK.sub(SHORT_ASK, text, count=1))
     generate_subtopic_report_prompt = _writing(prompts.PromptFamily.generate_subtopic_report_prompt, section_length,
                                                max_subsections=SECTION_SUBSECTIONS)
     generate_report_introduction = _writing(prompts.PromptFamily.generate_report_introduction, intro_length)

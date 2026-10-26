@@ -9,13 +9,14 @@ Point a run at it with environment variables, which beat config.json and the wri
     OPENAI_BASE_URL=http://127.0.0.1:8765/v1 OPENAI_API_KEY=mock uv run app.py
 
 It answers by phrases of the prompts it gets (gpt-researcher's and ours: sub-queries, source rating,
-subtopics, draft titles, sections, fact-check, follow-ups, clarification, questions, news scoring and summaries,
-opportunities' roundups and extraction) with answers of
+subtopics, draft titles, sections, the overview, fact-check, follow-ups with a route, clarification, questions, news
+scoring and summaries, opportunities' roundups and extraction) with answers of
 the shape the caller parses. Anything else gets a short report section citing two URLs from the prompt,
 with a figure the fact-check «corrects» (12,5 -> 11,9) and one it cannot find, so a run also exercises the
 check's fixes. If a prompt's wording changes, its answer falls back to that section: a run still ends,
 but the step that parses it (say, the subtopic list) gets nothing useful. Report-writing calls stream
-(SSE), and /embeddings answers too, since gpt-researcher retries 10 times with backoff when they fail.
+(SSE), a paragraph every --stream-delay seconds, so the job page's draft grows as with a real model; /embeddings
+answers too, since gpt-researcher retries 10 times with backoff when they fail.
 --log writes one JSON line per chat call: which step it was, the model and the token cap it was sent.
 """
 
@@ -35,8 +36,42 @@ STEPS = {  # --log: which step a call was, by a phrase of its prompt
 }
 
 
+FOLLOWUP_TOPICS = [
+    {"kind": "deeper", "query": "Себестоимость натрий-ионных ячеек при массовом производстве в Китае", "why": "Отчёт назвал цены, но не разобрал, из чего они складываются"},
+    {"kind": "against", "query": "Почему натрий-ионные аккумуляторы могут не вытеснить LFP в стационарных накопителях", "why": "Самые сильные возражения против прогноза"},
+    {"kind": "practice", "query": "Как выбрать натрий-ионный накопитель для дома и что он стоит в 2026 году", "why": "Что делать с этим на практике"},
+    {"kind": "personal", "query": "Какие исследования натрий-ионных батарей ведут российские университеты", "why": "Связано с интересами читателя"},
+]
+ROUTE = [
+    {"query": "Как устроены натрий-ионные аккумуляторы: катоды, аноды и электролиты", "why": "Основа, без которой не понять остальное"},
+    {"query": "Производители и цены натрий-ионных ячеек в 2026 году", "why": "Кто делает и почём"},
+    {"query": "Где натрий-ионные аккумуляторы выигрывают у литий-ионных и где проигрывают", "why": "Выводы для применения"},
+]
+
+
+def overview(urls: list[str]) -> str:
+    """The overview's shape (worker/prompts.overview_rules()), with the figure the fact-check corrects and one it cannot find."""
+    a, b = urls
+    return (f"# Натрий-ионные аккумуляторы: обзор\n\n## Главное\n\n"
+            f"- Рынок натрий-ионных аккумуляторов в 2025 году вырос до 12,5 млрд долларов по оценке аналитиков ([Источник A]({a})).\n"
+            f"- Производители планируют выпуск 150 ГВт·ч к 2030 году, что подтверждают отраслевые обзоры ([Источник B]({b})).\n"
+            "- Главное преимущество — дешёвое сырьё, главный недостаток — меньшая плотность энергии.\n\n"
+            "## Рынок\n\nСпрос растёт в стационарных накопителях и недорогих электромобилях. "
+            f"Аналитики связывают рост с ценами на литий ([Источник A]({a})).\n\n"
+            "Это значит, что выигрыш натрия зависит от цен на литий: при дешёвом литии преимущество сжимается.\n\n"
+            "## Производство\n\nКрупнейшие производители — в Китае. "
+            f"Заводы строятся быстрее прогнозов ([Источник B]({b})).\n\n"
+            "Для покупателя это означает доступность ячеек уже в ближайшие годы.\n\n"
+            "## Технология\n\nКатоды из слоистых оксидов и берлинской лазури, аноды из твёрдого углерода. "
+            "Плотность энергии ниже, чем у LFP, но работа на морозе лучше.\n\n"
+            "## Чего пока не знаем\n\n- Как поведут себя ячейки за 10 лет работы.\n- Насколько упадут цены при массовом выпуске.\n\n"
+            f"## Источники\n\n- [A]({a})\n- [B]({b})\n")
+
+
 def answer(prompt: str) -> str:
-    if "Предложи 5 тем для новых исследований" in prompt:  # worker/suggest.py: follow-ups
+    if "Ты подбираешь, что читателю исследовать дальше" in prompt:  # worker/suggest.py: follow-ups, and a route for a first report
+        return json.dumps({"topics": FOLLOWUP_TOPICS, "route": ROUTE if '"route"' in prompt else []}, ensure_ascii=False)
+    if "Предложи 5 тем для новых исследований" in prompt:  # worker/suggest.py before 26.10.2026: follow-ups
         return ('[{"kind": "deeper", "query": "Себестоимость натрий-ионных ячеек при массовом производстве в Китае", '
                 '"why": "нет разбивки затрат", "mode": "quick"}]')
     if "уточняющих вопросов" in prompt:  # suggest.questions()
@@ -104,6 +139,8 @@ def answer(prompt: str) -> str:
         count = int(re.search(r"JSON array of (\d+) integers", prompt).group(1)) if "integers" in prompt else 1
         return json.dumps([3] * count)
     urls = [u for u in dict.fromkeys(re.findall(r"https?://[^\s)\]'\"<>]+", prompt)) if "iea.org" not in u][:2]
+    if len(urls) == 2 and "## Главное" in prompt:  # worker/prompts.py: the overview (quick mode)
+        return overview(urls)
     if len(urls) == 2:
         return ("## Раздел\n\nРынок натрий-ионных аккумуляторов в 2025 году вырос до 12,5 млрд долларов по оценке аналитиков "
                 f"([Источник A]({urls[0]})). Производители планируют выпуск 150 ГВт·ч к 2030 году, что подтверждают "
@@ -113,6 +150,7 @@ def answer(prompt: str) -> str:
 
 class Handler(BaseHTTPRequestHandler):
     log_path = None
+    stream_delay = 0.3
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -133,7 +171,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            for delta, finish in (({"role": "assistant", "content": text}, None), ({}, "stop")):
+            paragraphs = [part + "\n\n" for part in text.split("\n\n")] if len(text) > 300 else [text]
+            deltas = [({"role": "assistant", "content": paragraphs[0]}, None), *(({"content": part}, None) for part in paragraphs[1:]),
+                      ({}, "stop")]
+            for n, (delta, finish) in enumerate(deltas):
+                if 0 < n < len(deltas) - 1:
+                    time.sleep(self.stream_delay)
                 chunk = {"id": "mock", "object": "chat.completion.chunk", "created": 0, "model": body.get("model"),
                          "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
@@ -159,7 +202,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--log", help="append one JSON line per chat call to this file")
+    parser.add_argument("--stream-delay", type=float, default=0.3, help="seconds between the paragraphs of a streamed answer")
     args = parser.parse_args()
-    Handler.log_path = args.log
+    Handler.log_path, Handler.stream_delay = args.log, args.stream_delay
     print(f"Mock LLM: http://127.0.0.1:{args.port}/v1", flush=True)
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
