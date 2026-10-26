@@ -21,12 +21,15 @@ Only the types on in opps_types are shown (all are read).
 
 import html
 import json
+import logging
 import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from my_browser.common.text import plural
 from my_browser.news import config, db, delivery
+
+logger = logging.getLogger(__name__)
 
 UPDATE_LATE_HOURS = 6
 OVER_DAYS = 30  # «Мои»: an opportunity without the event's dates is past this long after its deadline
@@ -224,6 +227,7 @@ def run(now: float | None = None, local: datetime | None = None) -> dict:
         db.set_state("opps_update", {"at": now, "new": done["released"]})
         if key:
             db.set_state("opps_updates_done", (db.get_state("opps_updates_done", []) + [key])[-10:])
+        logger.info("Opportunities: the app's list updated, %d new", done["released"])
     return done
 
 
