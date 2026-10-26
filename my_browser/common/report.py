@@ -56,8 +56,8 @@ def section(topics: list[dict]) -> str:
 
 SUMMARY_HEADING = re.compile(r"^##\s+(?:Главное|Key points)\s*$", re.M)
 CONCLUSION_HEADING = re.compile(r"^##\s+(?:Заключение|Выводы|Итоги|Conclusions?)\b[^\n]*$", re.M | re.I)
-REFERENCES_HEADING = re.compile(r"^#{1,2}\s+(?:Источники|Список (?:источников|литературы)|Литература|Ссылки|References|Sources|"
-                                r"Bibliography)\b[^\n]*$", re.M | re.I)
+REFERENCES_HEADING = re.compile(r"^#{1,3}\s+\**(?:Использованные источники|Список (?:использованных )?(?:источников|литературы)|"
+                                r"Источники|Литература|Ссылки|References|Sources|Bibliography|Works cited)\b[^\n]*$", re.M | re.I)
 H2 = re.compile(r"^##\s", re.M)
 
 
@@ -88,10 +88,13 @@ def summary(markdown: str, words: int = 120) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def without_references(markdown: str) -> str:
+    """The text without the list of sources at its end: the screens show the sources in a sheet of their own, and
+    the citations as numbers; the files keep the list. A heading in the text's first third is not that list."""
+    found = [m for m in REFERENCES_HEADING.finditer(markdown) if m.start() > len(markdown) // 3]
+    return markdown[:found[-1].start()].rstrip() if found else markdown
+
+
 def reading_words(markdown: str) -> int:
     """The words a reader reads: the report without its appended sections, its list of sources and its citations."""
-    text = body(markdown)
-    references = [m for m in REFERENCES_HEADING.finditer(text) if m.start() > len(text) // 3]
-    if references:
-        text = text[:references[-1].start()]
-    return len(MARKDOWN_LINK.sub("", text).split())
+    return len(MARKDOWN_LINK.sub("", without_references(body(markdown))).split())

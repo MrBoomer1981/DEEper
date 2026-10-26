@@ -11,6 +11,7 @@ import re
 from fastapi.responses import RedirectResponse
 from nicegui import ui
 
+from my_browser.common.report import without_references
 from my_browser.common.text import rub_text
 from my_browser.core import jobs
 from my_browser.core.library import Library
@@ -140,7 +141,7 @@ def job_page(job_id: str) -> RedirectResponse | None:
 
     def show_draft(text: str) -> None:
         """The draft's new paragraphs below the ones shown; the last one may still grow, so it is redrawn."""
-        blocks = [b for b in PARAGRAPH.split(text.strip()) if b.strip()]
+        blocks = [b for b in PARAGRAPH.split(without_references(text).strip()) if b.strip()]
         complete, last = blocks[:-1], blocks[-1] if blocks else ""
         if len(complete) < state["blocks"]:  # a failed call's part was dropped (worker/draft.py): draw it all again
             done_blocks.clear()

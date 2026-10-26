@@ -7,6 +7,8 @@ _ENCODED_RUN = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
 READING_WPM = 180  # words a minute: a dense text in Russian, with figures, read on a phone
 # [anchor](url) with a web URL; the URL may hold balanced parentheses, as in «…/Облачные_сервисы_(рынок_России)»
 MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
+# a parenthesized group of citations only, with the space before it: «([IEA](…))», «([A](…); [B](…))»
+CITATIONS = re.compile(r"[ \t]*\(\s*(?:\[[^\]]*\]\(https?://(?:[^()\s]|\([^()\s]*\))+\)\s*[;,]?\s*)+\)")
 
 
 def host(url: str) -> str:

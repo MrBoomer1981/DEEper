@@ -19,15 +19,13 @@ import re
 
 from nicegui import ui
 
-from my_browser.common.report import FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body, reading_words
-from my_browser.common.text import MARKDOWN_LINK, plural, reading_minutes, rub_text
+from my_browser.common.report import FACTCHECK_TITLE, KINDS, VERDICT_TEXT, appended, body, reading_words, without_references
+from my_browser.common.text import CITATIONS, MARKDOWN_LINK, plural, reading_minutes, rub_text
 from my_browser.core import blocklist, bookmarks, service, short as shorts
 from my_browser.core.library import Library
 from my_browser.core.qa import load_qa
 from my_browser.core.ui import kit
 
-# a parenthesized group of citations only: «([IEA](…))», «([A](…); [B](…))»
-CITATIONS = re.compile(r"[ \t]*\(\s*(?:\[[^\]]*\]\(https?://(?:[^()\s]|\([^()\s]*\))+\)\s*[;,]?\s*)+\)")  # with the space before it
 H2 = re.compile(r"^##\s+(.+?)\s*#*\s*$", re.M)
 
 
@@ -86,7 +84,7 @@ def report_page(report_id: int, short: bool = False) -> None:
     short_text = shorts.load_short(entry.md_path)
     short = short and short_text is not None
     full_words = len(body(markdown).split())
-    shown = short_text if short else body(markdown)
+    shown = without_references(short_text if short else body(markdown))  # the sources are in «⋯», the citations numbers
     # the fact-check's «?» marks and block belong to the full text
     text, numbers = cite(shown if short else mark_doubtful(shown, check.get("doubtful") or []))
     headings = [m.group(1).strip() for m in H2.finditer(shown)]

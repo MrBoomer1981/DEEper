@@ -34,7 +34,7 @@ from aiogram.types import (
 from my_browser.common.clients import call
 from my_browser.common.report import ANY_ANSWER, KINDS
 from my_browser.common.settings import DEFAULT_MODE, DEFAULT_SOURCES, FACTCHECK_MODES
-from my_browser.common.text import plural, rub_text
+from my_browser.common.text import CITATIONS, plural, rub_text
 
 MODE_BUTTONS = {"quick": "⚡ Обзор", "detailed": "📄 Подробный", "deep": "🔬 Глубокий"}
 SOURCE_BUTTONS = {"web": "🌐 Веб", "academic": "🎓 Наука", "all": "🌐+🎓 Всё"}
@@ -172,10 +172,11 @@ def _chunks(text: str, limit: int = TG_LIMIT) -> list[str]:
 
 
 def _summary(markdown: str) -> tuple[str, str] | None:
-    """(what it is, its text): the overview's «Главное», else a longer report's conclusion; links as their anchors."""
+    """(what it is, its text): the overview's «Главное», else a longer report's conclusion; without the citations in
+    brackets (the files have them), other links as their anchors."""
     for name, heading in (("главное", r"Главное|Key points"), ("заключение", r"Заключение|Выводы|Conclusion")):
         match = re.search(rf"^##\s+(?:{heading})[^\n]*\n(.*?)(?=^##\s|\Z)", markdown, re.S | re.M | re.I)
-        if match and (text := re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(1)).strip()):
+        if match and (text := re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", CITATIONS.sub("", match.group(1))).strip()):
             return name, text
     return None
 
