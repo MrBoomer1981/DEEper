@@ -123,6 +123,9 @@ def run_forever(stop: threading.Event | None = None) -> None:
     stop = stop or threading.Event()
     if added := sources.seed():
         logger.info("News: %d starting sources added", added)
+    if widened := items.widen_opps_window():
+        logger.info("Opportunities: %d sources polled again in full: posts of the last %d days get read",
+                    widened, items.OPPS_FRESH_DAYS)
     logger.info("News loop ready")
     while not stop.is_set():
         try:

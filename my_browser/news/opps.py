@@ -7,9 +7,11 @@
    POSTS_PER_STORY posts, EXTRACT_BATCH a call (extract()): is it an opportunity at all; its type, Russian title,
    organizer, what it gives; the deadline as the source writes it and as a date; the event's dates, format, place, who
    may apply, whether a Russian citizen living in Russia may take part, cost, reward, where to apply; how well it fits
-   the user's profile (config.clean_profile(): no contacts) and why. The same call names `same_as`: one of up to
+   the user's profile (config.clean_profile(): no contacts) and why; whether it is especially big (`major`: prepared
+   for months ahead, so the app shows it within its longer window). The same call names `same_as`: one of up to
    SIMILAR_REFS opportunities closest by embeddings, when it is the same one told in other words (merging leaves
-   retellings apart, dedup.OPPS_THRESHOLD); the story is then merged into it.
+   retellings apart, dedup.OPPS_THRESHOLD); the story is then merged into it. An opportunity read before `major`
+   existed is read again once, without a «deadline moved» message: its posts did not change.
 3. Dates are checked by the code, not trusted (deadline()): an ISO date or date and time, the time zone from the text,
    else Moscow for a Russian source and UTC for an international one (noted as assumed), the end of the day when no
    time is given. «до конца ноября» is `approximate`, its last day; «круглый год» is `rolling`, without a date.
@@ -30,7 +32,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from my_browser.news import config, db, scoring
+from my_browser.news import config, db, items, scoring
 from my_browser.news.collectors import clean_url, link_key
 
 logger = logging.getLogger(__name__)
@@ -102,10 +104,11 @@ EXTRACT_PROMPT = """Ты разбираешь анонсы возможност�
 - apply_url: адрес подачи заявки или официальная страница из адресов сюжета; null, если их нет.
 - fit: насколько это подходит профилю студента, от 0 до 10. 9–10 — точно его тема и формат; 6–8 — хорошо подходит; 3–5 — отчасти; 0–2 — не его профиль. Доступность из России в fit не учитывай: для неё есть ru_access.
 - fit_reason: почему такой fit, до 15 слов, по-русски, обращаясь на «ты».
+- major: true, если это особо крупная возможность, к которой готовятся заранее: международного или всероссийского масштаба, от известного организатора (крупная компания, ведущий университет, известная программа), с большим призовым фондом, стипендией или оплатой, или с отбором в несколько этапов (эссе, рекомендации, тестовое задание, собеседование). Например: MATS, ШАД, Yandex Cup, ICPC, летние школы ML с отбором, стажировки больших компаний. Обычный хакатон выходного дня, конкурс одного вуза или города, разовый воркшоп — false.
 - same_as: если сюжет — та же самая возможность (тот же хакатон, та же программа того же года), что одна из «Уже в радаре» под ним, — её номер, например "S41"; если та же, что сюжет этой пачки с меньшим id, — этот id; иначе null.
 
 Ответь только JSON-массивом, по объекту на сюжет, с тем же id:
-[{{"id": 1, "is_opportunity": true, "reason": null, "opp_type": "hackathon", "title_ru": "...", "organizer": "...", "summary_ru": "...", "deadline_text": "...", "deadline": "2026-11-01", "deadline_tz": null, "deadline_kind": "exact", "closed": false, "starts": null, "ends": null, "format": "online", "location": null, "eligibility": "...", "ru_access": "yes", "cost": "бесплатно", "reward": null, "apply_url": "https://...", "fit": 7, "fit_reason": "...", "same_as": null}}]
+[{{"id": 1, "is_opportunity": true, "reason": null, "opp_type": "hackathon", "title_ru": "...", "organizer": "...", "summary_ru": "...", "deadline_text": "...", "deadline": "2026-11-01", "deadline_tz": null, "deadline_kind": "exact", "closed": false, "starts": null, "ends": null, "format": "online", "location": null, "eligibility": "...", "ru_access": "yes", "cost": "бесплатно", "reward": null, "apply_url": "https://...", "fit": 7, "fit_reason": "...", "major": false, "same_as": null}}]
 
 {stories}"""
 
@@ -179,7 +182,7 @@ def _roundups(conn) -> list[dict]:
     return [dict(row) for row in conn.execute(
         "SELECT i.*, s.name AS source FROM items i JOIN sources s ON s.id = i.source_id WHERE i.lane = 'opps' "
         "AND i.digest = 1 AND i.backfill = 0 AND i.split_at IS NULL AND i.text IS NOT NULL AND i.published > ? "
-        "ORDER BY i.published DESC LIMIT ?", (time.time() - 30 * 86400, MAX_SPLITS_PER_RUN))]
+        "ORDER BY i.published DESC LIMIT ?", (time.time() - items.OPPS_FRESH_DAYS * 86400, MAX_SPLITS_PER_RUN))]
 
 
 def _roundup_block(post: dict, number: int) -> str:
@@ -226,11 +229,14 @@ async def split(settings: config.Settings) -> int:
 # --- 2. Stories ----------------------------------------------------------------------------------------------------
 
 def _waiting(conn) -> list[dict]:
-    """Stories of the lane never read, or grown since they were."""
+    """Stories of the lane never read, or grown since they were (`grown`), and opportunities still ahead that were read
+    before `major` existed."""
     return [dict(row) for row in conn.execute(
-        "SELECT s.*, o.status AS opp_status, o.deadline_at AS old_deadline_at, o.deadline AS old_deadline "
+        "SELECT s.*, o.status AS opp_status, o.deadline_at AS old_deadline_at, o.deadline AS old_deadline, "
+        "(o.story_id IS NULL OR s.last_updated > o.checked_at) AS grown "
         "FROM stories s LEFT JOIN opportunities o ON o.story_id = s.id "
-        "WHERE s.lane = 'opps' AND s.status != 'merged' AND (o.story_id IS NULL OR s.last_updated > o.checked_at) "
+        "WHERE s.lane = 'opps' AND s.status != 'merged' AND (o.story_id IS NULL OR s.last_updated > o.checked_at "
+        "OR (o.major IS NULL AND o.status IN ('open', 'tracked', 'applied'))) "
         "ORDER BY s.last_updated DESC LIMIT ?", (MAX_PER_RUN,))]
 
 
@@ -347,7 +353,7 @@ async def extract(settings: config.Settings) -> dict:
                 targets[n + 1] = story["id"]
                 counts["read"] += 1
                 counts[status if status in counts else "open"] += 1
-                if change:
+                if change and story["grown"]:  # a story read again only for `major`: the same posts, no news
                     moved.append(change)
             for change in moved:
                 _deadline_moved(conn, zone, *change)
@@ -389,21 +395,22 @@ def apply(conn, story: dict, answer: dict, lang: str, now: float | None = None, 
     conn.execute(
         "INSERT INTO opportunities (story_id, opp_type, title_ru, organizer, summary_ru, deadline, deadline_at, deadline_kind, "
         "deadline_text, tz_assumed, starts, ends, format, location, eligibility, ru_access, cost, reward, apply_url, fit, "
-        "fit_reason, status, drop_reason, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "fit_reason, major, status, drop_reason, checked_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT (story_id) DO UPDATE SET opp_type = excluded.opp_type, title_ru = excluded.title_ru, "
         "organizer = excluded.organizer, summary_ru = excluded.summary_ru, deadline = excluded.deadline, "
         "deadline_at = excluded.deadline_at, deadline_kind = excluded.deadline_kind, deadline_text = excluded.deadline_text, "
         "tz_assumed = excluded.tz_assumed, starts = excluded.starts, ends = excluded.ends, format = excluded.format, "
         "location = excluded.location, eligibility = excluded.eligibility, ru_access = excluded.ru_access, cost = excluded.cost, "
         "reward = excluded.reward, apply_url = excluded.apply_url, fit = excluded.fit, fit_reason = excluded.fit_reason, "
-        "status = excluded.status, drop_reason = excluded.drop_reason, checked_at = excluded.checked_at",
+        "major = excluded.major, status = excluded.status, drop_reason = excluded.drop_reason, checked_at = excluded.checked_at",
         (story["id"], opp_type, _text(answer.get("title_ru"), 200) or story.get("title"), _text(answer.get("organizer"), 200),
          _text(answer.get("summary_ru"), 600), iso, at, kind, _text(answer.get("deadline_text"), 200), int(assumed),
          starts, _day(answer.get("ends")),
          answer.get("format") if answer.get("format") in FORMATS else None, _text(answer.get("location"), 200),
          _text(answer.get("eligibility"), 300), answer.get("ru_access") if answer.get("ru_access") in ACCESS else "unclear",
          _text(answer.get("cost"), 120), _text(answer.get("reward"), 300), _url(answer.get("apply_url")), fit,
-         _text(answer.get("fit_reason"), 200), status, drop, now))
+         _text(answer.get("fit_reason"), 200), int(answer.get("major") is True), status, drop, now))
     old = story.get("old_deadline_at")
     if story.get("opp_status") == "tracked" and old and at and abs(at - old) > 86400:
         return status, (story["id"], story.get("old_deadline"), iso)
@@ -419,7 +426,7 @@ def _deadline_moved(conn, zone: ZoneInfo, story_id: int, old: str | None, new: s
         return
     moved = f"{opps_delivery.day(old, zone) if old else '?'} → {opps_delivery.day(new, zone) if new else '?'}"
     text = f"🗓 <b>Дедлайн перенесён</b>: {moved}\n\n" + opps_delivery.card(rows[0], time.time(), zone)
-    buttons = [[["✅ Подал", f"op:{story_id}:a"], ["↩️ Не отслеживать", f"op:{story_id}:o"]]]
+    buttons = [[["✅ Заявка подана", f"op:{story_id}:a"], ["↩️ Не отслеживать", f"op:{story_id}:o"]]]
     conn.execute("INSERT INTO deliveries (kind, created, text, buttons, story_ids) VALUES ('opp_deadline', ?, ?, ?, ?)",
                  (time.time(), text, json.dumps(buttons, ensure_ascii=False), json.dumps([story_id])))
 

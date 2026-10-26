@@ -87,7 +87,7 @@ CREATE INDEX IF NOT EXISTS stories_first_seen ON stories (first_seen);
 CREATE TABLE IF NOT EXISTS feedback (story_id INTEGER NOT NULL, value INTEGER NOT NULL, created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS deliveries (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,              -- urgent | digest
+    kind TEXT NOT NULL,              -- urgent | digest | restored | opp_reminder | opp_deadline (opp_hot, opp_digest until 26.10.2026)
     created REAL NOT NULL,
     text TEXT NOT NULL,              -- Telegram HTML
     buttons TEXT,                    -- JSON rows of [label, callback data]
@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS opportunities (
     status TEXT DEFAULT 'open',      -- open | tracked | hidden | applied | expired | dropped
     drop_reason TEXT,
     checked_at REAL,                 -- when the fields were last extracted
-    sent_at REAL                     -- when it went out, in a weekly digest or at once
+    sent_at REAL,                    -- when it reached the user: the app's morning update (until 26.10.2026 a Telegram digest)
+    major INTEGER                    -- especially big (prepared for months ahead): the app shows it within the longer window;
+                                     -- NULL: read before the field existed, so read again
 );
 CREATE TABLE IF NOT EXISTS opp_reminders (
     story_id INTEGER NOT NULL, days_before INTEGER NOT NULL, sent_at REAL NOT NULL,
@@ -132,7 +134,7 @@ ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "items": {"digest": "INTEGER DEFAULT 0", "lane": "TEXT DEFAULT 'news'", "split_at": "REAL", "copied_from": "INTEGER"},
     "stories": {"title_ru": "TEXT", "primary_url": "TEXT", "scored_count": "INTEGER", "scored_at": "REAL",
                 "update_sent": "INTEGER DEFAULT 0", "sent_count": "INTEGER", "lane": "TEXT DEFAULT 'news'"},
-    "opportunities": {"tz_assumed": "INTEGER DEFAULT 0"},
+    "opportunities": {"tz_assumed": "INTEGER DEFAULT 0", "major": "INTEGER"},
 }
 
 # Run once when a column is added to an older file: posts stored before digests were recognized get the flag.

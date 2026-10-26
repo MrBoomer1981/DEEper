@@ -76,11 +76,11 @@ HELP = """<b>Глубокие исследования</b>
 /dropped — что отсеяно за сутки и почему; «↩️» возвращает сюжет
 /pause, /resume — остановить и продолжить новости
 
-<b>Возможности</b>: хакатоны, школы, стажировки, гранты с дедлайнами.
-Новые приходят сводкой каждый день в 18:00, горящие — сразу. 📌 — отслеживать: напомню за 14, 3 и 1 день до дедлайна; ✅ — подал заявку; ✖️ — не моё. В приложении — «Радар» → «Мои»: куда регистрация уже есть, а куда ещё нет.
-/opps — открытые возможности, ближайшие дедлайны сверху, фильтр по типам
+<b>Возможности</b>: хакатоны, школы, стажировки, гранты с дедлайнами — в приложении, «Радар» → «Возможности». Список обновляется каждое утро в 08:00: в нём то, до срока чего не больше 3 месяцев, а у крупного — 6.
+Сюда приходят только напоминания о тех, что вы отслеживаете («В мои» в приложении или 📌 здесь): за 14, 3 и 1 день до дедлайна. ✅ — заявка подана, ✖️ — не буду.
+/opps — то же, что в приложении: ближайшие дедлайны сверху, фильтр по типам
 /deadlines — отслеживаемые по дате
-/opptypes — какие типы присылать
+/opptypes — какие типы показывать
 /profile — профиль: по нему оценивается, что подходит; /profile текст — заменить
 /add opps @канал, лента или страница программы — источник возможностей"""
 
@@ -479,11 +479,18 @@ def news_text(status: dict) -> str:
 
 
 def opps_text(opps: dict) -> str:
-    """/news, the opportunities' lines: what is open and tracked, the nearest tracked deadline, the lane's spend."""
+    """/news, the opportunities' lines: what the app shows (new since the morning update, beyond the window) and what
+    is tracked, when the list was updated, the nearest tracked deadline, the lane's sources and spend."""
     if not opps["enabled"]:
         return "🎯 <b>Возможности</b> выключены"
     sources, spend = opps["sources"], opps["spend"]
-    lines = [f"🎯 <b>Возможности</b>: открыто {opps['open']}, отслеживаю {opps['tracked']}"]
+    if "shown" in opps:
+        lines = [f"🎯 <b>Возможности</b> в приложении: {opps['shown']}, из них новых {opps['new']}; со сроком позже "
+                 f"{opps['later']}; отслеживаю {opps['tracked']}"]
+        if opps.get("updated"):
+            lines.append(f"Список обновлён {opps['updated']}, снова {opps['next_update']}")
+    else:  # a news part from before the morning updates
+        lines = [f"🎯 <b>Возможности</b>: открыто {opps['open']}, отслеживаю {opps['tracked']}"]
     if nearest := opps.get("next_tracked"):
         lines.append(f"Ближайший дедлайн: {html.escape(nearest['title_ru'] or '')} — {nearest['when']}")
     failing = f", с ошибкой {len(sources['failing'])}" if sources["failing"] else ""
@@ -608,15 +615,16 @@ OPPS_PAGE = 12  # opportunities in one /opps message
 
 
 async def _opps_view(type_: str = "") -> tuple[str, InlineKeyboardMarkup | None]:
-    """/opps: open and tracked opportunities, the tracked first, then by deadline; «📌 N» tracks, the type buttons filter."""
-    items = (await call("news", "GET", "/opps", params={"limit": 200})).json()
+    """/opps: the open opportunities the app shows (the morning update's, within the window) and the tracked ones, the
+    tracked first, then by deadline; «📌 N» tracks, the type buttons filter."""
+    items = (await call("news", "GET", "/opps", params={"limit": 200, "shown": "true"})).json()
     names = (await call("news", "GET", "/settings")).json()["opp_type_names"]
     counts: dict[str, int] = {}
     for item in items:
         counts[item["opp_type"]] = counts.get(item["opp_type"], 0) + 1
     shown = [i for i in items if not type_ or i["opp_type"] == type_]
     if not items:
-        return "Открытых возможностей пока нет: источники разбираются, первые придут в сводке или сразу, если горят.", None
+        return "Открытых возможностей пока нет. Список обновляется каждое утро в 08:00, его видно и в приложении.", None
     title = names.get(type_, "все") if type_ else "все"
     lines = [f"🎯 <b>Возможности</b> · {title}: {len(shown)}"]
     lines += [f"{n}. {'📌 ' if i['status'] == 'tracked' else ''}{i['line']}" for n, i in enumerate(shown[:OPPS_PAGE], 1)]
@@ -650,11 +658,11 @@ async def cmd_deadlines(message: Message) -> None:
     """Tracked opportunities by deadline; «✅ N» marks one applied."""
     items = (await call("news", "GET", "/opps/tracked")).json()
     if not items:
-        await message.answer("Ничего не отслеживается. Нажмите 📌 под возможностью в сводке или в /opps.")
+        await message.answer("Ничего не отслеживается. Нажмите «В мои» у возможности в приложении или 📌 в /opps.")
         return
     lines = ["📌 <b>Отслеживаемые</b>"] + [f"{n}. {i['line']}" for n, i in enumerate(items, 1)]
     buttons = [InlineKeyboardButton(text=f"✅ {n}", callback_data=f"op:{i['story_id']}:a") for n, i in enumerate(items, 1)]
-    await message.answer("\n".join(lines) + "\n\n✅ N — подал заявку: напоминания прекратятся",
+    await message.answer("\n".join(lines) + "\n\n✅ N — заявка подана: напоминания прекратятся",
                          reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 6] for i in range(0, len(buttons), 6)]),
                          link_preview_options=LinkPreviewOptions(is_disabled=True))
 
@@ -668,7 +676,7 @@ def _opptypes_keyboard(settings: dict) -> InlineKeyboardMarkup:
 @dp.message(Command("opptypes"))
 async def cmd_opptypes(message: Message) -> None:
     settings = (await call("news", "GET", "/settings")).json()
-    await message.answer("Какие возможности присылать: нажмите, чтобы включить или выключить тип. Собираются и оцениваются все.",
+    await message.answer("Какие возможности показывать: нажмите, чтобы включить или выключить тип. Собираются и оцениваются все.",
                          reply_markup=_opptypes_keyboard(settings))
 
 
@@ -720,11 +728,11 @@ async def on_opportunity(callback: CallbackQuery) -> None:
         listed = f"{', '.join(map(str, days[:-1]))} и {days[-1]}" if len(days) > 1 else ''.join(map(str, days))
         when = (f"Напомню за {listed} {plural(days[-1] if days else 0, 'день', 'дня', 'дней')} до дедлайна."
                 if opp["deadline_at"] and opp["deadline_kind"] in ("exact", "approximate") else
-                "Даты нет — напомнить к сроку не смогу; раз в месяц спрошу в сводке, открыт ли ещё приём.")
+                "Даты нет — напомнить к сроку не смогу: проверяйте на странице подачи, открыт ли ещё приём.")
         await callback.message.answer(
             f"📌 Отслеживаю: <b>{title}</b>\n{when}", link_preview_options=LinkPreviewOptions(is_disabled=True),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅ Подал", callback_data=f"op:{story_id}:a"),
+                InlineKeyboardButton(text="✅ Заявка подана", callback_data=f"op:{story_id}:a"),
                 InlineKeyboardButton(text="↩️ Не отслеживать", callback_data=f"op:{story_id}:o")]]))
     elif action == "h":
         await callback.answer("✖️ Скрыл: больше не покажу")

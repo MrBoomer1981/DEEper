@@ -93,17 +93,19 @@ def answer(prompt: str) -> str:
         return json.dumps([{"post": n, "items": [{"title": f"Тестовый хакатон {n}.{k}", "text": f"Онлайн-хакатон по ИИ для "
                                                   f"студентов, регистрация до {soon}.", "url": None} for k in (1, 2)]}
                            for n in posts], ensure_ascii=False)
-    if "Ты разбираешь анонсы возможностей для студента" in prompt:  # news/opps.py: the first hot, every fourth not one
+    if "Ты разбираешь анонсы возможностей для студента" in prompt:  # news/opps.py: the first due soon, every fourth not
+        # one; the third big and five months ahead (inside the app's longer window), the fifth four months (beyond it)
         ids = [int(n) for n in re.findall(r"^\[id (\d+)\]", prompt, re.M)]
         return json.dumps([{"id": n, "is_opportunity": False, "reason": "тестовая новость"} if n % 4 == 0 else
                            {"id": n, "is_opportunity": True, "reason": None, "opp_type": "hackathon" if n == 1 else "school",
                             "title_ru": f"Тестовая возможность {n}", "organizer": "Тестовый организатор",
                             "summary_ru": "Тестовая возможность: что это и что даёт.", "deadline_text": "тестовый дедлайн",
-                            "deadline": (date.today() + timedelta(days=5 if n == 1 else 30)).isoformat(), "deadline_tz": None,
+                            "deadline": (date.today() + timedelta(days={1: 5, 3: 150, 5: 120}.get(n, 30))).isoformat(),
+                            "deadline_tz": None,
                             "deadline_kind": "exact", "starts": None, "ends": None, "format": "online", "location": None,
                             "eligibility": "студенты", "ru_access": "yes" if n == 1 else "unclear", "cost": "бесплатно",
                             "reward": None, "apply_url": "https://example.org/apply", "fit": 8 if n == 1 else 5,
-                            "fit_reason": "тестовая причина", "same_as": None} for n in ids], ensure_ascii=False)
+                            "fit_reason": "тестовая причина", "major": n == 3, "same_as": None} for n in ids], ensure_ascii=False)
     if "Напиши по-русски резюме каждого сюжета" in prompt:  # news/scoring.py: summaries
         ids = [int(n) for n in re.findall(r"^\[id (\d+)\]", prompt, re.M)]
         return json.dumps([{"id": n, "summary": f"Тестовое резюме сюжета {n}: что произошло и кто это сделал."} for n in ids],

@@ -5,7 +5,8 @@
 
 `cases.jsonl` holds real posts of the collection of 25.10.2026, labeled by hand with the accepted answers: whether it
 is an opportunity at all and, for one, the deadline's day (null when the text gives none), the types and the
-ru_access values that are right, and whether the text says applications are closed. The cases go through
+ru_access values that are right, and whether the text says applications are closed. Whether the model calls one
+especially big (`major`) is not labeled: the results list those it marked, to be read by eye. The cases go through
 opps.describe() and opps.read() in batches of opps.EXTRACT_BATCH, with today fixed at 25.10.2026, and the model's
 deadline through opps.deadline(): the prompt and the parsing measured are those the loop runs. A missed opportunity
 counts as a miss of every field. Results go to eval/opps/results/<date>_<time>_<label>.md and .json.
@@ -106,6 +107,11 @@ def main() -> None:
                      + (f". Reason: {answer.get('reason')}" if "opportunity" in missed and answer.get("reason") else ""))
     if lines[-1] == "":
         lines.append("None.")
+    # `major` (shown within the app's longer window) has no labels: listed to be read by eye
+    major = [(case, answer) for case, answer in zip(cases, answers) if answer and answer.get("major") is True]
+    lines += ["", f"## Marked especially big (`major`): {len(major)} of {len(opportunities)}", ""]
+    lines += [f"- {case['id']} «{(answer.get('title_ru') or case['posts'][0]['title'])[:80]}» ({answer.get('opp_type')}, "
+              f"{answer.get('organizer') or '?'})" for case, answer in major] or ["None."]
     out = HERE / "results" / f"{datetime.now():%Y-%m-%d_%H%M}_{args.label}"
     out.parent.mkdir(exist_ok=True)
     out.with_suffix(".md").write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -3,7 +3,10 @@
 A source's first poll brings its whole history (OpenAI's feed lists 1 300 posts). Posts older than the dedup
 window, and undated posts of the first poll, are stored as backfill: known, so they never come back as new, and
 never news. Later, an undated post counts from when it was first seen. A post of the opportunities lane stays fresh
-for OPPS_FRESH_DAYS: an announcement of a month ago may still be open.
+for OPPS_FRESH_DAYS: the app shows what is due within three months, so an announcement of two months ago may well be
+open. When that window grows, the posts it now takes in were stored as backfill with their text cut: a poll that
+lists such a post again stores it whole, as fresh (REVIVE), and widen_opps_window() polls the lane's sources again
+in full once.
 """
 
 import json
@@ -23,7 +26,10 @@ WORDS = re.compile(
     re.IGNORECASE)
 INSERT = ("INSERT OR IGNORE INTO items (source_id, external_id, url, title, text, links, published, seen, lang, backfill, "
           "digest, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-OPPS_FRESH_DAYS = 30
+# The opportunities lane: a backfill post that is fresh now (the window grew) comes back whole, once.
+REVIVE = (INSERT.replace("INSERT OR IGNORE", "INSERT") + " ON CONFLICT (source_id, external_id) DO UPDATE SET "
+          "text = excluded.text, backfill = 0 WHERE items.backfill = 1")
+OPPS_FRESH_DAYS = 90  # 30 until 26.10.2026, when the app's window became three months
 KEEP_TEXT_DAYS = {"news": 30, "opps": 180}  # an opportunity's posts are read again while it is open
 
 
@@ -56,11 +62,24 @@ def store(source: dict, posts: list[Post], window_hours: int) -> tuple[int, int]
         (old_rows if backfill else fresh_rows).append(row)
     with db.transaction() as conn:
         start = conn.total_changes
-        conn.executemany(INSERT, fresh_rows)
+        conn.executemany(REVIVE if lane == "opps" else INSERT, fresh_rows)
         fresh = conn.total_changes - start
         conn.executemany(INSERT, old_rows)
         inserted = conn.total_changes - start
     return fresh, inserted
+
+
+def widen_opps_window() -> int:
+    """Once after OPPS_FRESH_DAYS grew: the lane's sources are polled again at the next tick, their feeds without the
+    conditional GET (an unchanged feed answers 304, with no posts), so the posts the window now takes in come back
+    whole (REVIVE) and get read. How many sources; 0 when the window is as wide as last time."""
+    if (db.get_state("opps_fresh_days") or 30) >= OPPS_FRESH_DAYS:
+        return 0
+    with db.transaction() as conn:  # a database that never polled the lane: its first polls take the window anyway
+        count = conn.execute("UPDATE sources SET etag = NULL, modified = NULL, polled = NULL "
+                             "WHERE lane = 'opps' AND enabled = 1 AND last_ok IS NOT NULL").rowcount
+    db.set_state("opps_fresh_days", OPPS_FRESH_DAYS)
+    return count
 
 
 def slim() -> int:

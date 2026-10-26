@@ -30,7 +30,7 @@ OPP_TYPES = {
 }
 WEEKDAYS = {"mon": "понедельник", "tue": "вторник", "wed": "среда", "thu": "четверг", "fri": "пятница",
             "sat": "суббота", "sun": "воскресенье"}
-DAILY = "daily"  # opps_digest_day: a digest every day (the weekly one of stage O3 left new ones waiting up to a week)
+DAILY = "daily"  # opps_digest_day: the app's list updated every day (a weekly digest of stage O3 left new ones waiting)
 DEFAULT_PROFILE = (
     "Студент технического вуза в России, гражданин РФ. Интересы: искусственный интеллект, машинное обучение, анализ "
     "данных, программирование. Подходит: хакатоны и соревнования по ИИ и ML, школы, стажировки, исследовательские "
@@ -45,9 +45,9 @@ LABELS = {
     "quiet_start": "начало тихих часов", "quiet_end": "конец тихих часов",
     "dedup_window_hours": "окно склейки, часов", "dedup_threshold": "порог склейки",
     "topics": "темы", "budget_month_rub": "бюджет на LLM в месяц, ₽", "paused": "пауза",
-    "opps_enabled": "возможности", "opps_digest_day": "день сводки возможностей",
-    "opps_digest_time": "время сводки возможностей", "opps_hot_days": "срок горящих, дней",
-    "opps_hot_min_fit": "порог соответствия горящих", "opps_reminders": "напоминания о дедлайне",
+    "opps_enabled": "возможности", "opps_digest_day": "день обновления возможностей",
+    "opps_digest_time": "время обновления возможностей", "opps_window_days": "окно возможностей, дней",
+    "opps_major_window_days": "окно крупных возможностей, дней", "opps_reminders": "напоминания о дедлайне",
     "opps_types": "типы возможностей", "opps_budget_month_rub": "бюджет возможностей на LLM в месяц, ₽",
     "opps_profile": "профиль",
 }
@@ -73,12 +73,14 @@ class Settings(BaseModel):
     budget_month_rub: float = Field(100, ge=0, le=300)  # the daily limit is a fifteenth of it
     paused: bool = False  # news only: deadlines keep coming
     opps_enabled: bool = True
-    opps_digest_day: str = DAILY  # the digest of new opportunities: every day, or one day a week (WEEKDAYS)
-    opps_digest_time: str = "18:00"
-    opps_hot_days: int = Field(7, ge=1, le=60)  # a deadline closer than this: a new opportunity goes out at once…
-    opps_hot_min_fit: int = Field(6, ge=0, le=10)  # …when it fits at least this well
-    opps_reminders: list[int] = [14, 3, 1]  # days before a tracked opportunity's deadline
-    opps_types: list[str] = list(OPP_TYPES)  # shown; every type is collected and scored
+    # The app's list of opportunities is updated once: every day, or one day a week (WEEKDAYS), at this time. Until
+    # 26.10.2026 these were a Telegram digest's, at 18:00; new opportunities now go only to the app.
+    opps_digest_day: str = DAILY
+    opps_digest_time: str = "08:00"
+    opps_window_days: int = Field(92, ge=7, le=366)  # the app shows what is due at most this far ahead…
+    opps_major_window_days: int = Field(183, ge=7, le=366)  # …an especially big opportunity this far
+    opps_reminders: list[int] = [14, 3, 1]  # days before a tracked opportunity's deadline, in Telegram
+    opps_types: list[str] = list(OPP_TYPES)  # shown in the app; every type is collected and scored
     opps_budget_month_rub: float = Field(30, ge=0, le=300)  # apart from the news budget
     opps_profile: str = DEFAULT_PROFILE
 

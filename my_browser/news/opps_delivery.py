@@ -1,21 +1,22 @@
-"""Opportunities to Telegram: the digest of new ones, «hot» ones at once, reminders of tracked deadlines.
+"""Opportunities for the user: the app's list, updated once a morning, and reminders of tracked deadlines in Telegram.
 
-Like the news (delivery.py), messages wait in the deliveries table and the bot sends them; the cards and their
-buttons are written here. Every tick run() queues what is due:
-- Hot: a new open opportunity whose deadline is within opps_hot_days and whose fit is at least opps_hot_min_fit goes
-  out at once, several together in one message (HOT_MAX at most); in the quiet hours it waits for their end. Without a
-  deadline the event's start stands in (effective()): a hackathon starting in five days is as hot.
-- The digest, every day at opps_digest_time, or once a week when opps_digest_day names a day (within
-  DIGEST_LATE_HOURS, so a restart does not lose it): the new open opportunities not sent yet, by how close the deadline
-  is (within two weeks, a month, later, none), within that by fit; low fit and no access from Russia go last; at most
-  DIGEST_MAX, the rest counted. Once a month it also asks about tracked ones without a date: «ещё открыто?».
-- Reminders: a tracked opportunity's deadline opps_reminders days ahead (14, 3, 1 by default), by calendar days in
-  the settings' time zone («за 1 день» comes the day before, not the night before at 23:59), each once (opp_reminders);
-  when several are due at once (tracked late), one message goes. They wait out the quiet
-  hours too. An approximate deadline is said to be one; rolling and unknown ones get none. Applied, hidden or expired
-  ones get nothing more.
-Only the types on in opps_types go out (all are read). Buttons: «📌 Отслеживать / ✖️ Не моё / 🔎 Исследовать»
-(op:<story>:t|h|r) under a single card, «📌 N» under several, «✅ Подал» (op:<story>:a) under a reminder.
+Since 26.10.2026 new opportunities reach the user only in the app (the user's request): no digest or «hot» messages in
+Telegram any more. Every tick run() does what is due:
+- The morning update: every day at opps_digest_time (08:00), or once a week when opps_digest_day names a day (within
+  UPDATE_LATE_HOURS, so a restart does not lose it), every open opportunity not shown yet whose date is within the
+  window goes into «Радар» → «Возможности» (release(): sent_at), and those are «Новые» until the next update. One found
+  during the day waits for the next morning. The very first run releases at once, so the list is not empty until then.
+- The window (in_window()): the registration deadline, else the event's start (effective()), at most opps_window_days
+  (92) ahead, an especially big one (`major`, read by opps.py) opps_major_window_days (183). A further one waits and
+  comes in as new on the morning it enters the window; undated ones and ones open all year are always in it.
+- board() is what the app shows: the released ones within the window, the new first, how many open ones lie beyond
+  the window, when the list was updated and when it will be next.
+- Reminders, still in Telegram: a tracked opportunity's deadline opps_reminders days ahead (14, 3, 1 by default), by
+  calendar days in the settings' time zone («за 1 день» comes the day before, not the night before at 23:59), each once
+  (opp_reminders); when several are due at once (tracked late), one message goes. They wait out the quiet hours. An
+  approximate deadline is said to be one; rolling and unknown ones get none. Applied, hidden or expired ones get
+  nothing more. Buttons «✅ Заявка подана / ✖️ Не буду» (op:<story>:a|h).
+Only the types on in opps_types are shown (all are read).
 """
 
 import html
@@ -27,10 +28,9 @@ from zoneinfo import ZoneInfo
 from my_browser.common.text import plural
 from my_browser.news import config, db, delivery
 
-HOT_MAX = 10
-DIGEST_MAX = 15
-DIGEST_LATE_HOURS = 6
+UPDATE_LATE_HOURS = 6
 OVER_DAYS = 30  # «Мои»: an opportunity without the event's dates is past this long after its deadline
+MONTHS_FROM_DAYS = 60  # «через 2 месяца» instead of «через 61 день»
 ONE = {"hackathon": "Хакатон", "competition": "Соревнование", "school": "Школа", "internship": "Стажировка",
        "fellowship": "Программа", "education": "Поступление", "conference": "Конференция", "grant": "Грант",
        "talk": "Выступление", "exam": "Экзамен", "other": "Возможность"}
@@ -81,8 +81,11 @@ def when(opp: dict, now: float, zone: ZoneInfo) -> str:
 
 
 def _left(moment: datetime, now: float, zone: ZoneInfo) -> str:
-    """How far a deadline is, by calendar days: «сегодня», «завтра», «через 18 дней», «прошёл»."""
+    """How far a deadline is, by calendar days: «сегодня», «завтра», «через 18 дней», «через 4 месяца», «прошёл»."""
     days = (moment.date() - datetime.fromtimestamp(now, zone).date()).days
+    if days > MONTHS_FROM_DAYS:
+        months = round(days / 30.4)
+        return f"через {months} {plural(months, 'месяц', 'месяца', 'месяцев')}"
     return "сегодня" if days == 0 else "завтра" if days == 1 else "прошёл" if days < 0 else \
         f"через {days} {plural(days, 'день', 'дня', 'дней')}"
 
@@ -153,15 +156,6 @@ def card(opp: dict, now: float, zone: ZoneInfo, number: int | None = None) -> st
     return "\n".join(lines)
 
 
-def card_buttons(story_id: int) -> list[list[list[str]]]:
-    return [[["📌 Отслеживать", f"op:{story_id}:t"], ["✖️ Не моё", f"op:{story_id}:h"], ["🔎 Исследовать", f"op:{story_id}:r"]]]
-
-
-def number_buttons(story_ids: list[int]) -> list[list[list[str]]]:
-    buttons = [[f"📌 {n}", f"op:{sid}:t"] for n, sid in enumerate(story_ids, 1)]
-    return [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
-
-
 def _enqueue(conn, kind: str, text: str, buttons: list, story_ids: list[int]) -> None:
     conn.execute("INSERT INTO deliveries (kind, created, text, buttons, story_ids) VALUES (?, ?, ?, ?, ?)",
                  (kind, time.time(), text, json.dumps(buttons, ensure_ascii=False), json.dumps(story_ids)))
@@ -199,83 +193,112 @@ def order(opps: list[dict], now: float, zone: ZoneInfo) -> list[dict]:
                                       effective(o, zone) or 0))
 
 
+def window_days(opp: dict, settings: config.Settings) -> int:
+    """How far ahead the app shows this opportunity: further for an especially big one."""
+    return max(settings.opps_window_days, settings.opps_major_window_days) if opp.get("major") else settings.opps_window_days
+
+
+def in_window(opp: dict, now: float, zone: ZoneInfo, settings: config.Settings) -> bool:
+    """The deadline (else the event's start) is at most window_days() ahead; undated and all-year ones always are."""
+    at = effective(opp, zone)
+    return at is None or at <= now + window_days(opp, settings) * 86400
+
+
 def run(now: float | None = None, local: datetime | None = None) -> dict:
-    """Queue what is due: hot opportunities, the weekly digest, reminders. A summary of what was queued."""
+    """The morning update when it is due (and at the very first run), and the reminders that are due."""
     settings = config.load()
     if not settings.opps_enabled:
         return {"enabled": False}
     now = now or time.time()
     zone = _zone(settings)
     local = local or datetime.fromtimestamp(now, zone)
-    queued = {"hot": 0, "digest": 0, "reminders": 0}
-    digest_key = _due_digest(settings, local)
+    key = _due_update(settings, local)
+    first = db.get_state("opps_update") is None
+    done: dict = {"released": None, "reminders": 0}
     with db.transaction() as conn:
-        if digest_key:  # first: a digest due now takes the hot ones of this moment too
-            queued["digest"] = _digest(conn, settings, now, zone, local)
+        if key or first:
+            done["released"] = release(conn, settings, now, zone)
         if not delivery.quiet(settings, local):
-            queued["hot"] = _hot(conn, settings, now, zone)
-            queued["reminders"] = _reminders(conn, settings, now, zone)
-    if digest_key:  # after the transaction: set_state takes the same write lock
-        db.set_state("opps_digests_done", (db.get_state("opps_digests_done", []) + [digest_key])[-10:])
-    return queued
+            done["reminders"] = _reminders(conn, settings, now, zone)
+    if done["released"] is not None:  # after the transaction: set_state takes the same write lock
+        db.set_state("opps_update", {"at": now, "new": done["released"]})
+        if key:
+            db.set_state("opps_updates_done", (db.get_state("opps_updates_done", []) + [key])[-10:])
+    return done
 
 
-def _hot(conn, settings: config.Settings, now: float, zone: ZoneInfo) -> int:
-    on, types = _types(settings)
-    soon = now + settings.opps_hot_days * 86400
-    hot = order([o for o in _rows(conn, f"o.status = 'open' AND o.sent_at IS NULL AND o.fit >= ? AND {on}",
-                                  [settings.opps_hot_min_fit, *types])
-                 if (at := effective(o, zone)) and now < at <= soon], now, zone)[:HOT_MAX]
-    if not hot:
-        return 0
-    if len(hot) == 1:
-        text = "🔥 <b>Горящая возможность</b>\n\n" + card(hot[0], now, zone)
-        buttons = card_buttons(hot[0]["story_id"])
-    else:
-        text = (f"🔥 <b>Горящие возможности</b> · {len(hot)}\n\n"
-                + "\n\n".join(card(o, now, zone, n) for n, o in enumerate(hot, 1)))
-        buttons = number_buttons([o["story_id"] for o in hot])
-    _enqueue(conn, "opp_hot", text, buttons, [o["story_id"] for o in hot])
-    _mark_sent(conn, hot, now)
-    return len(hot)
-
-
-def _due_digest(settings: config.Settings, local: datetime) -> str | None:
-    """The digest's date («2026-10-25») when it is due now and not made yet: every day, or on opps_digest_day."""
+def _slot(settings: config.Settings, local: datetime) -> datetime:
     hours, minutes = map(int, settings.opps_digest_time.split(":"))
-    slot = local.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+    return local.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+
+
+def _due_update(settings: config.Settings, local: datetime) -> str | None:
+    """The update's date («2026-10-27») when it is due now and not made yet: every day, or on opps_digest_day."""
+    slot = _slot(settings, local)
     key = f"{slot:%Y-%m-%d}"
     weekly = settings.opps_digest_day != config.DAILY
-    if (weekly and local.weekday() != WEEKDAY[settings.opps_digest_day]) or not slot <= local < slot + timedelta(hours=DIGEST_LATE_HOURS):
+    if (weekly and local.weekday() != WEEKDAY[settings.opps_digest_day]) or not slot <= local < slot + timedelta(hours=UPDATE_LATE_HOURS):
         return None
-    return None if key in db.get_state("opps_digests_done", []) else key
+    return None if key in db.get_state("opps_updates_done", []) else key
 
 
-def _digest(conn, settings: config.Settings, now: float, zone: ZoneInfo, local: datetime) -> int:
+def next_update(settings: config.Settings, local: datetime) -> datetime:
+    """When the list will be updated next: today's slot if it is still ahead, else the next day's (or weekday's)."""
+    slot = _slot(settings, local)
+    if slot <= local:
+        slot += timedelta(days=1)
+    if settings.opps_digest_day != config.DAILY:
+        slot += timedelta(days=(WEEKDAY[settings.opps_digest_day] - slot.weekday()) % 7)
+    return slot
+
+
+def release(conn, settings: config.Settings, now: float, zone: ZoneInfo) -> int:
+    """The morning update: every open opportunity not shown yet, of the types on, whose date is within the window,
+    goes into the app's list (sent_at); how many."""
     on, types = _types(settings)
-    fresh = order(_rows(conn, f"o.status = 'open' AND o.sent_at IS NULL AND {on}", types), now, zone)
-    shown, rest = fresh[:DIGEST_MAX], fresh[DIGEST_MAX:]
-    month = f"{local:%Y-%m}"
-    check = []
-    if db.get_state("opps_check_month") != month:  # once a month: tracked ones without a date, still open?
-        check = _rows(conn, "o.status = 'tracked' AND o.deadline_at IS NULL", [])
-    if not shown and not check:
-        return 0
-    lines = [f"🎯 <b>Новые возможности</b> · {len(fresh)}" if settings.opps_digest_day == config.DAILY else
-             f"🎯 <b>Возможности недели</b> · {len(fresh)} {plural(len(fresh), 'новая', 'новых', 'новых')}"]
-    lines += [card(o, now, zone, n) for n, o in enumerate(shown, 1)]
-    if rest:
-        lines.append(f"…и ещё {len(rest)}: /opps")
-    if check:
-        lines.append("❓ <b>Ещё открыто?</b> Отслеживаешь без даты — проверь:\n"
-                     + "\n".join(f"• {html.escape(o['title_ru'] or o['title'] or '')}" for o in check))
-    _enqueue(conn, "opp_digest", "\n\n".join(lines), number_buttons([o["story_id"] for o in shown]),
-             [o["story_id"] for o in shown + check])
-    _mark_sent(conn, fresh, now)  # the ones counted but not shown are in /opps, not in the next digest
-    if check:
-        conn.execute("INSERT INTO state (key, value) VALUES ('opps_check_month', ?) ON CONFLICT (key) DO UPDATE SET "
-                     "value = excluded.value", (json.dumps(month),))
-    return len(shown)
+    waiting = [o for o in _rows(conn, f"o.status = 'open' AND o.sent_at IS NULL AND {on}", types)
+               if in_window(o, now, zone, settings)]
+    _mark_sent(conn, waiting, now)
+    return len(waiting)
+
+
+def _moment(at: float, now: float, zone: ZoneInfo) -> str:
+    """«сегодня в 08:00», «вчера в 08:00», «завтра в 08:00», «2 ноя в 08:00»."""
+    moment, today = datetime.fromtimestamp(at, zone), datetime.fromtimestamp(now, zone).date()
+    days = (moment.date() - today).days
+    name = {0: "сегодня", -1: "вчера", 1: "завтра"}.get(days, f"{moment.day} {MONTHS[moment.month - 1]}")
+    return f"{name} в\u00a0{moment:%H:%M}"  # «в» never ends a line
+
+
+def board(now: float | None = None) -> dict:
+    """«Радар» → «Возможности»: the open ones released by the morning updates and within the window, the new ones
+    (released by the latest update) first, by how soon and fit (order()), then the rest by how soon (by_date());
+    `later`: open ones beyond the window, which come in when they enter it; `updated` and `next`: when the list was
+    updated and will be, as the app writes it."""
+    settings = config.load()
+    zone, now = _zone(settings), now or time.time()
+    at = (db.get_state("opps_update") or {}).get("at")
+    on, types = _types(settings)
+    with db.connect() as conn:
+        rows = _rows(conn, f"o.status = 'open' AND {on}", types)
+    inside = [o for o in rows if in_window(o, now, zone, settings)]
+    shown = [o for o in inside if o["sent_at"]]
+    for o in shown:
+        o["new"] = bool(at and o["sent_at"] >= at)
+    items = order([o for o in shown if o["new"]], now, zone) + by_date([o for o in shown if not o["new"]])
+    return {"items": dressed(items), "new": sum(o["new"] for o in shown), "later": len(rows) - len(inside),
+            "updated": _moment(at, now, zone) if at else None,
+            "next": _moment(next_update(settings, datetime.fromtimestamp(now, zone)).timestamp(), now, zone),
+            "window_days": settings.opps_window_days, "major_window_days": settings.opps_major_window_days}
+
+
+def on_board(rows: list[dict]) -> list[dict]:
+    """Of listing()'s rows, what the app shows too: the user's own (tracked, applied) and the open ones the morning
+    updates released, of the types on, within the window (the bot's /opps)."""
+    settings = config.load()
+    zone, now = _zone(settings), time.time()
+    return [o for o in rows if o["status"] != "open" or (o["sent_at"] and o["opp_type"] in settings.opps_types
+                                                         and in_window(o, now, zone, settings))]
 
 
 def _reminders(conn, settings: config.Settings, now: float, zone: ZoneInfo) -> int:
@@ -289,7 +312,7 @@ def _reminders(conn, settings: config.Settings, now: float, zone: ZoneInfo) -> i
         text = f"⏰ <b>Скоро дедлайн</b>\n\n{card(opp, now, zone)}"
         if opp["deadline_kind"] == "approximate":
             text += "\n⚠️ Точной даты нет — проверь на сайте."
-        _enqueue(conn, "opp_reminder", text, [[["✅ Подал", f"op:{opp['story_id']}:a"],
+        _enqueue(conn, "opp_reminder", text, [[["✅ Заявка подана", f"op:{opp['story_id']}:a"],
                                                ["✖️ Не буду", f"op:{opp['story_id']}:h"]]], [opp["story_id"]])
         conn.executemany("INSERT OR IGNORE INTO opp_reminders (story_id, days_before, sent_at) VALUES (?, ?, ?)",
                          [(opp["story_id"], d, now) for d in due])  # the farther ones are past already
@@ -384,8 +407,10 @@ def details(opp: dict, now: float, zone: ZoneInfo) -> list[list[str]]:
 def dressed(rows: list[dict]) -> list[dict]:
     """Opportunities with what the bot and the app show, written here (they format nothing themselves): `line` and
     `card` (Telegram HTML), `meta` (plain), `type_name` and `type_short`, `apply` (where to apply, else the latest
-    post), and for the app's sheet and «Мои» `details` ([label, text] pairs) and `over` (the event is behind)."""
-    zone, now = _zone(config.load()), time.time()
+    post), and for the app's sheet and «Мои» `details` ([label, text] pairs; an especially big one says so) and
+    `over` (the event is behind); `major` as a bool."""
+    settings = config.load()
+    zone, now = _zone(settings), time.time()
     with db.connect() as conn:
         for row in rows:
             row.setdefault("link", _link(conn, row["story_id"]))
@@ -394,4 +419,9 @@ def dressed(rows: list[dict]) -> list[dict]:
             row["type_short"] = SHORT.get(row["opp_type"], row["type_name"])
             row["apply"] = row["apply_url"] or row["link"]
             row["details"], row["over"] = details(row, now, zone), over(row, now, zone)
+            row["major"] = bool(row.get("major"))
+            if row["major"]:
+                months = round(window_days(row, settings) / 30.4)
+                row["details"].append(["Масштаб", f"крупная возможность: в списке за {months} "
+                                                  f"{plural(months, 'месяц', 'месяца', 'месяцев')} до срока"])
     return rows

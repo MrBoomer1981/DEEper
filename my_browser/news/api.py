@@ -72,6 +72,7 @@ def status() -> dict:
         next_deadline, next_tracked = _deadline(conn, now, ("open", "tracked"), tz), _deadline(conn, now, ("tracked",), tz)
     spent_today, spent_month = scoring.spent(settings)
     opps_today, opps_month = scoring.spent(settings, "opps")
+    board = opps_delivery.board() if settings.opps_enabled else {}
     last = db.get_state("last_collect")
     tick = db.get_state("loop_tick")
     return {
@@ -88,6 +89,9 @@ def status() -> dict:
         "opps": {
             "enabled": settings.opps_enabled, "sources": opps_sources, "open": opps_open, "tracked": opps_tracked,
             "next_deadline": next_deadline, "next_tracked": next_tracked,
+            # what the app shows: in its list, of them new since the morning update, beyond the window; and when
+            "shown": len(board.get("items", [])), "new": board.get("new", 0), "later": board.get("later", 0),
+            "updated": board.get("updated"), "next_update": board.get("next"),
             "spend": {"today_rub": round(opps_today, 2), "month_rub": round(opps_month, 2),
                       "budget_month_rub": settings.opps_budget_month_rub,
                       "daily_budget_rub": round(settings.opps_daily_budget_rub, 2)},
@@ -216,10 +220,21 @@ async def post_score() -> dict:
 
 
 @app.get("/opps")
-async def get_opps(status: str = "", type: str = "", limit: int = 50) -> list[dict]:
+async def get_opps(status: str = "", type: str = "", limit: int = 50, shown: bool = False) -> list[dict]:
     """Opportunities (open and tracked unless `status` lists others, comma-separated), the tracked first, then by
-    deadline, then by fit; `type` one of config.OPP_TYPES. Each with `line` and `card` (Telegram HTML) for the bot."""
-    return opps_delivery.dressed(opps_delivery.by_date(opps.listing(status or None, type or None, limit)))
+    deadline, then by fit; `type` one of config.OPP_TYPES; `shown`: of the open ones only what the app shows (released
+    by a morning update, within the window, of the types on). Each with `line` and `card` (Telegram HTML) for the bot."""
+    rows = opps.listing(status or None, type or None, 100_000 if shown else limit)
+    if shown:
+        rows = opps_delivery.on_board(rows)[:limit]
+    return opps_delivery.dressed(opps_delivery.by_date(rows))
+
+
+@app.get("/opps/board")
+async def get_board() -> dict:
+    """«Радар» → «Возможности»: `items` (as /opps gives them, plus `new`), `new`, `later`, `updated`, `next`,
+    `window_days`, `major_window_days` (opps_delivery.board())."""
+    return opps_delivery.board()
 
 
 @app.post("/opps/run")

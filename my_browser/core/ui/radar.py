@@ -6,10 +6,13 @@ Three tabs, «Новости», «Возможности» and «Мои», the c
   sources reported it. A story opens the search screen with it as the topic; the arrow opens its best source. Below
   come the «Что исследовать дальше» topics of recent reports, minus the ones already researched; the card is theirs
   only while there is no news (one amber action per screen).
-- Opportunities: the open ones (hackathons, schools, internships, grants) by how soon, with a filter by type; each with
-  its caption as the news part writes it (`meta`: no colored marks, the brandbook has no green or red), why it fits,
-  and an arrow to where to apply. A row opens its sheet: what the news part knows of it (`details`), where to apply,
-  «В мои», «Регистрация есть», «Исследовать» (the search screen with it as a research topic) and «Не моё».
+- Opportunities: the open ones (hackathons, schools, internships, grants) as the news part's morning update gives
+  them (`/opps/board`; new ones reach the user only here since 26.10.2026): due within three months, an especially
+  big one within six, «Новые» (this morning's) first, then the rest by how soon, with a filter by type, when the list
+  was updated and will be next, and how many lie further ahead. Each with its caption as the news part writes it
+  (`meta`: no colored marks, the brandbook has no green or red), why it fits, and an arrow to where to apply. A row
+  opens its sheet: what the news part knows of it (`details`), where to apply, «В мои», «Регистрация есть»,
+  «Исследовать» (the search screen with it as a research topic) and «Не моё».
 - Mine: the ones the user took, here or with 📌 in the bot: «Регистрации ещё нет» (tracked), «Регистрация есть»
   (applied), and the ones whose event is behind under «Прошли». The circle before a row marks the registration in
   one tap. The statuses are the bot's: a tracked one gets its deadline reminders in Telegram, a registered one no more.
@@ -23,12 +26,12 @@ from nicegui import ui
 
 from my_browser.common.clients import call
 from my_browser.common.report import KINDS
+from my_browser.common.text import plural
 from my_browser.core.library import Library
 from my_browser.core.ui import kit
 from my_browser.core.ui.search import TOGGLE
 
 NEWS_LIMIT = 12
-OPPS_LIMIT = 60
 MINE_LIMIT = 200
 PAST_SHOWN = 10  # «Мои» → «Прошли»: the latest ones
 TABS = {"news": "Новости", "opps": "Возможности", "mine": "Мои"}
@@ -44,12 +47,13 @@ async def news() -> list[dict]:
         return []
 
 
-async def opportunities() -> list[dict]:
-    """The news part's open opportunities (the user's own are in mine()); empty when it does not answer."""
+async def opportunities() -> dict:
+    """The news part's list of open opportunities as its morning update left it (`/opps/board`: items, new, later,
+    updated, next); the user's own are in mine(). Empty when it does not answer."""
     try:
-        return (await call("news", "GET", "/opps", params={"status": "open", "limit": OPPS_LIMIT}, timeout=10)).json()
+        return (await call("news", "GET", "/opps/board", timeout=10)).json()
     except Exception:
-        return []
+        return {}
 
 
 async def mine() -> list[dict]:
@@ -189,23 +193,40 @@ def _text_button(text: str, on_click) -> None:
     button.on("click", on_click)
 
 
-def _opps_view(items: list[dict], kind: str, on_kind, on_open) -> None:
+def _opps_view(board: dict, kind: str, on_kind, on_open) -> None:
+    """The morning update's list: when it was made, the type filter, «Новые», the rest, and how many lie further."""
+    items = board.get("items") or []
     if not items:
         with ui.element("div").classes("empty"):
             kit.mascot("sleep", 120)
-            ui.label("Новых возможностей пока нет. Они придут в бот: сводка раз в день, горящие — сразу.").classes("sub-text")
+            ui.label("Новых возможностей пока нет. Список обновляется каждое утро"
+                     + (f", следующий раз — {board['next']}." if board.get("next") else ".")).classes("sub-text")
+        _later(board)
         return
+    if board.get("updated"):  # when the next one comes is said by the empty list: one line on a phone
+        ui.label(f"обновлено {board['updated']}").classes("li-sub")
     counts: dict[str, list] = {}
     for item in items:
         counts.setdefault(item["opp_type"], [item.get("type_short") or item["type_name"], 0])[1] += 1
     options = {"": f"все {len(items)}", **{key: f"{name} {n}" for key, (name, n) in sorted(counts.items(), key=lambda kv: -kv[1][1])}}
     ui.toggle(options, value=kind if kind in options else "", on_change=lambda e: on_kind(e.value or "")) \
         .props(TOGGLE).classes("seg wrap")
-    ui.label("Открытые").classes("sheet-label")
-    with ui.element("div").classes("list"):
-        for item in items:
-            if not kind or item["opp_type"] == kind:
-                _opp_row(item, on_open)
+    shown = [item for item in items if not kind or item["opp_type"] == kind]
+    for label, group in (("Новые", [i for i in shown if i.get("new")]), ("Открытые", [i for i in shown if not i.get("new")])):
+        if group:
+            ui.label(f"{label} · {len(group)}").classes("sheet-label")
+            with ui.element("div").classes("list"):
+                for item in group:
+                    _opp_row(item, on_open)
+    _later(board)
+
+
+def _later(board: dict) -> None:
+    """How many open ones are due beyond the window: they come into the list when their date draws near."""
+    if later := board.get("later"):
+        months = round(board.get("window_days", 92) / 30.4)
+        ui.label(f"Ещё {later} — со сроком дальше {months} {plural(months, 'месяца', 'месяцев', 'месяцев')}: "
+                 f"{plural(later, 'появится', 'появятся', 'появятся')} здесь, когда срок приблизится.").classes("sub-text")
 
 
 def _event_day(opp: dict) -> str:
@@ -216,8 +237,8 @@ def _mine_view(items: list[dict], on_open, on_mark) -> None:
     if not items:
         with ui.element("div").classes("empty"):
             kit.mascot("sleep", 120)
-            ui.label("Здесь будут возможности, которые ты выберешь: открой любую во «Возможностях» и нажми «В мои» "
-                     "(или «Отслеживать» в боте). Зарегистрируешься — отметь кружком.").classes("sub-text")
+            ui.label("Здесь будут возможности, которые ты выберешь: открой любую во «Возможностях» и нажми «В мои». "
+                     "Зарегистрируешься — отметь кружком. О дедлайнах напомнит бот.").classes("sub-text")
         return
     current = [i for i in items if not i["over"]]
     past = sorted((i for i in items if i["over"]), key=lambda i: i.get("ends") or _event_day(i), reverse=True)
@@ -233,14 +254,17 @@ def _mine_view(items: list[dict], on_open, on_mark) -> None:
                     _opp_row(item, on_open, on_mark)
 
 
-def radar_screen(stories: list[dict] | None = None, opps: list[dict] | None = None, own: list[dict] | None = None):
+def radar_screen(stories: list[dict] | None = None, board: dict | None = None, own: list[dict] | None = None):
     """The section «Радар» of the tab bar's page (tabs.py); returns what to call when it is shown again."""
     shown: dict[str, list] = {"news": [], "topics": [], "opps": [], "mine": []}
     tab = kit.prefs().get("radar_tab", "news")
-    state = {"tab": tab if tab in TABS else "news", "kind": "", "opps": opps or [], "mine": own or []}
+    state = {"tab": tab if tab in TABS else "news", "kind": "", "opps": board or {}, "mine": own or []}
 
     def opps_key(items: list[dict]) -> list:
-        return [(o["story_id"], o["status"], o["meta"]) for o in items]
+        return [(o["story_id"], o["status"], o["meta"], o.get("new")) for o in items]
+
+    def board_key(board: dict) -> list:
+        return [board.get("updated"), board.get("later"), *opps_key(board.get("items") or [])]
 
     async def act(opp: dict, status: str) -> None:
         """A status chosen in a sheet or with a circle: the news part stores it, the open tab is drawn anew."""
@@ -258,7 +282,7 @@ def radar_screen(stories: list[dict] | None = None, opps: list[dict] | None = No
 
     @ui.refreshable
     def opps_view() -> None:
-        shown["opps"] = opps_key(state["opps"])
+        shown["opps"] = board_key(state["opps"])
         _opps_view(state["opps"], state["kind"], pick_kind, open_sheet)
 
     @ui.refreshable
@@ -336,12 +360,17 @@ def radar_screen(stories: list[dict] | None = None, opps: list[dict] | None = No
             box.set_visibility(name == state["tab"])
 
     async def on_show() -> None:  # redrawn only when something changed, so the lists do not blink
-        if state["tab"] in ("opps", "mine"):
-            key = state["tab"]
-            items = await (opportunities() if key == "opps" else mine())
-            if opps_key(items) != shown[key]:
-                state[key] = items
-                (opps_view if key == "opps" else mine_view).refresh()
+        if state["tab"] == "opps":
+            board = await opportunities()
+            if board_key(board) != shown["opps"]:
+                state["opps"] = board
+                opps_view.refresh()
+            return
+        if state["tab"] == "mine":
+            items = await mine()
+            if opps_key(items) != shown["mine"]:
+                state["mine"] = items
+                mine_view.refresh()
             return
         items = await news()
         if news_key(items) != shown["news"]:
