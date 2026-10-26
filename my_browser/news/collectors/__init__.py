@@ -7,7 +7,7 @@ and the site's own pages. At stage 4 two posts that link to the same page are th
 import re
 import warnings
 from dataclasses import dataclass, field
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
@@ -25,6 +25,12 @@ SLUG = re.compile(r"[-_\d]")  # a single segment counts only when it looks like 
 # A newsletter's footer, in every post of its source: on 24.10.2026 MarkTechPost's beehiiv form glued 6 of its posts.
 # An invitation to a folder of channels or a chat says nothing of a post either (Changellenge's footer, 25.10.2026).
 NEWSLETTER = re.compile(r"^(?:magic\.beehiiv\.com|support\.substack\.com)/|[?&]email=|^t\.me/(?:addlist|joinchat)/")
+# Social networks: a link with one path segment there is a profile (a channel's «ВК | MAX | Сайт» footer), not a page.
+SOCIAL = {"vk.com", "vk.ru", "max.ru", "t.me", "telegram.me", "instagram.com", "youtube.com", "dzen.ru", "ok.ru",
+          "rutube.ru", "x.com", "twitter.com", "facebook.com", "linkedin.com", "tiktok.com"}
+REDIRECTS = {"vk.com", "vk.ru", "m.vk.com"}  # their /away.php?to=<address> leads off the network
+# …unless that one segment names a piece of content: a VK post, photo, video or article (vk.com/wall-1_2, /@club-slug).
+SOCIAL_CONTENT = re.compile(r"^(?:wall|photo|video|clip|topic|album|market|doc)-?\d|^@", re.IGNORECASE)
 
 
 @dataclass
@@ -48,10 +54,16 @@ class Fetched:
 
 
 def clean_url(url: str) -> str:
-    """The address without its fragment and tracking parameters, still clickable."""
+    """The address without its fragment and tracking parameters, still clickable. VK's redirect (/away.php?to=…)
+    gives the address it leads to; a host written in percent escapes («%D0%BA…» for «конгресс.наука.рф») is decoded."""
     parts = urlsplit(url.strip())
+    if (parts.hostname or "") in REDIRECTS and parts.path == "/away.php":
+        target = dict(parse_qsl(parts.query)).get("to", "")
+        if target.startswith(("http://", "https://")):
+            return clean_url(target)
+    netloc = unquote(parts.netloc) if "%" in parts.netloc else parts.netloc
     query = urlencode([(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not TRACKING.match(k)])
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+    return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
 
 
 def link_key(url: str) -> str:
@@ -80,6 +92,18 @@ def usable_key(key: str) -> bool:
     if host in SEGMENTS:
         return len(segments) >= SEGMENTS[host]
     return len(segments) >= 2 or (len(segments) == 1 and len(segments[0]) >= 6 and bool(SLUG.search(segments[0])))
+
+
+def footer_key(key: str) -> bool:
+    """A link a post carries for its channel, not for its story: a site's front page, or a profile on a social network
+    («ВК | MAX | Сайт» under every post of ITMO STUDENTS). It does not make a post a roundup."""
+    host, _, rest = key.partition("/")
+    path, _, query = rest.partition("?")
+    segments = [s for s in path.split("/") if s]
+    if not segments:
+        return not query
+    profile = host in SOCIAL and len(segments) == 1 and not query  # youtube.com/watch?v=… is a video
+    return profile and not (host in REDIRECTS and SOCIAL_CONTENT.match(segments[0]))
 
 
 def host(url: str) -> str:

@@ -69,6 +69,33 @@ def store(source: dict, posts: list[Post], window_hours: int) -> tuple[int, int]
     return fresh, inserted
 
 
+DIGEST_RULE = 2  # 26.10.2026: a channel's footer no longer makes a post a roundup (collectors.telegram.is_digest())
+
+
+def refresh_digests() -> int:
+    """Once after the roundup rule changed: the opportunities lane's Telegram posts taken for roundups are judged
+    again, their links normalized anew (VK's redirects, escaped hosts): not cut yet, or cut in the last two days into
+    nothing (the cutting model leaves out a «roundup» of one announcement it did not take for an opportunity). Those
+    that are single announcements are merged and read as such. How many."""
+    if (db.get_state("digest_rule") or 1) >= DIGEST_RULE:
+        return 0
+    from my_browser.news.collectors import link_key, telegram
+
+    with db.transaction() as conn:
+        rows = conn.execute(
+            "SELECT i.id, i.links FROM items i JOIN sources s ON s.id = i.source_id WHERE i.lane = 'opps' AND i.digest = 1 "
+            "AND s.kind = 'telegram' AND (i.split_at IS NULL OR (i.split_at > ? AND NOT EXISTS "
+            "(SELECT 1 FROM items part WHERE part.copied_from = i.id)))", (time.time() - 2 * 86400,)).fetchall()
+        single = []
+        for row in rows:
+            keys = list(dict.fromkeys(link_key(f"https://{key}") for key in json.loads(row["links"] or "[]")))
+            if not telegram.is_digest(keys):
+                single.append((json.dumps(keys), row["id"]))
+        conn.executemany("UPDATE items SET digest = 0, split_at = NULL, links = ? WHERE id = ?", single)
+    db.set_state("digest_rule", DIGEST_RULE)
+    return len(single)
+
+
 def widen_opps_window() -> int:
     """Once after OPPS_FRESH_DAYS grew: the lane's sources are polled again at the next tick, their feeds without the
     conditional GET (an unchanged feed answers 304, with no posts), so the posts the window now takes in come back

@@ -12,11 +12,13 @@ from datetime import datetime
 import httpx
 from bs4 import BeautifulSoup
 
-from my_browser.news.collectors import SHARE, TEXT_CHARS, Fetched, Post, inline, link_key
+from my_browser.news.collectors import SHARE, TEXT_CHARS, Fetched, Post, footer_key, inline, link_key
 
 TITLE_CHARS = 160
 WORDS = re.compile(r"\w{2,}")
-DIGEST_LINKS = 4  # a channel's roundup links every story it retells; one story rarely needs four links
+# A channel's roundup links every story it retells; one story rarely needs four links. The channel's own footer
+# (its profiles, its site) does not count: on 26.10.2026 «ВК | MAX | Сайт» made 18 of 55 announcements roundups.
+DIGEST_LINKS = 4
 
 
 async def fetch(source: dict, client: httpx.AsyncClient) -> Fetched:
@@ -27,6 +29,11 @@ async def fetch(source: dict, client: httpx.AsyncClient) -> Fetched:
     if not posts and "tgme_widget_message" not in response.text:
         raise ValueError("no public preview")  # t.me/s redirects to the channel's card when the preview is off
     return Fetched(posts)
+
+
+def is_digest(links: list[str]) -> bool:
+    """A roundup: DIGEST_LINKS or more links to pages, the channel's footer aside (footer_key())."""
+    return sum(not footer_key(key) for key in links) >= DIGEST_LINKS
 
 
 def _parse(html: str, name: str, inline_links: bool = False) -> list[Post]:
@@ -62,5 +69,5 @@ def _parse(html: str, name: str, inline_links: bool = False) -> list[Post]:
         published = datetime.fromisoformat(stamp["datetime"]).timestamp() if stamp else None
         post_id = message["data-post"]  # "channel/123"
         posts.append(Post(post_id, f"https://t.me/{post_id}", title[:TITLE_CHARS], text, links[:30], published,
-                          digest=len(links) >= DIGEST_LINKS))
+                          digest=is_digest(links)))
     return posts
