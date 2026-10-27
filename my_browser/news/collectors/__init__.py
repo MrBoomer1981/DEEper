@@ -137,10 +137,9 @@ def text_and_links(html: str, own_host: str, inline_links: bool = False) -> tupl
 
 
 async def fetch(source: dict, client: httpx.AsyncClient) -> Fetched:
-    from my_browser.news.collectors import devpost, hf_papers, mlss, page, rss, telegram
+    from my_browser.news.collectors import hf_papers, rss, telegram
 
-    collectors = {"rss": rss.fetch, "hf_papers": hf_papers.fetch, "telegram": telegram.fetch, "page": page.fetch,
-                  "devpost": devpost.fetch, "mlss": mlss.fetch}
+    collectors = {"rss": rss.fetch, "hf_papers": hf_papers.fetch, "telegram": telegram.fetch}
     if source["kind"] not in collectors:
         raise ValueError(f"no collector for {source['kind']!r} yet")
     return await collectors[source["kind"]](source, client)

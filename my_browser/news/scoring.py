@@ -13,9 +13,8 @@ by embeddings, and the model names one in `same_as` when it is the same event (o
 OpenAI round, 0.72 apart, would otherwise both go out, while two different ones were 0.67 apart). Such a story is
 merged into the earlier one (status «merged») instead of being scored.
 
-It also says whether a story announces something to apply to (`is_opportunity`): a news channel's post about a
-hackathon or a school. Its posts are then copied into the opportunities lane (copy_to_opps()), where merging and
-opps.py read them like that lane's own posts; the news story itself is scored as usual.
+Until 27.10.2026 the same call also said whether a story announced something to apply to, and its posts were copied
+into the opportunities lane; that lane moved to OnePath, which reads its own sources.
 """
 
 import asyncio
@@ -56,10 +55,9 @@ SCORE_PROMPT = """Ты редактор ленты новостей об иск�
 - title_ru: заголовок по-русски до 90 знаков: суть события, без кавычек-ёлочек вокруг всего заголовка и без эмодзи. Названия моделей и компаний — как в оригинале.
 - primary_url: адрес первоисточника (объявление компании, официальный блог, статья исследователей), если он есть среди ссылок или адресов постов сюжета; иначе null. Пересказ в СМИ — не первоисточник.
 - same_as: если сюжет — то же самое событие (тот же релиз, та же сделка, тот же инцидент, то же заявление), что и сюжет из списка «Уже в ленте» под ним, — номер того сюжета, например "S41"; если то же событие, что сюжет этой пачки с меньшим id, — этот id; иначе null. Похожая тема или та же компания — ещё не то же событие.
-- is_opportunity: true, если сюжет — анонс того, куда можно подать заявку или зарегистрироваться для участия: хакатон, соревнование, школа, стажировка, исследовательская программа, грант, конкурс, конференция с приёмом работ; иначе false.
 
 Ответь только JSON-массивом, по объекту на сюжет, с тем же id:
-[{{"id": 1, "is_ai": true, "topic": "models", "importance": 7, "reason": "...", "title_ru": "...", "primary_url": null, "same_as": null, "is_opportunity": false}}]
+[{{"id": 1, "is_ai": true, "topic": "models", "importance": 7, "reason": "...", "title_ru": "...", "primary_url": null, "same_as": null}}]
 
 {stories}"""
 
@@ -75,32 +73,27 @@ def _day(settings: config.Settings) -> str:
     return datetime.now(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d")
 
 
-SPEND = {"news": "spend", "opps": "opps_spend"}  # each lane counts against its own budget
-
-
-def spent(settings: config.Settings, lane: str = "news") -> tuple[float, float]:
-    """Rubles a lane spent today and this month (days in the settings' time zone)."""
-    day, table = _day(settings), SPEND[lane]
+def spent(settings: config.Settings) -> tuple[float, float]:
+    """Rubles spent today and this month (days in the settings' time zone)."""
+    day = _day(settings)
     with db.connect() as conn:
-        today = conn.execute(f"SELECT COALESCE(SUM(rub), 0) FROM {table} WHERE day = ?", (day,)).fetchone()[0]
-        month = conn.execute(f"SELECT COALESCE(SUM(rub), 0) FROM {table} WHERE day LIKE ?", (day[:7] + "%",)).fetchone()[0]
+        today = conn.execute("SELECT COALESCE(SUM(rub), 0) FROM spend WHERE day = ?", (day,)).fetchone()[0]
+        month = conn.execute("SELECT COALESCE(SUM(rub), 0) FROM spend WHERE day LIKE ?", (day[:7] + "%",)).fetchone()[0]
     return today, month
 
 
-def within_budget(settings: config.Settings, lane: str = "news") -> bool:
-    today, month = spent(settings, lane)
-    if lane == "opps":
-        return today < settings.opps_daily_budget_rub and month < settings.opps_budget_month_rub
+def within_budget(settings: config.Settings) -> bool:
+    today, month = spent(settings)
     return today < settings.daily_budget_rub and month < settings.budget_month_rub
 
 
-def _record(settings: config.Settings, rub: float, lane: str = "news") -> None:
+def _record(settings: config.Settings, rub: float) -> None:
     with db.transaction() as conn:
-        conn.execute(f"INSERT INTO {SPEND[lane]} (day, rub, calls) VALUES (?, ?, 1) ON CONFLICT (day) DO UPDATE SET "
+        conn.execute("INSERT INTO spend (day, rub, calls) VALUES (?, ?, 1) ON CONFLICT (day) DO UPDATE SET "
                      "rub = rub + excluded.rub, calls = calls + 1", (_day(settings), rub))
 
 
-async def _ask(settings: config.Settings, prompt: str, smart: bool = False, lane: str = "news", max_tokens: int = 4000) -> list:
+async def _ask(settings: config.Settings, prompt: str, smart: bool = False, max_tokens: int = 4000) -> list:
     """One metered call; the JSON array of the answer, asked a second time when the first answer is broken."""
     from gpt_researcher.config import Config
     from gpt_researcher.utils.llm import create_chat_completion
@@ -116,7 +109,7 @@ async def _ask(settings: config.Settings, prompt: str, smart: bool = False, lane
             except asyncio.TimeoutError:
                 answer = None
                 logger.warning("News LLM call timed out after %d s (attempt %d)", ASK_TIMEOUT_SEC, attempt + 1)
-        _record(settings, meter.rub(fetch=True), lane)
+        _record(settings, meter.rub(fetch=True))
         match = re.search(r"\[.*\]", answer or "", re.S)
         data = json_repair.loads(match.group(0)) if match else None
         if isinstance(data, list) and data:
@@ -201,7 +194,7 @@ async def run() -> dict:
             "SELECT * FROM stories WHERE lane = 'news' AND last_updated > ? AND status != 'merged' "
             "AND (scored_at IS NULL OR source_count >= scored_count + ?) "
             "ORDER BY source_count DESC, last_updated DESC LIMIT ?", (now - window, RESCORE_GROWTH, MAX_PER_RUN))]
-    scored = merged = copied = 0
+    scored = merged = 0
     today = datetime.now(ZoneInfo(settings.timezone)).strftime("%d.%m.%Y")
     for start in range(0, len(waiting), SCORE_BATCH):
         if not within_budget(settings):
@@ -229,33 +222,12 @@ async def run() -> dict:
                     merged += 1
                     continue
                 _apply(conn, story, answer)
-                if answer.get("is_opportunity") is True:
-                    copied += copy_to_opps(conn, story["id"])
                 targets[n + 1] = story["id"]
                 scored += 1
     summarized = await _summarize(settings)
     if scored or summarized or merged:
-        logger.info("News: %d stories scored, %d merged into earlier ones, %d summarized, %d posts copied to opportunities",
-                    scored, merged, summarized, copied)
-    return {"scored": scored, "merged": merged, "summarized": summarized, "copied": copied}
-
-
-def copy_to_opps(conn, story_id: int) -> int:
-    """A news story that announces an opportunity: its posts (one per owner, up to POSTS_PER_STORY) copied into the opps
-    lane, unmerged; each copy points to its post. A post copied before is not copied again."""
-    posts, owners = [], set()
-    for row in conn.execute("SELECT i.id, s.owner FROM items i JOIN sources s ON s.id = i.source_id WHERE i.story_id = ? "
-                            "AND i.lane = 'news' ORDER BY s.is_primary DESC, i.published", (story_id,)):
-        if row["owner"] not in owners:
-            owners.add(row["owner"])
-            posts.append(row["id"])
-    copied = 0
-    for item in posts[:POSTS_PER_STORY]:
-        copied += conn.execute(
-            "INSERT OR IGNORE INTO items (source_id, external_id, url, title, text, links, published, seen, lang, backfill, "
-            "digest, lane, copied_from) SELECT source_id, 'opp:' || external_id, url, title, text, links, published, ?, lang, "
-            "0, 0, 'opps', id FROM items WHERE id = ?", (time.time(), item)).rowcount
-    return copied
+        logger.info("News: %d stories scored, %d merged into earlier ones, %d summarized", scored, merged, summarized)
+    return {"scored": scored, "merged": merged, "summarized": summarized}
 
 
 def _same_as(value, refs: list[dict], targets: dict[int, int], number: int) -> int | None:

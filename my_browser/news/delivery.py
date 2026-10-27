@@ -13,7 +13,8 @@ sends them to TELEGRAM_ALLOWED_USERS and marks them sent (POST /deliveries/{id}/
 Nothing goes out while paused, and a story is never sent twice. Only the topics on in the settings go out
 (and into «Радар»). Everything is ordered and filtered by the effective importance: the scored one plus what 👍/👎
 taught (feedback.py). A dropped story the user brings back («Это было важно», /dropped) goes out at once.
-All of it is the news lane's: stories of the opportunities lane never reach digests, urgent messages or the feed.
+All of it is the news lane's: a database from before 27.10.2026 also holds the opportunities lane's stories, which
+moved to OnePath and never reach digests, urgent messages or the feed.
 """
 
 import html

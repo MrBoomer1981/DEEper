@@ -20,17 +20,17 @@ The bot is DEEper in Telegram: it starts researches, follows them and sends the 
   - `nr:<story id>`, `nf:<story id>:<±1>` a news story's research and feedback;
   - `nt:<topic>` a news topic switched on or off;
   - `nd:<story id>` a dropped news story brought back;
-  - `op:<story id>:<t|h|a|o|r>` an opportunity tracked, hidden, applied, untracked or researched; `ot:<type>` the /opps filter; `oy:<type>` a type toggled.
+  - `op:`, `ot:`, `oy:`: the opportunities' buttons of messages sent before 27.10.2026; `on_moved()` answers that they moved to OnePath.
 
   Topics are read back through the API, because Telegram limits callback data to 64 bytes. `pending` holds the offered topics, keyed by the message that offered them.
 - Every minute it looks for Telegram jobs interrupted by a restart and edits their status message to offer a restart.
-- `/news` shows the news part's status (`news_text()`): sources and their health, posts and stories of the last day, LLM spend, the schedule; then the opportunities (`opps_text()`): what the app shows (in the list, of them new, beyond the window) and what is tracked, when the list was updated and will be, the big annual events awaited and not found yet, the nearest tracked deadline, the lane's sources and its spend for the month, or that the lane is off.
+- `/news` shows the news part's status (`news_text()`): sources and their health, posts and stories of the last day, LLM spend, the schedule.
 - `deliver_news()` takes the news part's urgent stories and digests every `NEWS_SEC` (30 s) and sends them to every `TELEGRAM_ALLOWED_USERS` id, text as the news part wrote it (HTML, split by `_chunks()`), buttons on the last part. A message Telegram refuses is logged and given up, so it is not resent every round.
 - `nr:<story id>` offers a news story as a research topic (`_offer()`, as follow-up topics); `nf:<story id>:<±1>` stores 👍/👎 in the news part.
-- News settings: `/time`, `/quiet`, `/urgent` (each with `off`), `/pause`, `/resume` change the news part's settings (`_news_settings()`; a refused value comes back with the news part's message, in Russian); `/topics` toggles topics with buttons (`nt:<topic>`); `/sources` lists the sources with their health, news and opportunities apart (`SOURCE_LANES`), an opportunities source quiet longer than usual as 💤 with its days (`silent_days`), `/add` checks and adds a feed or a channel (`/add opps …` to the opportunities, where a program's page without a feed may be added too), `/remove` switches one off by number or name.
+- News settings: `/time`, `/quiet`, `/urgent` (each with `off`), `/pause`, `/resume` change the news part's settings (`_news_settings()`; a refused value comes back with the news part's message, in Russian); `/topics` toggles topics with buttons (`nt:<topic>`); `/sources` lists the sources with their health, `/add` checks and adds a feed or a channel, `/remove` switches one off by number or name.
 - `/dropped`: what the news part dropped in the last day, grouped (minor, not about AI) with the reasons; «↩️ N» (`nd:<story id>`) brings a story back: it comes as a message and counts as 👍.
-- Opportunities: new ones reach the user only in the app since 26.10.2026 (the news part's morning update); the bot gets only the reminders of tracked deadlines and «дедлайн перенесён» through `deliver_news()`. `/opps` lists what the app shows plus the tracked (`GET /opps?shown=true`, the news part's `line`s), «📌 N» tracks, the type buttons filter (`ot:<type>`, the message is edited); `/deadlines` the tracked by date, «✅ N» marks one applied; `/opptypes` toggles the types shown (`oy:<type>`). `on_opportunity()` handles `op:<story>:t|h|a|o|r` under reminders, /opps and the old digests' cards still in the chat: track (a message with «✅ Заявка подана» and «↩️ Не отслеживать», saying when it will remind), not mine, applied (the buttons go), stop tracking, research it (offered like a news story's 🔎).
-- `/profile` shows the profile the news part scores opportunities against (`opps_profile` of `GET /settings`); `/profile <text>` replaces it through `_news_settings()` (the news part refuses below 20 or above 3 000 characters). The user's real profile lives only there, never in the repository.
+- Opportunities (hackathons, schools, internships, grants) moved to their own app, OnePath, on 27.10.2026: it has no bot, and its deadlines are in the app («Скоро дедлайн»). `/opps`, `/deadlines`, `/opptypes` and `/add opps …` answer that they moved (`MOVED`), and so do the old messages' buttons (`on_moved()`).
+- `/profile` shows the profile the research follow-ups «Для меня» know (`profile` of `GET /settings`, empty until set); `/profile <text>` replaces it through `_news_settings()` (the news part refuses below 20 or above 3 000 characters). The user's real profile lives only there, never in the repository.
 
 ## Run and check it alone
 
@@ -50,12 +50,12 @@ uv run python -m my_browser.bot       # needs core at CORE_URL and a bot token; 
 - **Core's API**: `call("core", ...)` at `CORE_URL` with the service token.
   - `core/CLAUDE.md` lists the fields the bot reads and the order core keeps for follow-ups and Q&A.
   - The bot imports no module of core, the worker, search or news, so it can run alone with the `bot` group (aiogram, httpx, python-dotenv). Keep it that way.
-- **The news part's API**: `/status` for `/news`, `/deliveries` and `/deliveries/{id}/sent` for delivery, `/stories/{id}` and `/feedback` for the buttons, `/settings` and `/sources` for the settings commands, `/opps`, `/opps/tracked`, `/opps/{id}` and `/opps/{id}/status` for the opportunities; `news/CLAUDE.md` lists the fields. With `NEWS_URL` unset the call runs in-process and imports `my_browser.news.api`, so a bot installed alone (`--group bot`) needs `NEWS_URL`; without it `/news` answers «Новости сейчас недоступны».
+- **The news part's API**: `/status` for `/news`, `/deliveries` and `/deliveries/{id}/sent` for delivery, `/stories/{id}` and `/feedback` for the buttons, `/settings` and `/sources` for the settings commands; `news/CLAUDE.md` lists the fields. With `NEWS_URL` unset the call runs in-process and imports `my_browser.news.api`, so a bot installed alone (`--group bot`) needs `NEWS_URL`; without it `/news` answers «Новости сейчас недоступны».
 - **`common`**: `clients.call`, `report.KINDS` and `ANY_ANSWER`, `settings.DEFAULT_SOURCES` and `FACTCHECK_MODES`, `text.rub_text` and `plural`.
   - It must not import `common.costs`, `common.gptr` or `common.auth`: they pull in gpt-researcher and fastapi.
 - **Its own copies of what lives elsewhere**:
   - `MODE_BUTTONS` and `SOURCE_BUTTONS`, whose keys come from `common/settings.py`;
-  - the time estimates in `HELP`, which are also in `core/ui/kit.MODE_HINTS`; `HELP`'s opportunities: the update at 08:00 and the window of 3 months (6 for a big one), the news part's defaults (`opps_digest_time`, `opps_window_days`, `opps_major_window_days`);
+  - the time estimates in `HELP`, which are also in `core/ui/kit.MODE_HINTS`;
   - the summary pattern in `_summary()`: the overview's level-2 «Главное» (`Key points` in English), else a level-2 «Заключение», «Выводы» or «Conclusion» heading, as the worker writes them;
   - `GET /api/reports/{id}`'s `route` (`steps`, `next`) for the route's button, `entry.reading_min` for the reading time; `POST /api/jobs` with `route_step` and `hold`, and `POST /api/jobs/{id}/cancel` → `cancelled`;
   - `_factcheck_line()`, which reads `checked`, `relinked`, `rewritten` and `doubtful` of the report's `factcheck`, like the web's chip.

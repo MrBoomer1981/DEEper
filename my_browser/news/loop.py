@@ -1,12 +1,11 @@
 """The news loop: a plain thread that wakes every minute and does what is due.
 
-Each tick polls the sources whose interval has passed and stores their new posts, and once a week searches the web
-for opportunities the sources missed (discover.py); every few minutes it merges the new posts into stories (dedup.py),
-has the LLM score them (scoring.py) and read the opportunities (opps.py); every tick it queues what is due for Telegram
-(delivery.py: urgent stories, digests; opps_delivery.py: deadline reminders) and, once a morning, updates the app's
-list of opportunities (opps_delivery.py). One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
-worker's job loop (NEWS_LOOP=0 turns it off), `python -m my_browser.news` next to its API. Every tick is marked
-in the state table, so /status can tell whether a loop runs.
+Each tick polls the sources whose interval has passed and stores their new posts; every few minutes it merges the
+new posts into stories (dedup.py) and has the LLM score them (scoring.py); every tick it queues what is due for
+Telegram (delivery.py: urgent stories, digests). One loop per REPORTS_DIR: the all-in-one app.py starts it next to the
+worker's job loop (NEWS_LOOP=0 turns it off), `python -m my_browser.news` next to its API. Every tick is marked in the
+state table, so /status can tell whether a loop runs. The opportunities lane, with its reading, morning update and
+weekly web search, moved to OnePath on 27.10.2026.
 """
 
 import asyncio
@@ -17,7 +16,7 @@ import time
 import httpx
 
 from my_browser.common import memory
-from my_browser.news import collectors, config, db, dedup, delivery, discover, items, opps, opps_delivery, scoring, sources
+from my_browser.news import collectors, config, db, dedup, delivery, items, scoring, sources
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +95,6 @@ def tick() -> None:
         if summary.get("new") or summary.get("failed"):
             logger.info("News: %(polled)d sources polled, %(new)d new posts, %(failed)d failed, %(seconds)s s", summary)
         memory.trim()  # the parsed feeds and pages: free pages back to the system
-    try:
-        asyncio.run(discover.run())  # once a week; its new pages are merged below like any posts
-    except Exception:  # the opportunities lane must never stop the news
-        logger.exception("News loop: web search for opportunities failed")
     if now - (db.get_state("dedup_at") or 0) >= DEDUP_EVERY_SEC:
         db.set_state("dedup_at", now)  # before the run: a failing model does not retry every minute
         try:
@@ -107,16 +102,8 @@ def tick() -> None:
         except Exception:
             logger.exception("News loop: merging failed")
         asyncio.run(scoring.run())  # stories merged before still get scored when merging failed
-        try:
-            asyncio.run(opps.run())
-        except Exception:  # the opportunities lane must never stop the news
-            logger.exception("News loop: opportunities failed")
         memory.release()  # every few minutes, the parse trees' cycles too (a collection holds the GIL a moment)
     delivery.run()
-    try:
-        opps_delivery.run()
-    except Exception:  # the opportunities lane must never stop the news
-        logger.exception("News loop: opportunities delivery failed")
     if now - (db.get_state("slimmed_at") or 0) > SLIM_EVERY_SEC:
         db.set_state("slimmed_at", now)
         items.slim()
@@ -128,11 +115,6 @@ def run_forever(stop: threading.Event | None = None) -> None:
     stop = stop or threading.Event()
     if added := sources.seed():
         logger.info("News: %d starting sources added", added)
-    if single := items.refresh_digests():
-        logger.info("Opportunities: %d posts taken for roundups are single announcements after all", single)
-    if widened := items.widen_opps_window():
-        logger.info("Opportunities: %d sources polled again in full: posts of the last %d days get read",
-                    widened, items.OPPS_FRESH_DAYS)
     logger.info("News loop ready")
     while not stop.is_set():
         try:

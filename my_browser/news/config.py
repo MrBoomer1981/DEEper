@@ -3,9 +3,11 @@
 The bot's commands and the app change them through the API (stage 7). A wrong value is refused with a message
 that says what is expected; a stored value that no longer passes falls back to its default.
 
-The `opps_` settings are the opportunities lane's. Its profile, against which each
-opportunity's fit is scored, is the user's own text: the default here is deliberately neutral, since the repository
-is public, and the user sets theirs with the bot's /profile. Contacts never reach the prompt (clean_profile()).
+`profile` is the user's own text about themselves, which the research follow-ups «Для меня» read (core's
+service.claim(), through GET /profile): empty by default, since the repository is public; the user writes it with
+the bot's /profile. Contacts never reach a prompt (clean_profile()). Until 27.10.2026 it was the opportunities lane's
+`opps_profile`, with the lane's `opps_` settings; the lane moved to OnePath, and a stored `opps_` value is dropped at
+load.
 """
 
 import json
@@ -22,20 +24,6 @@ logger = logging.getLogger(__name__)
 TOPICS = {"models": "модели", "research": "исследования", "tools": "инструменты",
           "safety": "безопасность", "policy": "регулирование", "business": "бизнес"}
 TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-OPP_TYPES = {
-    "hackathon": "хакатоны", "competition": "соревнования и олимпиады", "school": "школы и интенсивы",
-    "internship": "стажировки", "fellowship": "исследовательские программы", "education": "программы с поступлением",
-    "conference": "конференции, форумы и call for papers", "grant": "гранты и стипендии", "talk": "выступления",
-    "exam": "экзамены и сертификаты", "other": "другое",
-}
-WEEKDAYS = {"mon": "понедельник", "tue": "вторник", "wed": "среда", "thu": "четверг", "fri": "пятница",
-            "sat": "суббота", "sun": "воскресенье"}
-DAILY = "daily"  # opps_digest_day: the app's list updated every day (a weekly digest of stage O3 left new ones waiting)
-DEFAULT_PROFILE = (
-    "Студент технического вуза в России, гражданин РФ. Интересы: искусственный интеллект, машинное обучение, анализ "
-    "данных, программирование. Подходит: хакатоны и соревнования по ИИ и ML, школы, стажировки, исследовательские "
-    "программы, конференции с подачей студенческих работ, гранты для студентов. Не подходит: акселераторы, "
-    "стартап-студии, мероприятия без технической части.")
 PROFILE_CHARS = (20, 3000)
 
 # How each setting reads to the user in an error message.
@@ -44,13 +32,7 @@ LABELS = {
     "urgent_enabled": "срочное", "urgent_min_importance": "порог срочности",
     "quiet_start": "начало тихих часов", "quiet_end": "конец тихих часов",
     "dedup_window_hours": "окно склейки, часов", "dedup_threshold": "порог склейки",
-    "topics": "темы", "budget_month_rub": "бюджет на LLM в месяц, ₽", "paused": "пауза",
-    "opps_enabled": "возможности", "opps_digest_day": "день обновления возможностей",
-    "opps_digest_time": "время обновления возможностей", "opps_window_days": "окно возможностей, дней",
-    "opps_major_window_days": "окно крупных возможностей, дней", "opps_search": "поиск возможностей по вебу",
-    "opps_reminders": "напоминания о дедлайне",
-    "opps_types": "типы возможностей", "opps_budget_month_rub": "бюджет возможностей на LLM в месяц, ₽",
-    "opps_profile": "профиль",
+    "topics": "темы", "budget_month_rub": "бюджет на LLM в месяц, ₽", "paused": "пауза", "profile": "профиль",
 }
 
 
@@ -72,19 +54,8 @@ class Settings(BaseModel):
     dedup_threshold: float = Field(0.66, gt=0, lt=1)  # eval/news, 24.10.2026: P 0.98, R 0.96 with links
     topics: list[str] = list(TOPICS)
     budget_month_rub: float = Field(100, ge=0, le=300)  # the daily limit is a fifteenth of it
-    paused: bool = False  # news only: deadlines keep coming
-    opps_enabled: bool = True
-    # The app's list of opportunities is updated once: every day, or one day a week (WEEKDAYS), at this time. Until
-    # 26.10.2026 these were a Telegram digest's, at 18:00; new opportunities now go only to the app.
-    opps_digest_day: str = DAILY
-    opps_digest_time: str = "08:00"
-    opps_window_days: int = Field(92, ge=7, le=366)  # the app shows what is due at most this far ahead…
-    opps_major_window_days: int = Field(183, ge=7, le=366)  # …an especially big opportunity this far
-    opps_search: bool = True  # once a week the web is searched for what the sources missed (discover.py)
-    opps_reminders: list[int] = [14, 3, 1]  # days before a tracked opportunity's deadline, in Telegram
-    opps_types: list[str] = list(OPP_TYPES)  # shown in the app; every type is collected and scored
-    opps_budget_month_rub: float = Field(30, ge=0, le=300)  # apart from the news budget
-    opps_profile: str = DEFAULT_PROFILE
+    paused: bool = False
+    profile: str = ""  # the user's own, for the research follow-ups «Для меня»; empty: none
 
     @field_validator("timezone")
     @classmethod
@@ -117,40 +88,11 @@ class Settings(BaseModel):
             raise ValueError(f"нет темы «{unknown[0]}», есть: {', '.join(TOPICS)}")
         return [t for t in TOPICS if t in values]
 
-    @field_validator("opps_digest_day")
-    @classmethod
-    def _weekday(cls, value: str) -> str:
-        if value != DAILY and value not in WEEKDAYS:
-            raise ValueError(f"«{value}» — нужен {DAILY} (каждый день) или день недели: {', '.join(WEEKDAYS)}")
-        return value
-
-    @field_validator("opps_digest_time")
-    @classmethod
-    def _opps_time(cls, value: str) -> str:
-        return _check_time(value)
-
-    @field_validator("opps_reminders")
-    @classmethod
-    def _reminders(cls, values: list[int]) -> list[int]:
-        if any(not 1 <= v <= 60 for v in values):
-            raise ValueError("за сколько дней — от 1 до 60")
-        if len(set(values)) > 5:
-            raise ValueError("не больше 5 напоминаний")
-        return sorted(set(values), reverse=True)
-
-    @field_validator("opps_types")
-    @classmethod
-    def _types(cls, values: list[str]) -> list[str]:
-        unknown = [v for v in values if v not in OPP_TYPES]
-        if unknown:
-            raise ValueError(f"нет типа «{unknown[0]}», есть: {', '.join(OPP_TYPES)}")
-        return [t for t in OPP_TYPES if t in values]
-
-    @field_validator("opps_profile")
+    @field_validator("profile")
     @classmethod
     def _profile(cls, value: str) -> str:
         value = value.strip()
-        if not PROFILE_CHARS[0] <= len(value) <= PROFILE_CHARS[1]:
+        if value and not PROFILE_CHARS[0] <= len(value) <= PROFILE_CHARS[1]:
             raise ValueError(f"нужно от {PROFILE_CHARS[0]} до {PROFILE_CHARS[1]} знаков, сейчас {len(value)}")
         return value
 
@@ -160,10 +102,6 @@ class Settings(BaseModel):
         The month's budget is the real limit."""
         return self.budget_month_rub / 15
 
-    @property
-    def opps_daily_budget_rub(self) -> float:
-        """A tenth of the lane's month: its first run after a deploy reads a month of announcements."""
-        return self.opps_budget_month_rub / 10
 
 
 CONTACTS = [
@@ -228,11 +166,6 @@ def explain(error: ValidationError) -> str:
 def _stored() -> dict:
     with db.connect() as conn:
         return {row["key"]: json.loads(row["value"]) for row in conn.execute("SELECT key, value FROM settings")}
-
-
-def is_set(key: str) -> bool:
-    """The user has set this setting (it is stored), rather than living with its default."""
-    return key in _stored()
 
 
 def load() -> Settings:

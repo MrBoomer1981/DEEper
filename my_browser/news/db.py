@@ -7,10 +7,10 @@
 - feedback: 👍/👎 on stories (stage 8).
 - settings: the user's settings (config.py); state: what the loop remembers; spend: LLM cost per day (stage 5).
 
-Two lanes share the tables: `news` and `opps`, the opportunities (hackathons, schools,
-internships, grants) with their deadlines. A source, its posts and the stories made of them carry the lane; posts
-merge only within their lane. An opportunity's details are in `opportunities` (one row per story of the opps lane),
-the reminders already sent in `opp_reminders`, the lane's LLM cost in `opps_spend`, apart from the news budget.
+A source, its posts and the stories made of them carry a lane, `news`. Until 27.10.2026 a second lane, `opps`
+(opportunities: hackathons, schools, internships, grants), shared the tables, with its own `opportunities`,
+`opp_reminders` and `opps_spend`; it moved to OnePath with a copy of its rows. A database from before keeps them, never
+read again: every query says `lane = 'news'`.
 """
 
 import json
@@ -27,12 +27,11 @@ DB_PATH = REPORTS_DIR / "news.sqlite"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,              -- rss | hf_papers | telegram | page
+    kind TEXT NOT NULL,              -- rss | hf_papers | telegram
     url TEXT NOT NULL,               -- feed or API address, the channel's name, or a page to watch
     name TEXT NOT NULL,
-    lane TEXT DEFAULT 'news',        -- news | opps
-    category TEXT,                   -- news: lab | papers | media | analyst | community;
-                                     -- opps: aggregator | company | university | program | conference | community
+    lane TEXT DEFAULT 'news',        -- news (opps: the opportunities lane's, before it moved to OnePath)
+    category TEXT,                   -- lab | papers | media | analyst | community
     lang TEXT,                       -- en | ru
     owner TEXT NOT NULL,             -- who stands behind it; feeds of one owner count as one source
     is_primary INTEGER DEFAULT 0,    -- first-hand: the lab's own blog, the paper itself
@@ -43,8 +42,8 @@ CREATE TABLE IF NOT EXISTS sources (
     added REAL,
     polled REAL, last_ok REAL, last_error TEXT, fails INTEGER DEFAULT 0,
     etag TEXT, modified TEXT,        -- conditional GET: an unchanged feed answers 304
-    page_hash TEXT,                  -- a watched page: the fingerprint of its main text at the last poll,
-    page_text TEXT,                  --   and the text, to tell what changed at the next one
+    page_hash TEXT,                  -- the opportunities lane's watched pages (OnePath's now)
+    page_text TEXT,
     UNIQUE (kind, url)
 );
 CREATE TABLE IF NOT EXISTS items (
@@ -59,8 +58,8 @@ CREATE TABLE IF NOT EXISTS items (
     lane TEXT DEFAULT 'news',        -- its source's lane
     backfill INTEGER DEFAULT 0,      -- an old post found on a source's first poll: known, never news
     digest INTEGER DEFAULT 0,        -- several stories in one post (a channel's roundup): out of merging and scoring
-    split_at REAL,                   -- opps: when a roundup was cut into one post per opportunity (opps.split)
-    copied_from INTEGER,             -- opps: the post this one repeats (a roundup's part, a news story's announcement)
+    split_at REAL,                   -- the opportunities lane's (OnePath's now)
+    copied_from INTEGER,
     embedding BLOB,
     story_id INTEGER,
     UNIQUE (source_id, external_id)
@@ -87,7 +86,7 @@ CREATE INDEX IF NOT EXISTS stories_first_seen ON stories (first_seen);
 CREATE TABLE IF NOT EXISTS feedback (story_id INTEGER NOT NULL, value INTEGER NOT NULL, created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS deliveries (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,              -- urgent | digest | restored | opp_reminder | opp_deadline (opp_hot, opp_digest until 26.10.2026)
+    kind TEXT NOT NULL,              -- urgent | digest | restored (opp_*: the opportunities lane's, until 27.10.2026)
     created REAL NOT NULL,
     text TEXT NOT NULL,              -- Telegram HTML
     buttons TEXT,                    -- JSON rows of [label, callback data]
@@ -97,36 +96,6 @@ CREATE TABLE IF NOT EXISTS deliveries (
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS spend (day TEXT PRIMARY KEY, rub REAL DEFAULT 0, calls INTEGER DEFAULT 0);
-CREATE TABLE IF NOT EXISTS opportunities (
-    story_id INTEGER PRIMARY KEY,    -- a story of the opps lane
-    opp_type TEXT,                   -- config.OPP_TYPES
-    title_ru TEXT, organizer TEXT,
-    summary_ru TEXT,                 -- what it is and what it gives, one or two sentences
-    deadline TEXT,                   -- ISO date and time with the time zone, or NULL
-    deadline_at REAL,                -- the same in seconds since the epoch, for ordering and reminders
-    deadline_kind TEXT,              -- exact | approximate | rolling | unknown
-    deadline_text TEXT,              -- as the source writes it
-    tz_assumed INTEGER DEFAULT 0,    -- the text named no time zone: Moscow's for a Russian source, else UTC
-    starts TEXT, ends TEXT,          -- the event's dates, if any
-    format TEXT,                     -- online | offline | hybrid
-    location TEXT,
-    eligibility TEXT,                -- who may apply, briefly
-    ru_access TEXT,                  -- yes | no | unclear: may a Russian citizen living in Russia take part
-    cost TEXT, reward TEXT,
-    apply_url TEXT,                  -- where to apply, or the official page
-    fit INTEGER, fit_reason TEXT,    -- 0-10 against the profile, and why in one line
-    status TEXT DEFAULT 'open',      -- open | tracked | hidden | applied | expired | dropped
-    drop_reason TEXT,
-    checked_at REAL,                 -- when the fields were last extracted
-    sent_at REAL,                    -- when it reached the user: the app's morning update (until 26.10.2026 a Telegram digest)
-    major INTEGER                    -- especially big (prepared for months ahead): the app shows it within the longer window;
-                                     -- NULL: read before the field existed, so read again
-);
-CREATE TABLE IF NOT EXISTS opp_reminders (
-    story_id INTEGER NOT NULL, days_before INTEGER NOT NULL, sent_at REAL NOT NULL,
-    UNIQUE (story_id, days_before)   -- a reminder never goes out twice
-);
-CREATE TABLE IF NOT EXISTS opps_spend (day TEXT PRIMARY KEY, rub REAL DEFAULT 0, calls INTEGER DEFAULT 0);
 """
 # Columns newer than a table in an older news.sqlite: {table: {column: type}}, added on first use.
 ADDED_COLUMNS: dict[str, dict[str, str]] = {
@@ -134,7 +103,6 @@ ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "items": {"digest": "INTEGER DEFAULT 0", "lane": "TEXT DEFAULT 'news'", "split_at": "REAL", "copied_from": "INTEGER"},
     "stories": {"title_ru": "TEXT", "primary_url": "TEXT", "scored_count": "INTEGER", "scored_at": "REAL",
                 "update_sent": "INTEGER DEFAULT 0", "sent_count": "INTEGER", "lane": "TEXT DEFAULT 'news'"},
-    "opportunities": {"tz_assumed": "INTEGER DEFAULT 0", "major": "INTEGER"},
 }
 
 # Run once when a column is added to an older file: posts stored before digests were recognized get the flag.

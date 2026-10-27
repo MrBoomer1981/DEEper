@@ -76,13 +76,9 @@ HELP = """<b>Глубокие исследования</b>
 /dropped — что отсеяно за сутки и почему; «↩️» возвращает сюжет
 /pause, /resume — остановить и продолжить новости
 
-<b>Возможности</b>: хакатоны, школы, стажировки, гранты с дедлайнами — в приложении, «Радар» → «Возможности». Список обновляется каждое утро в 08:00: в нём то, до срока чего не больше 3 месяцев, а у крупного — 6.
-Сюда приходят только напоминания о тех, что вы отслеживаете («В мои» в приложении или 📌 здесь): за 14, 3 и 1 день до дедлайна. ✅ — заявка подана, ✖️ — не буду.
-/opps — то же, что в приложении: ближайшие дедлайны сверху, фильтр по типам
-/deadlines — отслеживаемые по дате
-/opptypes — какие типы показывать
-/profile — профиль: по нему оценивается, что подходит; /profile текст — заменить
-/add opps @канал, лента или страница программы — источник возможностей"""
+/profile — что о вас знать продолжениям «Для меня»; /profile текст — заменить
+
+<b>Возможности</b> (хакатоны, школы, стажировки, гранты с дедлайнами) переехали в отдельное приложение OnePath."""
 
 dp = Dispatcher()
 pending: dict[str, dict] = {}  # topic awaiting a mode choice, keyed by the message that offered it
@@ -472,32 +468,6 @@ def news_text(status: dict) -> str:
         lines.append("⏸ На паузе")
     elif not status["loop_alive"]:
         lines.append("⏸ Цикл новостей не запущен")
-    if opps := status.get("opps"):
-        lines.append("")
-        lines.append(opps_text(opps))
-    return "\n".join(lines)
-
-
-def opps_text(opps: dict) -> str:
-    """/news, the opportunities' lines: what the app shows (new since the morning update, beyond the window) and what
-    is tracked, when the list was updated, the nearest tracked deadline, the lane's sources and spend."""
-    if not opps["enabled"]:
-        return "🎯 <b>Возможности</b> выключены"
-    sources, spend = opps["sources"], opps["spend"]
-    if "shown" in opps:
-        lines = [f"🎯 <b>Возможности</b> в приложении: {opps['shown']}, из них новых {opps['new']}; со сроком позже "
-                 f"{opps['later']}; отслеживаю {opps['tracked']}"]
-        if opps.get("updated"):
-            lines.append(f"Список обновлён {opps['updated']}, снова {opps['next_update']}")
-        if opps.get("expected"):
-            lines.append("Ждём, ещё не нашли: " + html.escape(", ".join(opps["expected"])))
-    else:  # a news part from before the morning updates
-        lines = [f"🎯 <b>Возможности</b>: открыто {opps['open']}, отслеживаю {opps['tracked']}"]
-    if nearest := opps.get("next_tracked"):
-        lines.append(f"Ближайший дедлайн: {html.escape(nearest['title_ru'] or '')} — {nearest['when']}")
-    failing = f", с ошибкой {len(sources['failing'])}" if sources["failing"] else ""
-    lines.append(f"Источники: {sources['enabled']}, работают {sources['ok']}{failing}")
-    lines.append(f"LLM: за месяц {rub_text(spend['month_rub'])} из {spend['budget_month_rub']:g}\u00a0₽")
     return "\n".join(lines)
 
 
@@ -599,197 +569,67 @@ SOURCE_MARK = {True: "✅", False: "⚠️"}
 
 @dp.message(Command("profile"))
 async def cmd_profile(message: Message, command: CommandObject) -> None:
-    """/profile shows the text the opportunities' fit is scored against; /profile <text> replaces it."""
+    """/profile shows what the research follow-ups «Для меня» know about the user; /profile <text> replaces it."""
     text = (command.args or "").strip()
     if not text:
-        settings = (await call("news", "GET", "/settings")).json()
-        await message.answer(f"👤 <b>Профиль для возможностей</b>\n\n{html.escape(settings['opps_profile'])}\n\n"
-                             "Заменить: /profile и текст о себе — учёба, интересы, цели, что подходит и что нет. "
-                             "Контакты, email и ники в оценку не уходят.")
+        profile = (await call("news", "GET", "/settings")).json()["profile"]
+        await message.answer("👤 <b>Профиль</b> — его знают продолжения «Для меня» под отчётами\n\n"
+                             + (html.escape(profile) if profile else "Пока не задан.") + "\n\n"
+                             "Заменить: /profile и текст о себе — учёба, интересы, цели. Контакты, email и ники "
+                             "в запросы не уходят.")
         return
-    await _news_settings(message, {"opps_profile": text}, "👤 Профиль сохранён: возможности будут оцениваться по нему")
-
-
-SOURCE_LANES = {"news": "📡 <b>Источники новостей</b>", "opps": "🎯 <b>Источники возможностей</b>"}
-
-
-OPPS_PAGE = 12  # opportunities in one /opps message
-
-
-async def _opps_view(type_: str = "") -> tuple[str, InlineKeyboardMarkup | None]:
-    """/opps: the open opportunities the app shows (the morning update's, within the window) and the tracked ones, the
-    tracked first, then by deadline; «📌 N» tracks, the type buttons filter."""
-    items = (await call("news", "GET", "/opps", params={"limit": 200, "shown": "true"})).json()
-    names = (await call("news", "GET", "/settings")).json()["opp_type_names"]
-    counts: dict[str, int] = {}
-    for item in items:
-        counts[item["opp_type"]] = counts.get(item["opp_type"], 0) + 1
-    shown = [i for i in items if not type_ or i["opp_type"] == type_]
-    if not items:
-        return "Открытых возможностей пока нет. Список обновляется каждое утро в 08:00, его видно и в приложении.", None
-    title = names.get(type_, "все") if type_ else "все"
-    lines = [f"🎯 <b>Возможности</b> · {title}: {len(shown)}"]
-    lines += [f"{n}. {'📌 ' if i['status'] == 'tracked' else ''}{i['line']}" for n, i in enumerate(shown[:OPPS_PAGE], 1)]
-    if len(shown) > OPPS_PAGE:
-        lines.append(f"…и ещё {len(shown) - OPPS_PAGE}")
-    track = [InlineKeyboardButton(text=f"📌 {n}", callback_data=f"op:{i['story_id']}:t")
-             for n, i in enumerate(shown[:OPPS_PAGE], 1) if i["status"] != "tracked"]
-    filters = [InlineKeyboardButton(text=("• " if not type_ else "") + f"все {len(items)}", callback_data="ot:")]
-    filters += [InlineKeyboardButton(text=("• " if key == type_ else "") + f"{names.get(key, key)} {count}",
-                                     callback_data=f"ot:{key}") for key, count in sorted(counts.items(), key=lambda kv: -kv[1])]
-    rows = [track[i:i + 6] for i in range(0, len(track), 6)] + [filters[i:i + 2] for i in range(0, len(filters), 2)]
-    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-@dp.message(Command("opps"))
-async def cmd_opps(message: Message) -> None:
-    text, keyboard = await _opps_view()
-    await message.answer(text, reply_markup=keyboard, link_preview_options=LinkPreviewOptions(is_disabled=True))
-
-
-@dp.callback_query(F.data.startswith("ot:"))
-async def on_opps_filter(callback: CallbackQuery) -> None:
-    text, keyboard = await _opps_view(callback.data.split(":", 1)[1])
-    await callback.answer()
-    with suppress(TelegramBadRequest):  # the same filter again: nothing changed
-        await callback.message.edit_text(text, reply_markup=keyboard, link_preview_options=LinkPreviewOptions(is_disabled=True))
-
-
-@dp.message(Command("deadlines"))
-async def cmd_deadlines(message: Message) -> None:
-    """Tracked opportunities by deadline; «✅ N» marks one applied."""
-    items = (await call("news", "GET", "/opps/tracked")).json()
-    if not items:
-        await message.answer("Ничего не отслеживается. Нажмите «В мои» у возможности в приложении или 📌 в /opps.")
-        return
-    lines = ["📌 <b>Отслеживаемые</b>"] + [f"{n}. {i['line']}" for n, i in enumerate(items, 1)]
-    buttons = [InlineKeyboardButton(text=f"✅ {n}", callback_data=f"op:{i['story_id']}:a") for n, i in enumerate(items, 1)]
-    await message.answer("\n".join(lines) + "\n\n✅ N — заявка подана: напоминания прекратятся",
-                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 6] for i in range(0, len(buttons), 6)]),
-                         link_preview_options=LinkPreviewOptions(is_disabled=True))
-
-
-def _opptypes_keyboard(settings: dict) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=("✅ " if key in settings["opps_types"] else "▫️ ") + name, callback_data=f"oy:{key}")]
-        for key, name in settings["opp_type_names"].items()])
-
-
-@dp.message(Command("opptypes"))
-async def cmd_opptypes(message: Message) -> None:
-    settings = (await call("news", "GET", "/settings")).json()
-    await message.answer("Какие возможности показывать: нажмите, чтобы включить или выключить тип. Собираются и оцениваются все.",
-                         reply_markup=_opptypes_keyboard(settings))
-
-
-@dp.callback_query(F.data.startswith("oy:"))
-async def on_opptype_toggle(callback: CallbackQuery) -> None:
-    kind = callback.data.split(":", 1)[1]
-    settings = (await call("news", "GET", "/settings")).json()
-    types = [t for t in settings["opps_types"] if t != kind] if kind in settings["opps_types"] else settings["opps_types"] + [kind]
-    try:
-        await call("news", "PUT", "/settings", json={"opps_types": types})
-    except httpx.HTTPStatusError:
-        await callback.answer("Не получилось", show_alert=True)
-        return
-    await callback.answer()
-    with suppress(TelegramBadRequest):
-        await callback.message.edit_reply_markup(reply_markup=_opptypes_keyboard({**settings, "opps_types": types}))
-
-
-OPP_ACTIONS = {"t": "tracked", "h": "hidden", "a": "applied", "o": "open"}
-
-
-@dp.callback_query(F.data.startswith("op:"))
-async def on_opportunity(callback: CallbackQuery) -> None:
-    """The buttons under an opportunity: 📌 track, ✖️ not mine, ✅ applied, ↩️ stop tracking, 🔎 research it."""
-    _, story_id, action = callback.data.split(":")
-    if action == "r":
-        try:
-            opp = (await call("news", "GET", f"/opps/{story_id}")).json()
-        except Exception:
-            await callback.answer("Возможность не найдена", show_alert=True)
-            return
-        await callback.answer()
-        key = f"{callback.message.chat.id}_{callback.message.message_id}_o{story_id}"
-        topic = f"{opp['title_ru'] or opp['title']}: условия участия, отбор и как подготовиться"
-        await _offer(callback.message.answer, key, topic, recommended="quick")
-        return
-    if action not in OPP_ACTIONS:
-        await callback.answer()
-        return
-    try:
-        opp = (await call("news", "POST", f"/opps/{story_id}/status", json={"status": OPP_ACTIONS[action]})).json()
-    except Exception:
-        await callback.answer("Возможность не найдена", show_alert=True)
-        return
-    title = html.escape(opp["title_ru"] or opp["title"] or "")
-    if action == "t":
-        await callback.answer("📌 Отслеживаю")
-        days = (await call("news", "GET", "/settings")).json()["opps_reminders"]
-        listed = f"{', '.join(map(str, days[:-1]))} и {days[-1]}" if len(days) > 1 else ''.join(map(str, days))
-        when = (f"Напомню за {listed} {plural(days[-1] if days else 0, 'день', 'дня', 'дней')} до дедлайна."
-                if opp["deadline_at"] and opp["deadline_kind"] in ("exact", "approximate") else
-                "Даты нет — напомнить к сроку не смогу: проверяйте на странице подачи, открыт ли ещё приём.")
-        await callback.message.answer(
-            f"📌 Отслеживаю: <b>{title}</b>\n{when}", link_preview_options=LinkPreviewOptions(is_disabled=True),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅ Заявка подана", callback_data=f"op:{story_id}:a"),
-                InlineKeyboardButton(text="↩️ Не отслеживать", callback_data=f"op:{story_id}:o")]]))
-    elif action == "h":
-        await callback.answer("✖️ Скрыл: больше не покажу")
-    elif action == "a":
-        await callback.answer("✅ Отметил: заявка подана, напоминаний больше не будет")
-        with suppress(TelegramBadRequest):
-            await callback.message.edit_reply_markup(reply_markup=None)
-    else:
-        await callback.answer("Больше не отслеживаю")
+    await _news_settings(message, {"profile": text}, "👤 Профиль сохранён: продолжения «Для меня» будут учитывать его")
 
 
 @dp.message(Command("sources"))
 async def cmd_sources(message: Message) -> None:
     rows = (await call("news", "GET", "/sources")).json()
-    blocks = []
-    for lane, title in SOURCE_LANES.items():
-        group = [r for r in rows if r.get("lane", "news") == lane]
-        if not group:
-            continue
-        lines = []
-        for row in group:
-            mark = "⏸" if not row["enabled"] else "🕓" if row["polled"] is None else SOURCE_MARK[not row["last_error"]]
-            note = f" — {html.escape(row['last_error'])}" if row["enabled"] and row["last_error"] else f" — {row['week']} за неделю"
-            if row.get("silent_days") and not row["last_error"]:
-                mark, note = "💤", f" — молчит {row['silent_days']} {plural(row['silent_days'], 'день', 'дня', 'дней')}"
-            lines.append(f"{mark} <b>#{row['id']}</b> {html.escape(row['name'])}{note}")
-        working = sum(1 for r in group if r["enabled"] and r["last_ok"] and not r["last_error"])
-        blocks.append(f"{title}: {sum(1 for r in group if r['enabled'])}, работают {working}\n" + "\n".join(lines))
-    legend = "✅ работает · ⚠️ ошибка · 💤 молчит дольше обычного · 🕓 ещё не опрошен · ⏸ выключен\n\n"
-    for part in _chunks(legend + "\n\n".join(blocks)):
+    lines = []
+    for row in rows:
+        mark = "⏸" if not row["enabled"] else "🕓" if row["polled"] is None else SOURCE_MARK[not row["last_error"]]
+        note = f" — {html.escape(row['last_error'])}" if row["enabled"] and row["last_error"] else f" — {row['week']} за неделю"
+        lines.append(f"{mark} <b>#{row['id']}</b> {html.escape(row['name'])}{note}")
+    working = sum(1 for r in rows if r["enabled"] and r["last_ok"] and not r["last_error"])
+    head = f"📡 <b>Источники новостей</b>: {sum(1 for r in rows if r['enabled'])}, работают {working}\n"
+    legend = "✅ работает · ⚠️ ошибка · 🕓 ещё не опрошен · ⏸ выключен\n\n"
+    for part in _chunks(legend + head + "\n".join(lines)):
         await message.answer(part, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
 
 OPPS_WORDS = ("opps", "возможности")
+MOVED = "Возможности переехали в отдельное приложение OnePath: источники, список и «Мои» теперь там."
+
+
+@dp.message(Command("opps", "deadlines", "opptypes"))
+async def cmd_moved(message: Message) -> None:
+    """The opportunities' commands, until 27.10.2026: the lane moved to OnePath, an app without a bot."""
+    await message.answer(MOVED)
+
+
+@dp.callback_query(F.data.startswith(("op:", "ot:", "oy:")))
+async def on_moved(callback: CallbackQuery) -> None:
+    """The buttons of the opportunities' old messages (op:, ot:, oy:) still sit in the chat."""
+    await callback.answer(MOVED, show_alert=True)
 
 
 @dp.message(Command("add"))
 async def cmd_add(message: Message, command: CommandObject) -> None:
-    """/add <feed or @channel> adds a news source; /add opps <feed, @channel or a program's page> an opportunities one."""
-    words = (command.args or "").split(maxsplit=1)
-    lane = "opps" if words and words[0].lower() in OPPS_WORDS else "news"
-    text = (words[1] if len(words) > 1 else "") if lane == "opps" else (command.args or "")
-    if not text.strip():
-        await message.answer("Формат: /add https://example.com/feed.xml или /add @channel — в новости;\n"
-                             "/add opps @channel или ссылка на ленту или страницу программы — в возможности")
+    """/add <feed or @channel> adds a news source."""
+    text = (command.args or "").strip()
+    if not text:
+        await message.answer("Формат: /add https://example.com/feed.xml или /add @channel")
+        return
+    if text.split(maxsplit=1)[0].lower() in OPPS_WORDS:  # «/add opps …» added an opportunities source until 27.10.2026
+        await message.answer(MOVED)
         return
     progress = await message.answer("⏳ Проверяю источник…")
     try:
-        source = (await call("news", "POST", "/sources", json={"text": text.strip(), "lane": lane}, timeout=60)).json()
+        source = (await call("news", "POST", "/sources", json={"text": text}, timeout=60)).json()
     except httpx.HTTPStatusError as e:
         detail = e.response.json().get("detail") if e.response.status_code == 422 else str(e)[:200]
         await progress.edit_text(f"❌ {html.escape(detail)}")
         return
-    where = " в возможности" if source.get("lane") == "opps" else ""
-    await progress.edit_text(f"✅ Добавлен{where} <b>#{source['id']}</b> {html.escape(source['name'])}: первый опрос — "
+    await progress.edit_text(f"✅ Добавлен <b>#{source['id']}</b> {html.escape(source['name'])}: первый опрос — "
                              f"в течение минуты. Выключить: /remove {source['id']}")
 
 
@@ -1175,10 +1015,7 @@ async def start(handle_signals: bool = True) -> None:
         BotCommand(command="dropped", description="Что отсеяно из новостей"),
         BotCommand(command="pause", description="Новости на паузу"),
         BotCommand(command="resume", description="Продолжить новости"),
-        BotCommand(command="opps", description="Возможности: хакатоны, школы, стажировки"),
-        BotCommand(command="deadlines", description="Отслеживаемые дедлайны"),
-        BotCommand(command="opptypes", description="Типы возможностей"),
-        BotCommand(command="profile", description="Профиль для возможностей"),
+        BotCommand(command="profile", description="Профиль для продолжений «Для меня»"),
         BotCommand(command="help", description="Как пользоваться"),
     ])
     me = await bot.get_me()
